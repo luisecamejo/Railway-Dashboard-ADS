@@ -27,6 +27,20 @@ def ventana(tz: str, dias: int = DIAS, hoy: dt.date | None = None) -> tuple[str,
     return desde.isoformat(), hasta.isoformat()
 
 
+def dia_de(ms: int, tz: str) -> str:
+    """
+    El día al que pertenece una marca de tiempo (epoch en milisegundos) EN LA ZONA
+    DEL NEGOCIO.
+
+    Es el mismo criterio que usa web/app/construir.py para colocar cada lead en su
+    día. Está aquí porque los extractores lo necesitan para recortar la ventana en
+    los bordes: el filtro de fechas de una API externa no tiene por qué interpretar
+    "el día 4" igual que nosotros, y si no lo decidimos aquí, lo que se entrega no
+    coincide con la ventana que se declara.
+    """
+    return dt.datetime.fromtimestamp(ms / 1000, ZoneInfo(tz)).date().isoformat()
+
+
 def dias_entre(desde: str, hasta: str) -> list[str]:
     a = dt.date.fromisoformat(desde)
     b = dt.date.fromisoformat(hasta)

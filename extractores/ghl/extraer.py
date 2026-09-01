@@ -30,6 +30,7 @@ Decisiones que costaron una prueba cada una:
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
 import logging
 import os
@@ -42,7 +43,7 @@ import time
 # corriendo desde la raíz del repositorio que desde /extractores.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from comun.fechas import ventana
+from comun.fechas import dia_de, ventana
 from comun.mcp import ClienteMCP
 from comun.reportes import Reportes
 
@@ -148,11 +149,43 @@ def usuarios(mcp: ClienteMCP, loc: str) -> dict:
     return fuera
 
 
-def oportunidades(mcp: ClienteMCP, loc: str, desde: str, hasta: str) -> list[dict]:
-    return _paginar_cursor(mcp, "ghl_export_opportunities_compact",
-                           {"client": loc, "startDate": desde, "endDate": hasta,
-                            "limit": 500},
-                           f"oportunidades {desde}→{hasta}")
+def oportunidades(mcp: ClienteMCP, loc: str, desde: str, hasta: str,
+                  tz: str) -> list[dict]:
+    """
+    Se pide UN DÍA DE MÁS por cada lado y se recorta aquí, por fecha de creación en
+    la zona del negocio.
+
+    Por qué: el filtro de fechas de GoHighLevel no interpreta el día en esa zona, así
+    que en los bordes devuelve cosas que aquí son del día anterior — y se deja fuera
+    cosas que sí son del último día. La primera extracción de verdad lo demostró:
+    pidiendo desde 2026-05-04, llegaron 4 oportunidades cuyo `created`, en
+    America/Denver, cae en 2026-05-03. El servicio rechazó el snapshot con un 422
+    ("la ventana debe cubrir exactamente lo extraído"), que es justo su trabajo.
+
+    Así que la frontera la decidimos NOSOTROS, con el mismo criterio que usa
+    construir.py para poner cada lead en su día. Lo que se entrega coincide con la
+    ventana que se declara, y el borde no depende de cómo entienda las fechas el CRM.
+    """
+    d0 = (dt.date.fromisoformat(desde) - dt.timedelta(days=1)).isoformat()
+    h1 = (dt.date.fromisoformat(hasta) + dt.timedelta(days=1)).isoformat()
+    crudas = _paginar_cursor(mcp, "ghl_export_opportunities_compact",
+                             {"client": loc, "startDate": d0, "endDate": h1,
+                              "limit": 500},
+                             f"oportunidades {d0}→{h1} (un día de más por lado)")
+    dentro, sobra = [], 0
+    for o in crudas:
+        ms = o.get("created")
+        if ms is None:
+            sobra += 1                 # sin fecha no se puede situar: fuera
+            continue
+        if desde <= dia_de(ms, tz) <= hasta:
+            dentro.append(o)
+        else:
+            sobra += 1
+    if sobra:
+        log.info("%d oportunidades caen fuera de %s→%s al mirar su fecha en %s: el "
+                 "filtro del CRM no usa esta zona horaria", sobra, desde, hasta, tz)
+    return dentro
 
 
 def vendedores(mcp: ClienteMCP, loc: str, desde: str, hasta: str) -> list[dict]:
@@ -221,7 +254,7 @@ def extraer_cliente(objetivo: dict, mcp: ClienteMCP) -> dict:
     pipes = pipelines(mcp, loc)
     log.info("%d pipeline(s) · %d etapas", len(pipes),
              sum(len(p["stages"]) for p in pipes))
-    opps = oportunidades(mcp, loc, desde, hasta)
+    opps = oportunidades(mcp, loc, desde, hasta, tz)
     users = usuarios(mcp, loc)
     filas = vendedores(mcp, loc, vdesde, vhasta)
 
