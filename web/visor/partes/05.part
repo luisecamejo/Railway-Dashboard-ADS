@@ -1,0 +1,275 @@
+function auditGoogle(){
+  // Conciliación plataforma ↔ CRM. Se dibuja una por cada red publicitaria visible,
+  // sin conocer cuál es: los números salen del gasto y de los leads que casaron con él.
+  const objetivo = S.plat!=='all'&&S.plat!=='Otros' ? S.plat : (PLATS.length===1?PLATS[0]:null);
+  if(!objetivo) return '';
+  const gc=C.filter(c=>platCamp(c)===objetivo&&campVisible(c));
+  if(!gc.length)return '';
+  const g=leadsF().filter(x=>platLead(x)===objetivo);
+  const sp=gc.reduce((s,c)=>s+spendOf(c).sp,0), conv=gc.reduce((s,c)=>s+spendOf(c).ld,0);
+  const w=g.filter(x=>x.st==='won'), rev=w.reduce((s,x)=>s+x.v,0);
+  const byC={};g.forEach(x=>{byC[x.crit]=byC[x.crit]||{n:0,w:0,r:0};byC[x.crit].n++;if(x.st==='won'){byC[x.crit].w++;byC[x.crit].r+=x.v}});
+  const cr=Object.entries(byC).sort();
+  return `<div class="panel"><div class="ph"><div><h2>Conciliación ${objetivo} ↔ GoHighLevel</h2>
+   <p>Qué dice cada sistema sobre el mismo periodo, y por qué no dicen lo mismo. Ninguno de los dos está equivocado: miden cosas distintas.</p></div></div>
+   <div class="pb">
+   <div class="tw"><table><thead><tr><th>Métrica</th><th>Google Ads</th><th>GoHighLevel</th><th>Lectura</th></tr></thead><tbody>
+    <tr><td>Inversión</td><td>${fmt2(sp)}</td><td class="mut">—</td><td style="text-align:left;font-family:var(--d);font-size:11.5px;white-space:normal">Solo la plataforma lo sabe</td></tr>
+    <tr><td>Conversiones / leads</td><td>${num(conv)}</td><td><b>${num(g.length)}</b></td><td style="text-align:left;font-family:var(--d);font-size:11.5px;white-space:normal">El CRM ve ${num(g.length-conv)} más de los que declara la plataforma</td></tr>
+    <tr><td>Con campaña identificable</td><td>${num(conv)}</td><td>${num(g.filter(x=>x.c).length)}</td><td style="text-align:left;font-family:var(--d);font-size:11.5px;white-space:normal">Solo ${pct(g.length?g.filter(x=>x.c).length/g.length*100:0)} de los leads del CRM se puede asignar a una campaña concreta</td></tr>
+    <tr><td>Cierres</td><td class="mut">no lo sabe</td><td>${num(w.length)}</td><td style="text-align:left;font-family:var(--d);font-size:11.5px;white-space:normal">La plataforma no recibe el evento de venta; su optimización trabaja a ciegas</td></tr>
+    <tr><td>Ingreso</td><td class="mut">no lo sabe</td><td>${fmt2(rev)}</td><td style="text-align:left;font-family:var(--d);font-size:11.5px;white-space:normal">—</td></tr>
+    <tr style="border-top:1px solid var(--line)"><td><b>CPL agregado</b></td><td>${fmt2(conv?sp/conv:0)}</td><td><b>${fmt2(g.length?sp/g.length:0)}</b></td><td style="text-align:left;font-family:var(--d);font-size:11.5px;white-space:normal">El del CRM es el bueno: usa todos los leads reales</td></tr>
+    <tr><td><b>ROAS</b></td><td class="mut">—</td><td class="${rev/sp>=2?'pos':'neg'}"><b>${(sp?rev/sp:0).toFixed(2)}×</b></td><td style="text-align:left;font-family:var(--d);font-size:11.5px;white-space:normal">Sobre gasto completo e ingreso completo</td></tr>
+   </tbody></table></div>
+   ${!cr.length?'':`<h3 style="font-size:13px;font-weight:700;margin:22px 0 4px">Criterio aplicado a cada uno de los ${num(g.length)} leads</h3>
+   <div class="tw" style="margin-top:10px"><table><thead><tr><th>Criterio</th><th>Leads</th><th>%</th><th>Cierres</th><th>Ingreso</th><th>Fiabilidad</th></tr></thead><tbody>
+   ${cr.map(([k,v])=>{const fi=k[1]==='1'?['Alta','pos']:k[1]==='2'?['Media','warn']:['Media-baja','warn'];
+     return `<tr><td>${k}</td><td><b>${num(v.n)}</b></td><td>${pct(v.n/g.length*100)}</td><td>${v.w||'—'}</td><td>${v.r?fmt2(v.r):'—'}</td><td class="${fi[1]}">${fi[0]}</td></tr>`}).join('')}
+   </tbody></table></div>`}
+   <div class="note" style="margin-top:16px"><b>De dónde sale el criterio.</b>
+   Esta columna no la calcula el dashboard: viene en cada oportunidad tal y como la escribió el proceso de conciliación.
+   El dashboard solo agrupa y cuenta. Si un criterio no te cuadra, se corrige en la conciliación, no aquí.</div>
+   </div></div>`;
+}
+
+
+/* ════════
+   CALL REPORT — atribuido a QUIEN MARCÓ, no al dueño del lead.
+   DATA.calls trae una fila por llamada con el userId real que la hizo, extraído de
+   /conversations/{id}/messages?type=TYPE_CALL. Se replica la definición del Call Report de
+   GoHighLevel (solo SALIENTES: las llamadas que el agente colocó) y además se muestra el
+   entrante, que el CRM no desglosa por agente.
+   Control contra el CRM: 4 de 5 agentes cuadran exacto en nº de llamadas y 5 de 5 en leads únicos.
+   ════════ */
+function callReport(){
+  const CA=DATA.calls||[], W=DATA.callWin||{};
+  if(!CA.length) return '';
+  const NM=u=>(DATA.usuarios||{})[u] || (u?'Usuario '+String(u).slice(0,6):'Sin usuario asignado');
+  const g={};
+  const slot=k=>g[k]=g[k]||{out:0,outConn:0,outFail:0,inb:0,inAns:0,inLost:0,dur:[],sinDur:0,leads:new Set(),leadsIn:new Set()};
+  CA.forEach(c=>{
+    const v=slot(NM(c.u));
+    // "Leads únicos" se cuenta SOLO sobre salientes, igual que el Call Report del CRM: es
+    // "a cuántos contactos distintos llamó este agente". Si se incluyeran los entrantes, un
+    // agente podía salir con más leads que llamadas hechas (le pasaba a Cliff: 14 llamadas, 28 leads).
+    if(c.d===1) v.leads.add(c.c); else v.leadsIn.add(c.c);
+    if(c.d===1){ v.out++;
+      if(c.s==='completed') v.outConn++; else v.outFail++;
+      if(c.dur!=null) v.dur.push(c.dur); else v.sinDur++;
+    } else { v.inb++; if(c.s==='completed') v.inAns++; else v.inLost++; }
+  });
+  const filas=Object.entries(g).map(([k,v])=>({
+    v:k, out:v.out, conn:v.outConn, pc:v.out?v.outConn/v.out*100:0,
+    dur:v.dur.length?v.dur.reduce((a,b)=>a+b,0)/v.dur.length:null,
+    sd:v.sinDur, inb:v.inb, ia:v.inAns, il:v.inLost, leads:v.leads.size, leadsIn:v.leadsIn.size
+  })).filter(r=>r.out||r.inb).sort((a,b)=>b.out-a.out||b.inb-a.inb);
+  const T=filas.reduce((a,r)=>({out:a.out+r.out,conn:a.conn+r.conn,inb:a.inb+r.inb,ia:a.ia+r.ia,il:a.il+r.il,sd:a.sd+r.sd}),{out:0,conn:0,inb:0,ia:0,il:0,sd:0});
+  const mmn=s=>s==null?'—':s<60?Math.round(s)+'s':(s/60).toFixed(1)+' min';
+  const C=[{k:'v',h:'Agente',t:'sel',d:'Quien MARCÓ la llamada, según el autor que registra GoHighLevel en cada llamada. No es el dueño del lead.'},
+    {k:'out',h:'Llamadas hechas',t:'num',d:'Llamadas SALIENTES que colocó este agente. Es la misma definición que usa el Call Report de GoHighLevel en su columna Total calls.'},
+    {k:'conn',h:'Conectadas',t:'num',d:'De esas, las que la central marcó como completadas'},
+    {k:'pc',h:'% conecta',t:'num',d:'Conectadas ÷ llamadas hechas'},
+    {k:'dur',h:'Duración media',t:'num',d:'Media de las llamadas salientes QUE TRAEN duración registrada. GoHighLevel muestra unos segundos más porque usa el registro completo de la central; esta API devuelve duration nulo en parte de las llamadas y aquí se excluyen en vez de contarlas como cero (contarlas como cero bajaría la media ~25%).'},
+    {k:'sd',h:'Sin duración',t:'num',d:'Llamadas salientes que la API devolvió sin duración: quedan fuera del cálculo de la media, pero SÍ cuentan en "Llamadas hechas"'},
+    {k:'leads',h:'Leads únicos',t:'num',d:'Contactos distintos a los que LLAMÓ este agente (solo salientes, igual que la columna Unique leads del Call Report del CRM). Cuadra exacto con el CRM.'},
+    {k:'inb',h:'Entrantes',t:'num',d:'Llamadas ENTRANTES registradas con este agente como autor'},
+    {k:'ia',h:'Entr. atendidas',t:'num',d:'Entrantes que se completaron'},
+    {k:'il',h:'Entr. no atendidas',t:'num',d:'Entrantes que quedaron en buzón, sin respuesta u ocupado'}];
+  window.__call={R:filas,C};
+  return `<h3 style="font-size:13px;font-weight:700;margin:26px 0 4px">Call Report por agente
+    <span class="tag" style="background:rgba(52,211,153,.16);color:var(--gr)" title="Cada llamada se atribuye al usuario que GoHighLevel registra como autor de esa llamada, no al vendedor asignado al lead">POR QUIEN MARCÓ</span></h3>
+   <p style="color:var(--dim);font-size:12.5px;margin:0 0 10px">${num(CA.length)} llamadas entre el <b>${fmtD(W.desde)}</b> y el <b>${fmtD(W.hasta)}</b> · ${num(T.out)} salientes y ${num(T.inb)} entrantes · hora de ${(DATA.cliente&&DATA.cliente.tz)||'el negocio'}.</p>
+   <div class="tw"><table>${tHead('call',filas,C)}<tbody>
+   ${tOrdenar('call',tFiltrar('call',filas,C),C).map(r=>`<tr>
+     <td><b>${r.v}</b></td><td><b>${num(r.out)}</b></td><td>${num(r.conn)}</td>
+     <td class="${!r.out?'mut':r.pc>=70?'pos':r.pc>=40?'warn':'neg'}">${r.out?pct(r.pc):'—'}</td>
+     <td>${mmn(r.dur)}</td><td class="${r.sd?'mut':'mut'}">${r.sd||'—'}</td>
+     <td><b>${num(r.leads)}</b></td>
+     <td>${r.inb||'—'}</td><td>${r.ia||'—'}</td><td class="${r.il?'warn':'mut'}">${r.il||'—'}</td></tr>`).join('')}
+   </tbody><tfoot><tr style="border-top:1px solid var(--line)">
+     <td style="font-weight:700">Total · ${filas.length} agentes</td><td><b>${num(T.out)}</b></td><td>${num(T.conn)}</td>
+     <td>${pct(T.out?T.conn/T.out*100:0)}</td><td>—</td><td>${num(T.sd)}</td><td>—</td>
+     <td>${num(T.inb)}</td><td>${num(T.ia)}</td><td>${num(T.il)}</td></tr></tfoot></table></div>
+   <div class="note" style="margin-top:8px"><b>Cómo cuadrar esto con el Call Report de GoHighLevel.</b>
+    La columna <b>Llamadas hechas</b> usa la misma definición que el CRM (solo salientes) y <b>Leads únicos</b> cuadra exacto.
+    Si tu usuario de GoHighLevel está en otra zona horaria que el negocio, el CRM te contará el día de otra forma y los totales bailarán unas unidades en los bordes del rango — es el mismo efecto explicado en Notas y salvedades.</div>`;
+}
+
+function vendedores(){
+  const SP=DATA.sp, R=SP.rows, SOP=DATA.sop;
+  const ent=R.filter(x=>x.tipo==='Entrante'), form=R.filter(x=>x.tipo==='Formulario');
+  const med=a=>{if(!a.length)return 0;const s=[...a].sort((x,y)=>x-y),m=s.length>>1;return s.length%2?s[m]:(s[m-1]+s[m])/2};
+  const mm=s=>s==null?'—':s<60?s+'s':s<3600?(s/60).toFixed(1)+' min':(s/3600).toFixed(1)+' h';
+  const bloque=(g,nm,ancla)=>{
+    const c=g.filter(x=>x.rtH!=null), ok=c.filter(x=>x.rtH<=300), sin=g.filter(x=>x.rtH==null);
+    return `<div class="card"><b>${nm}</b> · <span style="color:var(--dim);font-size:12px">${ancla}</span>
+     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-top:10px">
+      <!-- ITERACIÓN 2 · req.2: tooltip por tarjeta con la definición exacta -->
+      ${[['Leads',num(g.length),'','Total de conversaciones de este grupo en la ventana analizada'],
+         ['Respondidos',num(c.length),pct(c.length/g.length*100),'Conversaciones con al menos una respuesta humana registrada'],
+         ['Mediana',mm(med(c.map(x=>x.rtH))),'primera respuesta','Tiempo mediano entre que el lead entró y la primera respuesta humana (no la autorespuesta de workflow)'],
+         ['Dentro de 5 min',num(ok.length),pct(c.length?ok.length/c.length*100:0),'Respuestas humanas que cumplieron el SOP de 5 minutos'],
+         ['Fuera de 5 min',num(c.length-ok.length),pct(c.length?(c.length-ok.length)/c.length*100:0),'Respuestas humanas que llegaron, pero después de los 5 minutos del SOP'],
+         ['Nunca respondidos',num(sin.length),pct(sin.length/g.length*100),'Leads de este grupo sin ninguna respuesta humana registrada hasta hoy']]
+       .map((k,ix)=>`<div title="${(k[3]||'').replace(/"/g,'&quot;')}"><div class="k" style="font-family:var(--m);font-size:9px;color:var(--faint);letter-spacing:.7px;text-transform:uppercase">${k[0]}</div>
+        <div style="font-family:var(--m);font-size:16px;font-weight:700;margin-top:3px;color:${ix===4?'var(--rd)':ix===5?'var(--am)':'var(--tx)'}">${k[1]}</div>
+        <div style="font-size:10px;color:var(--dim)">${k[2]}</div></div>`).join('')}
+     </div></div>`;};
+  // por vendedor
+  // FIX AUDITORÍA VENDEDORES · hallazgo 4 (decisión de negocio confirmada: las llamadas y los cierres se
+  // acreditan al ASIGNADO, no a quien respondió primero — la nota "Cómo leer esto" de abajo ya decía esto,
+  // pero el código anterior usaba "x.by||x.asg" y por eso, p. ej., un cierre de Jake Bloomer terminaba
+  // acreditado a quien cubrió la primera respuesta (Cliff Bateman) en vez de a la asignada (Marianny Cordero).
+  const vend={};
+  const vslot=k=>vend[k]=vend[k]||{n:0,ok:0,rt:[],ciA:0,ciP:0,coC:0,coS:0,mIn:0,mOut:0,won:0,rev:0};
+  R.forEach(x=>{if(!x.by)return; const v=vslot(x.by);
+    if(x.rtH!=null){v.n++;v.rt.push(x.rtH);if(x.rtH<=300)v.ok++;}});
+  // PENDIENTE · req.1 "mIn/mOut": mensajes entrantes/salientes existían en DATA.sp.rows pero no se mostraban
+  // en ningún lado del dashboard. Se acumulan por x.asg (el asignado), igual que llamadas y cierres — misma
+  // decisión de atribución ya tomada en el hallazgo 4 (Se acredita al asignado), no a quien respondió primero.
+  // Los cierres SÍ se acreditan al asignado: la oportunidad es suya en el CRM.
+  // Las llamadas ya NO se acreditan aquí — ver callReport(), que usa el autor real de cada llamada.
+  R.forEach(x=>{if(!x.asg)return; const v=vslot(x.asg);
+    if(x.st==='won'){v.won++;v.rev+=x.val;}});
+  // se relaja el filtro para no esconder a un vendedor que solo tiene leads asignados (llamadas/cierres)
+  // pero ninguna primera respuesta propia en la ventana — con la atribución por asignado (hallazgo 4)
+  // eso ya puede pasar y antes se perdían esos números en silencio.
+  const vr=Object.entries(vend).filter(([k,v])=>v.n>0||v.won>0).sort((a,b)=>b[1].n-a[1].n);
+  const ciA=R.reduce((s,x)=>s+x.ciA,0), ciP=R.reduce((s,x)=>s+x.ciP,0);
+  const lentos=R.filter(x=>x.rtH!=null&&x.rtH>300).sort((a,b)=>b.rtH-a.rtH);
+  const nunca=R.filter(x=>x.rtH==null);
+  const porNum={};ent.forEach(x=>{if(!x.num)return;const k=porNum[x.num]=porNum[x.num]||{n:0,p:0,a:0,rt:[]};k.n++;k.p+=x.ciP;k.a+=x.ciA;if(x.rtH!=null)k.rt.push(x.rtH);});
+
+  return `<div class="panel"><div class="ph"><div><h2>Auditoría de vendedores</h2>
+   <p>Tiempo de primera respuesta y cumplimiento del SOP sobre las <b>${num(R.length)}</b> conversaciones abiertas entre el <b>${fmtD(SP.desde)}</b> y el <b>${fmtD(SP.hasta)}</b> — ${nDias(SP.desde,SP.hasta)} días, en hora de ${(DATA.cliente&&DATA.cliente.tz)||'el negocio'}.</p></div></div>
+   <div class="pb">
+
+   <div class="card" style="border-left-color:var(--pu)"><b>Rango de esta hoja: ${fmtD(SP.desde)} → ${fmtD(SP.hasta)}</b>
+   <span style="color:var(--dim);font-size:12.5px">(${nDias(SP.desde,SP.hasta)} días). Es una ventana propia y fija: esta hoja no usa el rango de fechas del reporte ni el resto de filtros, porque auditar la gestión de leads viejos no ayuda a nadie. Al salir de la hoja se restaura tu rango anterior.</span></div>
+
+   <h3 style="font-size:13px;font-weight:700;margin:22px 0 10px">Tiempo de primera respuesta <span class="sev s-alta">SOP: 5 MIN</span></h3>
+   ${bloque(ent,'Leads entrantes','el reloj corre desde su primer mensaje o llamada')}
+   ${bloque(form,'Leads de formulario','el reloj corre desde que se creó el contacto')}
+
+   <div class="note" style="margin-top:4px"><b>Automático contra humano.</b> Los mensajes de workflow llevan el <span style="font-family:var(--m)">userId</span> de un vendedor real aunque nadie los escriba.
+   Todo lo de arriba cuenta <b>solo respuestas humanas</b> — las de <span style="font-family:var(--m)">source: app</span>. La autorespuesta llega de mediana en
+   <b>${mm(med(R.filter(x=>x.rtA!=null).map(x=>x.rtA)))}</b>, pero eso mide el workflow, no al vendedor.</div>
+
+   ${callReport()}
+
+   <h3 style="font-size:13px;font-weight:700;margin:26px 0 10px">Rendimiento por vendedor <span class="tag" style="background:rgba(96,165,250,.16);color:var(--bl)" title="Las primeras respuestas se atribuyen a quien respondió; los cierres, al vendedor asignado a la oportunidad">RESPUESTA Y CIERRE</span></h3>
+   <div class="tw"><table>${(()=>{const R2=vr.map(([k,v])=>({v:k,n:v.n,ok:v.ok,p:v.ok/v.n*100,md:med(v.rt),won:v.won,rev:v.rev}));
+     // ITERACIÓN 2 · req.2: tooltips con el significado de cada métrica de vendedores
+     // PENDIENTE · req.1: columnas mIn/mOut (mensajes entrantes/salientes) — el dato ya existía en
+     // DATA.sp.rows y no se mostraba en ninguna tabla ni tarjeta; se agregan junto a las de llamadas,
+     // acreditadas al asignado igual que ciA/ciP/coC (ver el forEach de arriba).
+     const C2=[{k:'v',h:'Vendedor',t:'sel',d:'Quien mandó el primer mensaje humano — no siempre es el vendedor asignado al lead (ver nota "Cómo leer esto")'},
+       {k:'n',h:'Primeras respuestas',t:'num',d:'Conversaciones donde este vendedor dio la primera respuesta humana'},
+       {k:'ok',h:'≤ 5 min',t:'num',d:'De esas, cuántas respondió dentro del plazo de 5 minutos que marca el SOP'},
+       {k:'p',h:'% en plazo',t:'num',d:'Porcentaje de sus respuestas que cumplió el SOP de 5 minutos'},
+       {k:'md',h:'Mediana',t:'num',d:'Tiempo mediano de primera respuesta de este vendedor'},
+       // Las columnas de llamadas y mensajes por conversación se retiraron de aquí: estaban
+       // acreditadas al vendedor ASIGNADO, no a quien las hizo, y no cuadraban con el CRM.
+       // El dato real, llamada por llamada y por su autor, está en la tabla "Call Report" de arriba.
+       {k:'won',h:'Cierres',t:'num',d:'Oportunidades asignadas a este vendedor que terminaron en venta, y su valor'}];
+     window.__vend={R:R2,C:C2}; return tHead('vend',R2,C2)})()}<tbody>
+   ${(()=>{const {R,C}=window.__vend; return tOrdenar('vend',tFiltrar('vend',R,C),C).map(v=>{const k=v.v,p=v.p;
+     return `<tr><td>${k}</td><td><b>${num(v.n)}</b></td><td>${num(v.ok)}</td>
+     <td class="${p>=80?'pos':p>=60?'warn':'neg'}"><b>${pct(p)}</b></td>
+     <td class="${v.md<=300?'pos':'neg'}">${mm(v.md)}</td>
+     <td>${v.won?num(v.won)+' · '+fmt2(v.rev):'—'}</td></tr>`}).join('')})()}
+   </tbody></table></div>
+
+   <h3 style="font-size:13px;font-weight:700;margin:26px 0 10px">Llamadas <span class="sev s-alta">CRÍTICO</span></h3>
+   <!-- FASE 1 · req.4: "Entrantes atendidas en inglés" — el export DATA.sp.rows todavía no incluye ningún
+        campo de idioma (x.lang / x.idioma). Se deja el cálculo ya conectado: en cuanto el dato exista en
+        el dataset, esta tarjeta se activa sola sin tocar código. Mientras tanto se muestra "—" y una nota
+        explícita, en vez de inventar el número. -->
+   ${(()=>{const tieneIdioma=R.some(x=>x.lang!=null||x.idioma!=null);
+     const enAtendidas=R.filter(x=>(x.lang==='en'||x.idioma==='en')&&x.rtH!=null).length;
+     return tieneIdioma?'':`<div class="card" style="border-left-color:var(--am)"><b>Entrantes atendidas en inglés — dato pendiente</b>
+     <p style="color:var(--dim);font-size:12.5px;margin-top:6px">Este export de vendedores (DATA.sp.rows) no trae un campo de idioma por conversación, así que esta métrica no se puede calcular todavía sin inventarla. En cuanto el dataset incluya <code>lang</code>/<code>idioma</code> por fila, la tarjeta de KPI aparece automáticamente junto a las demás de Llamadas.</p>
+     <p style="color:var(--dim);font-size:12.5px;margin-top:6px"><b>Sobre el "Cold Report":</b> no se pudo comparar contra el sistema anterior porque ese reporte no vino incluido en los archivos de análisis de esta fase — dime dónde está y lo cruzo contra estos números en la siguiente pasada.</p></div>`;})()}
+   <!-- ITERACIÓN 2 · req.2: 5º elemento = tooltip con la definición real de cada métrica de llamadas -->
+   <div class="kpis">
+     ${[['Entrantes atendidas',num(ciA),'','var(--gr)','Llamadas entrantes que sí fueron contestadas por alguien del equipo'],
+        ['Entrantes perdidas',num(ciP),'buzón o sin contestar','var(--rd)','Llamadas entrantes que nadie contestó: se fueron a buzón o sonaron sin respuesta'],
+        ['Tasa de pérdida',pct(ciA+ciP?ciP/(ciA+ciP)*100:0),'de todo lo que entró','var(--rd)','Entrantes perdidas ÷ (atendidas + perdidas): qué porción de todo lo que llamó nunca habló con alguien'],
+        ['Salientes conectadas',num(R.reduce((s,x)=>s+x.coC,0)),'','','Llamadas hechas por el equipo hacia el lead que sí conectaron'],
+        ['Salientes sin respuesta',num(R.reduce((s,x)=>s+x.coS,0)),'','var(--am)','Llamadas hechas por el equipo hacia el lead que nadie contestó del otro lado'],
+        (()=>{const tieneIdioma=R.some(x=>x.lang!=null||x.idioma!=null);
+          const enAtendidas=R.filter(x=>(x.lang==='en'||x.idioma==='en')&&x.rtH!=null).length;
+          // AUDITORÍA DISEÑO · hallazgo 2.2: el título original ("Entrantes atendidas en inglés") envolvía
+          // en dos líneas más apretadas que las 5 tarjetas vecinas de este mismo grupo. Se acorta el título
+          // visible siguiendo la misma convención de abreviación que ya usa el resto del archivo (p. ej.
+          // "ENTR. ATEND.", "SAL. CONECT." en la tabla de vendedores) — el texto completo sigue en el tooltip.
+          return ['Entr. en inglés',tieneIdioma?num(enAtendidas):'—',tieneIdioma?'':'pendiente: falta el campo de idioma','var(--bl)','Llamadas/mensajes entrantes atendidos en inglés — requiere que el dataset traiga el idioma de la conversación, ver nota arriba'];})()]
+      .map(k=>`<div class="kpi" title="${(k[4]||'').replace(/"/g,'&quot;')}"><div class="k">${k[0]}</div><div class="v" style="color:${k[3]||'var(--tx)'}">${k[1]}</div><div class="s">${k[2]}</div></div>`).join('')}
+   </div>
+   <div class="note"><b>Casi una de cada dos llamadas entrantes se pierde.</b> En un negocio de citas es la métrica más cara que existe: quien llama y no encuentra respuesta rara vez vuelve a llamar. Mira el desglose por número para saber dónde duele más.</div>
+
+   <h3 style="font-size:13px;font-weight:700;margin:26px 0 10px">Por número de entrada</h3>
+   <!-- ANÁLISIS DE GRÁFICAS 24 ago (aplicado): la tabla de abajo ya tenía el dato, pero había que leerla
+        entera para notar que un número concreto pierde casi todas sus llamadas — exactamente el patrón
+        "ranking → barra horizontal" de la skill de diseño de dashboards. Se ordena por % perdida (no por
+        volumen absoluto) porque la nota de arriba ya dice "mira el desglose por número para saber dónde
+        duele más": un número con pocas llamadas pero casi todas perdidas duele más que uno con más volumen
+        pero mejor tasa. Se muestra también el total (atendidas+perdidas) para no esconder el tamaño de muestra
+        detrás del porcentaje — un número con 3 llamadas al 100% de pérdida no es lo mismo que uno con 60. -->
+   ${(()=>{const R2=Object.entries(porNum).map(([k,v])=>({k,tot:v.a+v.p,p:v.p,rate:(v.a+v.p)?v.p/(v.a+v.p)*100:0})).filter(r=>r.tot>0).sort((a,b)=>b.rate-a.rate);
+     const mxr=Math.max(...R2.map(r=>r.rate),1);
+     return `<div class="bars" style="margin-bottom:16px">${R2.map(r=>`<div class="brow" title="${r.p} de ${r.tot} llamadas entrantes a este número se perdieron">
+       <div>${r.k}</div>
+       <div class="bb"><i style="width:${Math.max(r.rate/mxr*100,r.rate>0?3:0)}%;background:linear-gradient(90deg,${r.rate>=50?'#F87171':r.rate>=25?'#FBBF24':'#7C3AED'},${r.rate>=50?'#EF4444':r.rate>=25?'#F59E0B':'#A855F7'})"></i></div>
+       <div class="vv">${pct(r.rate)} <span class="mut" style="font-size:9.5px">(${r.p}/${r.tot})</span></div></div>`).join('')}</div>
+     <div class="note" style="margin-bottom:16px" title="El % es llamadas perdidas ÷ (atendidas + perdidas), la misma fórmula de la tarjeta 'Tasa de pérdida' de arriba, desglosada por número">El (x/y) entre paréntesis es el total real de llamadas de ese número — con menos de 5 el porcentaje puede engañar (una sola llamada perdida ya es "100%"). Compara primero los números con volumen real (Google y GBP).</div>`;})()}
+   <!-- ITERACIÓN 2 · req.2: tooltips por número de entrada (cada número identifica un canal, ver "Notas y salvedades")
+        FIX AUDITORÍA VENDEDORES · hallazgo 3: tHead() se llamaba con rows=[] y el <tbody> se pintaba aparte desde
+        un objeto plano, así que el <select> de "Número" no tenía opciones y las columnas no ordenaban nada — se
+        conecta ahora a tFiltrar/tOrdenar igual que la tabla "Rendimiento por vendedor". -->
+   ${(()=>{const R2=Object.entries(porNum).map(([k,v])=>({k,n:v.n,p:v.p,md:med(v.rt)}));
+     const C2=[{k:'k',h:'Número',t:'sel',d:'Teléfono al que entró la llamada o mensaje; cada número corresponde a un canal fijo (Google, GBP o general)'},
+       {k:'n',h:'Leads entrantes',t:'num',d:'Cuántos leads llegaron por este número'},
+       {k:'p',h:'Llamadas perdidas',t:'num',d:'Llamadas a este número que nadie atendió (buzón o sin contestar)'},
+       {k:'md',h:'Mediana de respuesta',t:'num',d:'Tiempo mediano de primera respuesta humana para las entradas de este número'}];
+     window.__pnum={R:R2,C:C2}; return `<div class="tw"><table>${tHead('pnum',R2,C2)}<tbody>
+     ${tOrdenar('pnum',tFiltrar('pnum',R2,C2),C2).map(v=>`<tr><td>${v.k}</td><td><b>${num(v.n)}</b></td>
+       <td class="${v.p>v.n*0.4?'neg':v.p?'warn':'mut'}">${v.p||'—'}</td><td class="${v.md<=300?'pos':'neg'}">${mm(v.md)}</td></tr>`).join('')}
+     </tbody></table></div>`;})()}
+
+   <h3 style="font-size:13px;font-weight:700;margin:26px 0 4px">Leads atendidos fuera de los 5 minutos <span class="sev s-alta">${num(lentos.length)}</span></h3>
+   <p style="font-size:12.5px;color:var(--dim);margin-bottom:10px">Ordenados por demora. En rojo lo que pasó de una hora. Los encabezados y los filtros de esta tabla se aplican sobre el total antes de recortar a los primeros 100.</p>
+   <!-- ITERACIÓN 2 · req.2: tooltips de la tabla de leads atendidos tarde. FIX AUDITORÍA VENDEDORES · hallazgo 3: ídem arriba. -->
+   ${(()=>{const C2=[{k:'n',h:'Lead',t:'txt',d:'Nombre o teléfono del contacto'},
+       {k:'tipo',h:'Tipo',t:'sel',d:'Entrante (llamada o mensaje) o Formulario (llegó por la web)'},
+       {k:'asg',h:'Asignado a',t:'sel',d:'Vendedor dueño del lead en el CRM'},
+       {k:'by',h:'Respondió',t:'sel',d:'Vendedor que realmente mandó la primera respuesta humana; puede no ser el asignado si alguien cubrió'},
+       {k:'rtH',h:'Demora',t:'num',d:'Tiempo que tardó la primera respuesta humana desde que entró el lead'},
+       {k:'num',h:'Nº entrada',t:'sel',d:'Número de teléfono por el que entró este lead'}];
+     window.__lentos={R:lentos,C:C2}; return `<div class="tw" style="max-height:400px;overflow-y:auto"><table>${tHead('lentos',lentos,C2)}<tbody>
+     ${tOrdenar('lentos',tFiltrar('lentos',lentos,C2),C2).slice(0,100).map(x=>`<tr><td>${x.n}</td><td>${x.tipo}</td><td>${x.asg}</td><td>${x.by||'—'}</td>
+       <td class="${x.rtH>3600?'neg':'warn'}"><b>${mm(x.rtH)}</b></td><td>${x.num||'—'}</td></tr>`).join('')}
+     </tbody></table></div>`;})()}
+
+   <h3 style="font-size:13px;font-weight:700;margin:26px 0 4px">Nunca recibieron respuesta humana <span class="sev s-alta">${num(nunca.length)}</span></h3>
+   <!-- ITERACIÓN 2 · req.2: tooltips de la tabla de leads sin respuesta humana. FIX AUDITORÍA VENDEDORES · hallazgo 3: ídem arriba. -->
+   ${(()=>{const C2=[{k:'n',h:'Lead',t:'txt',d:'Nombre o teléfono del contacto'},
+       {k:'tipo',h:'Tipo',t:'sel',d:'Entrante (llamada o mensaje) o Formulario (llegó por la web)'},
+       {k:'asg',h:'Asignado a',t:'sel',d:'Vendedor dueño del lead en el CRM'},
+       {k:'num',h:'Nº entrada',t:'sel',d:'Número de teléfono por el que entró este lead'},
+       {k:'ciP',h:'Entr. perdidas',t:'num',d:'Llamadas entrantes de este lead que nadie contestó'},
+       {k:'rtA',h:'¿Hubo automático?',t:'num',d:'Si llegó a salir la autorespuesta de workflow, aunque ningún vendedor haya escrito — eso mide al workflow, no al vendedor'}];
+     window.__nunca={R:nunca,C:C2}; return `<div class="tw" style="max-height:300px;overflow-y:auto"><table>${tHead('nunca',nunca,C2)}<tbody>
+     ${tOrdenar('nunca',tFiltrar('nunca',nunca,C2),C2).map(x=>`<tr><td>${x.n}</td><td>${x.tipo}</td><td>${x.asg}</td><td>${x.num||'—'}</td>
+       <td class="${x.ciP?'neg':'mut'}">${x.ciP||'—'}</td><td class="${x.rtA!=null?'warn':'neg'}">${x.rtA!=null?'Sí, '+mm(x.rtA):'No, silencio total'}</td></tr>`).join('')}
+     </tbody></table></div>`;})()}
+   </tbody></table></div>
+
+   <div class="card" style="margin-top:24px;border-left-color:var(--am)"><b>Cómo leer esto</b>
+   <p style="color:var(--dim);font-size:12.5px;margin-top:8px">El vendedor de la columna <b>Respondió</b> es quien mandó el primer mensaje humano, que no siempre es el asignado: cuando alguien cubre a otro, el mérito por la rapidez de respuesta va a quien respondió. Las llamadas y los <b>cierres (ventas)</b> se suman siempre al asignado del lead en el CRM, nunca a quien solo cubrió la primera respuesta.</p>
+   <p style="color:var(--dim);font-size:12.5px;margin-top:6px">Las conversaciones sin oportunidad asociada también cuentan: muchas entradas por el número de GBP son spam comercial o llamadas equivocadas, y por eso aparecen sin cierre.</p></div>
+   </div></div>`;
+}
+
+
