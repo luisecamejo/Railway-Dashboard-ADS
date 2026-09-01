@@ -44,6 +44,7 @@ button.dgr{background:transparent;color:var(--rd);border:1px solid rgba(248,113,
 .msg.err{display:block;background:rgba(248,113,113,.09);border:1px solid rgba(248,113,113,.3);color:var(--rd)}
 .msg ul{margin:7px 0 0;padding-left:18px}
 .msg li{margin-bottom:3px}
+.msg code{font-family:var(--m);font-size:11.5px}
 .msg.cargando{display:block;background:var(--pn2);border:1px solid var(--line);color:var(--mut)}
 table{width:100%;border-collapse:collapse;font-size:12.8px;margin-top:6px}
 th{text-align:left;font-size:10.5px;font-weight:600;letter-spacing:.07em;text-transform:uppercase;
@@ -71,6 +72,8 @@ tr:last-child td{border-bottom:0}
 .bloque:first-child{border-top:0;padding-top:0}
 .copiar{background:transparent;border:1px solid var(--line);color:var(--mut);padding:4px 9px;font-size:11px}
 .mini{background:transparent;border:1px solid var(--line);color:var(--mut);padding:3px 8px;font-size:10.5px}
+.probar{font-size:10.5px;color:var(--pu);text-decoration:none;white-space:nowrap}
+.probar:hover{text-decoration:underline}
 .doms{font-family:var(--m);font-size:10.5px;color:var(--faint);line-height:1.5;word-break:break-all}
 .preset{display:flex;gap:6px;margin-top:6px;flex-wrap:wrap}
 .preset button{background:transparent;border:1px dashed var(--line);color:var(--mut);
@@ -82,6 +85,7 @@ tr:last-child td{border-bottom:0}
 .nada{color:var(--faint);font-size:12.5px;padding:14px 0;text-align:center}
 .nota{font-size:12px;color:var(--faint);line-height:1.5;margin-top:9px}
 .nota code{font-family:var(--m);font-size:11px;background:var(--pn2);padding:1px 4px;border-radius:3px}
+.nota b{color:var(--mut)}
 </style></head>
 <body>
 <div class="wrap">
@@ -301,16 +305,16 @@ tr:last-child td{border-bottom:0}
       '<div class="fila"><div><label>Modo</label><select class="emodo">'+
       '<option value="cliente">cliente</option><option value="interno">interno</option>'+
       '<option value="demo">demo</option></select></div>'+
-      '<div><label>Nota (para acordarte a quién es)</label><input type="text" class="enota" placeholder="para quién es este enlace"></div>'+
-      '<button class="benlace">Crear enlace</button></div>'+
-      '<div style="margin-top:12px"><label>Dominios donde se puede empotrar en un iframe</label>'+
-      '<input type="text" class="edoms" placeholder="vacío = no se puede empotrar en ningún sitio">'+
+      '<div><label>Nota (para acordarte a quién es)</label><input type="text" class="enota" placeholder="para quién es este enlace"></div></div>'+
+      '<div style="margin-top:12px"><label>¿Se va a empotrar en un iframe? Dominios permitidos</label>'+
+      '<input type="text" class="edoms" placeholder="vacío = solo enlace para compartir, NO se puede empotrar">'+
       '<div class="preset">'+
       '<button class="pghl">+ dominios de GoHighLevel</button>'+
       '<button class="pvacio">vaciar</button></div>'+
-      '<p class="nota">Solo esos dominios podrán mostrar el reporte dentro de un iframe; '+
-      'cualquier otra web lo verá bloqueado por el navegador. Si el cliente tiene dominio '+
-      'propio en GoHighLevel, añádelo también.</p></div>'+
+      '<p class="nota">Para meterlo en GoHighLevel hace falta rellenar esto <b>antes</b> de crear '+
+      'el enlace (o pulsar «permitir» en su fila después). Solo esos dominios podrán mostrar el '+
+      'reporte; cualquier otra web lo verá bloqueado. Si el cliente tiene dominio propio, añádelo.</p></div>'+
+      '<div style="margin-top:12px"><button class="benlace">Crear enlace</button></div>'+
       '<div class="msg menlace"></div>'+
       '<div class="tw"><table class="tenlaces"><thead><tr><th>Enlace</th><th>Modo</th><th>Nota</th>'+
       '<th>Empotrar</th><th>Visitas</th><th>Creado</th><th></th></tr></thead><tbody></tbody></table></div>'+
@@ -388,7 +392,8 @@ tr:last-child td{border-bottom:0}
                   '<div class="doms">'+doms.map(esc).join('<br>')+'</div>'
                 : '<button class="mini abrir" data-token="'+esc(e.token)+'">permitir</button>');
           return '<tr><td>'+(revocado?'<span class="tag t-off">revocado</span>':
-              '<button class="copiar" data-url="'+esc(url)+'">copiar enlace</button>')+'</td>'+
+              '<button class="copiar" data-url="'+esc(url)+'">copiar enlace</button>'+
+              ' <a class="probar" href="'+esc(url)+'" target="_blank" rel="noreferrer">probar</a>')+'</td>'+
             '<td><span class="tag t-'+esc(e.modo)+'">'+esc(e.modo)+'</span></td>'+
             '<td>'+esc(e.nota&&e.nota!=='None'?e.nota:'—')+'</td>'+
             '<td>'+celdaEmbed+'</td>'+
@@ -402,8 +407,11 @@ tr:last-child td{border-bottom:0}
             snip.style.display='block';
             snip.textContent=code;
             navigator.clipboard.writeText(code).then(function(){
-              pinta(menlace,'ok','Iframe copiado. Pégalo en GoHighLevel como código personalizado. '+
-                'La altura (1400px) la puedes ajustar.');
+              pinta(menlace,'ok','<b>Iframe copiado.</b> Pégalo en GoHighLevel como código '+
+                'personalizado. La altura (1400px) la puedes ajustar.<ul>'+
+                '<li>Apunta a <code>/embed</code>, no al enlace normal.</li>'+
+                '<li>Si revocas este enlace, el iframe deja de funcionar: habría que pegar el nuevo.</li>'+
+                '</ul>');
             },function(){ pinta(menlace,'ok','Copia el código de abajo a mano.') });
           };
         });
