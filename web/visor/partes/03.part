@@ -1,0 +1,344 @@
+function badge(r){
+  if(r==='ninguna')return '<span class="tag" style="background:rgba(138,138,163,.15);color:var(--dim)">SIN CAMPAÑA</span>';
+  const i=PLATS.indexOf(r), col=i<0?'#8A8AA3':PAL[i%PAL.length];
+  return `<span class="tag" style="background:${col}22;color:${col}">${String(r).toUpperCase()}</span>`;
+}
+function srcTag(k){const c=srcColor(k);return `<span class="tag" style="background:${c}22;color:${c}">${k}</span>`}
+
+function tablaCamp(){
+  let rows=[];
+  C.forEach(c=>{
+    if(!campVisible(c))return;
+    const s=spendOf(c);
+    const lf=leadsF().filter(x=>x.c===c.id&&platLead(x)!=='Otros');
+    const A=agg(lf);
+    if(s.sp<0.5&&!A.n)return;
+    rows.push({...c,spend:s.sp,impr:s.im,clicks:s.cl,metaLeads:s.ld,leads:A.n,won:A.won,rev:A.rev,
+      cpl:A.n?s.sp/A.n:0,roas:s.sp?A.rev/s.sp:0,ctr:s.im?s.cl/s.im*100:0,cpm:s.im?s.sp/s.im*1000:0,
+      cac:A.won?s.sp/A.won:0,cv:A.n?A.won/A.n*100:0});
+  });
+  const sc=leadsF().filter(x=>platLead(x)!=='Otros'&&!x.c);
+  if(sc.length){const A=agg(sc);
+    rows.push({id:'',nombre:'Sin campaña identificada',red:'ninguna',nospend:true,spend:0,impr:0,clicks:0,metaLeads:0,
+      leads:A.n,won:A.won,rev:A.rev,cpl:0,roas:0,ctr:0,cpm:0,cac:0,cv:A.n?A.won/A.n*100:0});}
+  const CF=[['nombre','txt'],['spend','num'],['impr','num'],['ctr','num'],['cpm','num'],['metaLeads','num'],['leads','num'],['cpl','num'],['won','num'],['cv','num'],['cac','num'],['rev','num'],['roas','num']].map(c=>({k:c[0],t:c[1]}));
+  // AUDITORÍA DISEÑO · hallazgo 1.1: antes se filtraba (tFiltrar) ANTES de decidir si había campañas con
+  // entrega en el rango, así que una búsqueda de texto sin coincidencias hacía desaparecer la tabla entera
+  // —encabezado y campo de filtro incluidos— y mostraba además un mensaje falso ("ninguna campaña tuvo
+  // entrega"), cuando en realidad sí hubo entrega y solo la búsqueda no encontró nada. El "vacío real" se
+  // decide ahora ANTES de filtrar por texto; el filtrado se aplica después y, si deja 0 filas, se muestra
+  // una fila de "sin resultados" dentro de la tabla — mismo patrón que ya usan el resto de tablas del
+  // dashboard (Rendimiento por creativo, Contribución por source, las de Vendedores).
+  if(!rows.length)return `<div class="panel"><div class="empty">Ninguna campaña tuvo entrega en este rango. Ampía las fechas o cambia el filtro de red.</div></div>`;
+  rows=tFiltrar('camp',rows,CF);
+  if(!S.ts['camp'])S.ts['camp']={k:'spend',d:-1};
+  const k=S.ts['camp'].k,d=S.ts['camp'].d;
+  rows=tOrdenar('camp',rows,CF.map(c=>({...c,t:c.k==='nombre'?'txt':'num'})));
+  const cols=[['nombre','Campaña'],['spend','Gasto'],['impr','Impres.'],['ctr','CTR'],['cpm','CPM'],['metaLeads','Conv. red'],['leads','Leads CRM'],['cpl','CPL'],['won','Cierres'],['cv','Conv.'],['cac','CAC'],['rev','Ingreso'],['roas','ROAS']];
+  const tot=rows.reduce((a,r)=>({spend:a.spend+r.spend,impr:a.impr+r.impr,clicks:a.clicks+r.clicks,metaLeads:a.metaLeads+r.metaLeads,leads:a.leads+r.leads,won:a.won+r.won,rev:a.rev+r.rev}),{spend:0,impr:0,clicks:0,metaLeads:0,leads:0,won:0,rev:0});
+  return `<div class="panel"><div class="ph"><div><h2>Campañas · ${S.plat==='all'?'Meta y Google':S.plat}</h2>
+    <p>Gasto e impresiones vienen de la plataforma; leads, cierres e ingreso vienen del CRM, emparejados por <span style="font-family:var(--m)">utm_campaign_id</span>. Ordena por cualquier columna.</p></div></div>
+   <div class="tw"><table>${(()=>{
+     // ITERACIÓN 2 · req.2: descripciones reales de cada métrica para el tooltip del encabezado (no solo "ordenar por")
+     const D={nombre:'Nombre de la campaña en Ads Manager',spend:'Inversión real pagada en el rango; el gasto viene desglosado por día desde la plataforma, así que el rango suma exactamente los días elegidos',
+       impr:'Veces que se mostró un anuncio de esta campaña',ctr:'Porcentaje de impresiones que terminó en clic (clics ÷ impresiones)',
+       cpm:'Costo por cada mil impresiones',metaLeads:'Conversiones que la propia plataforma (Meta o Google) dice haber generado — no el CRM',
+       leads:'Oportunidades reales creadas en el CRM y emparejadas a esta campaña',cpl:'Gasto entre leads del CRM: cuánto costó cada oportunidad real',
+       won:'Oportunidades de esta campaña que terminaron en venta',cv:'Porcentaje de leads del CRM que cerraron en venta',
+       cac:'Gasto entre cierres: cuánto costó cada cliente ganado',rev:'Valor de las ventas ganadas atribuidas a esta campaña',
+       roas:'Ingreso por cada dólar invertido (ingreso ÷ gasto); 2× es el punto de equilibrio del reporte'};
+     const C2=[['nombre','Campaña','txt'],['spend','Gasto','num'],['impr','Impres.','num'],['ctr','CTR','num'],['cpm','CPM','num'],['metaLeads','Conv. red','num'],['leads','Leads CRM','num'],['cpl','CPL','num'],['won','Cierres','num'],['cv','Conv.','num'],['cac','CAC','num'],['rev','Ingreso','num'],['roas','ROAS','num']].map(c=>({k:c[0],h:c[1],t:c[2],d:D[c[0]]}));
+     return tHead('camp',rows,C2)})()}<tbody>
+   ${rows.length?rows.map(r=>`<tr><td${r.red==='ninguna'?' title="FASE 1 · categoría en revisión: hoy agrupa cualquier lead pagado sin utm_campaign_id ni nombre de campaña resoluble. La definición exacta de qué debe contar aquí queda pendiente de que Jesus la precise."':''}>${String(r.nombre||'').replace(/_/g,' ')} ${badge(r.red)}${r.spend<0.5&&r.id?' <span class="tag" style="background:rgba(138,138,163,.15);color:var(--dim)" title="Esta campaña no registró gasto dentro del rango de fechas, pero sus leads sí entraron al CRM en él. Su ingreso cuenta en los totales; su ROAS no se puede calcular.">SIN GASTO EN EL RANGO</span>':''}</td>
+     <td>${r.spend>=0.5?fmt2(r.spend):'<span class="mut">sin gasto</span>'}</td>
+     <td>${r.impr?num(r.impr):'—'}</td><td>${r.impr?pct(r.ctr):'—'}</td><td>${r.impr?fmt2(r.cpm):'—'}</td>
+     <td class="mut" title="Conversiones que declara la propia plataforma (Meta o Google), no el CRM">${r.metaLeads?num(r.metaLeads):'—'}</td><td><b>${num(r.leads)}</b></td>
+     <td>${r.leads&&r.spend>=0.5?fmt2(r.cpl):'—'}</td>
+     <td>${r.won||'—'}</td><td>${r.leads?pct(r.cv):'—'}</td><td>${r.won&&r.spend>=0.5?fmt2(r.cac):'—'}</td>
+     <td>${r.rev?fmt2(r.rev):'—'}</td>
+     <td class="${r.spend<0.5?'mut':r.roas>=2?'pos':r.roas>0?'warn':'mut'}">${r.spend>=0.5&&r.rev?r.roas.toFixed(2)+'×':'—'}</td></tr>`).join(''):`<tr><td colspan="13" style="text-align:center;color:var(--faint);padding:24px">Ninguna campaña pasa estos filtros.</td></tr>`}
+   </tbody><tfoot><tr style="border-top:1px solid var(--line)">
+     <td style="font-weight:700">Total · ${rows.length} campañas</td><td><b>${fmt2(tot.spend)}</b></td><td>${num(tot.impr)}</td>
+     <td>${pct(tot.impr?tot.clicks/tot.impr*100:0)}</td><td>${fmt2(tot.impr?tot.spend/tot.impr*1000:0)}</td>
+     <td class="mut">${num(tot.metaLeads)}</td><td><b>${num(tot.leads)}</b></td><td>${fmt2(tot.leads?tot.spend/tot.leads:0)}</td>
+     <td>${tot.won}</td><td>${pct(tot.leads?tot.won/tot.leads*100:0)}</td><td>${fmt2(tot.won?tot.spend/tot.won:0)}</td>
+     <td><b>${fmt2(tot.rev)}</b></td><td class="${tot.rev/tot.spend>=2?'pos':'warn'}"><b>${(tot.spend?tot.rev/tot.spend:0).toFixed(2)}×</b></td>
+   </tr></tfoot></table></div></div>`;
+}
+// ITERACIÓN 2 · req.1 (limpieza de UI): se eliminó por completo la función scatter() ("Eficiencia por
+// campaña" — el scatter de burbujas CPL vs ROAS). Ya no se genera ni se referencia desde render().
+function serie(){
+  const wk={};
+  // GASTO DIARIO: la gráfica sigue siendo semanal (por legibilidad), pero ahora la semana se
+  // calcula desde el calendario (lunes de cada fecha) en vez de un ancla escrita a mano — asi
+  // funciona con buckets diarios, con semanales, y con cualquier cliente y cualquier ventana.
+  const lunW=v=>{const d=dd(v);return iso(new Date(d.getTime()-((d.getUTCDay()+6)%7)*864e5))};
+  C.forEach(c=>{if(!campVisible(c))return;c.w.forEach(w=>{if(w.s<S.f1||w.s>S.f2)return;const b=lunW(w.s);wk[b]=wk[b]||{sp:0,rev:0,ld:0};wk[b].sp+=w.sp})});
+  leadsF().forEach(x=>{const b=lunW(x[S.coh]);
+    wk[b]=wk[b]||{sp:0,rev:0,ld:0};wk[b].ld++;if(x.st==='won')wk[b].rev+=x.v});
+  const ks=Object.keys(wk).sort();if(ks.length<2)return '';
+  /* EJE X LEGIBLE (pedido: "en vez de decir 08-17 debería decir agosto 8").
+     Además de traducir la fecha, se RECORTA al rango elegido arriba: la primera y la última barra
+     casi nunca son semanas completas (el rango empieza un miércoles, por ejemplo), así que la
+     etiqueta muestra el primer día REALMENTE cubierto por esa barra, no el lunes teórico que
+     quedaba fuera del filtro. El tooltip dice el tramo exacto y cuántos días cubre. */
+  const semIni=k=>(k<S.f1?S.f1:k);
+  const semFin=k=>{const e=iso(new Date(dd(k).getTime()+6*864e5));return e>S.f2?S.f2:e};
+  const dm=v=>{const d=dd(v);return `${d.getUTCDate()} ${MESES_C[d.getUTCMonth()]}`};
+  const etiq=k=>dm(semIni(k));
+  const tramo=k=>{const a=semIni(k),b=semFin(k),n=nDias(a,b);
+    return a===b?`${dm(a)}` : `${dm(a)} – ${dm(b)}`;};
+  const tramoN=k=>{const n=nDias(semIni(k),semFin(k));return `${tramo(k)} (${n} día${n>1?'s':''}${n<7?', semana parcial':''})`};
+  // ANÁLISIS DE GRÁFICAS 24 ago (aplicado): wk[k].ld (leads de esa semana) ya se calculaba arriba y solo
+  // se usaba dentro del tooltip del punto verde — nunca se dibujaba. Se agrega como tercera serie (línea
+  // ámbar punteada) con su PROPIO eje a la derecha, porque el volumen de leads vive en una escala de
+  // decenas mientras que gasto/ingreso viven en miles de dólares — compartir un solo eje aplastaría la
+  // línea de leads contra el piso del gráfico.
+  const P2=34; // margen derecho reservado para el eje secundario de leads
+  const W=760,H=250,P=48,mx=Math.max(...ks.map(k=>Math.max(wk[k].sp,wk[k].rev)))||1,mx2=Math.max(...ks.map(k=>wk[k].ld))||1;
+  const bw=(W-P-P2)/ks.length;
+  // estado que consume bindSerie(): mismas coordenadas y mismas etiquetas que se dibujan aquí
+  S._serie={ks,wk,W,H,P,P2,bw,mx,mx2,
+    lbl:ks.map(k=>tramo(k)),
+    sub:ks.map(k=>{const n=nDias(semIni(k),semFin(k));return `${n} DÍA${n>1?'S':''}${n<7?' · SEMANA PARCIAL':''}`})};
+  return `<div class="panel"><div class="ph"><div><h2>Inversión contra ingreso, semana a semana</h2>
+   <p>Barras moradas: lo que se gastó esa semana. Línea verde: el ingreso de los leads que entraron esa misma semana, sin importar cuándo cerraron. Línea ámbar punteada: cuántos leads entraron esa semana (eje de la derecha). Las últimas semanas siempre se ven bajas porque el pipeline aún no ha madurado. La primera y la última barra pueden cubrir <b>menos de 7 días</b> si el rango elegido arriba corta la semana — pasa el cursor por encima y el tooltip dice el tramo exacto.</p></div></div>
+   <div class="pb"><div class="chart-wrap" id="serieWrap"><div class="ctip" id="serieTip"></div><svg id="serieSvg" viewBox="0 0 ${W} ${H}" tabindex="0" role="img" aria-label="Inversión, ingreso y leads por semana. Usa las flechas izquierda y derecha para recorrer las semanas.">
+   <!-- AUDITORÍA DISEÑO · hallazgo 2.4: se agregan dos líneas de referencia intermedias (.25/.75), punteadas
+        y sin etiqueta numérica para no saturar el eje, para poder leer valores intermedios sin pasar el
+        mouse sobre cada punto. Las 3 líneas originales (0/.5/1) se mantienen sólidas y con su etiqueta. -->
+   ${[.25,.75].map(t=>`<line x1="${P}" x2="${W-P2}" y1="${H-40-t*(H-70)}" y2="${H-40-t*(H-70)}" stroke="#1C1C2A" stroke-dasharray="3,4"/>`).join('')}
+   ${[0,.5,1].map(t=>`<line x1="${P}" x2="${W-P2}" y1="${H-40-t*(H-70)}" y2="${H-40-t*(H-70)}" stroke="#26263A"/>
+    <text x="${P-8}" y="${H-36-t*(H-70)}" fill="#5A5A72" font-size="10" font-family="JetBrains Mono" text-anchor="end">${fmt(mx*t)}</text>
+    <text x="${W-P2+8}" y="${H-36-t*(H-70)}" fill="#B45309" font-size="10" font-family="JetBrains Mono" text-anchor="start">${num(Math.round(mx2*t))}</text>`).join('')}
+   <!-- se quitaron los <title> nativos de las marcas: con el tooltip propio abajo saldrían los dos
+        superpuestos (el nativo aparece con ~1s de retardo encima del bueno). -->
+   ${ks.map((k,i)=>{const h=wk[k].sp/mx*(H-70);return `<rect x="${P+i*bw+bw*.22}" y="${H-40-h}" width="${bw*.56}" height="${h}" fill="url(#g1)" rx="2"/>`}).join('')}
+   <defs><linearGradient id="g1" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#A855F7"/><stop offset="1" stop-color="#7C3AED" stop-opacity=".55"/></linearGradient></defs>
+   <polyline fill="none" stroke="#34D399" stroke-width="2" points="${ks.map((k,i)=>`${P+i*bw+bw/2},${H-40-wk[k].rev/mx*(H-70)}`).join(' ')}"/>
+   ${ks.map((k,i)=>`<circle cx="${P+i*bw+bw/2}" cy="${H-40-wk[k].rev/mx*(H-70)}" r="3" fill="#34D399"/>`).join('')}
+   <polyline fill="none" stroke="#FBBF24" stroke-width="1.6" stroke-dasharray="4,3" points="${ks.map((k,i)=>`${P+i*bw+bw/2},${H-40-wk[k].ld/mx2*(H-70)}`).join(' ')}"/>
+   ${ks.map((k,i)=>`<circle cx="${P+i*bw+bw/2}" cy="${H-40-wk[k].ld/mx2*(H-70)}" r="2.4" fill="#FBBF24"/>`).join('')}
+   <!-- densidad adaptativa: se muestran todas las etiquetas que caben sin solaparse (una etiqueta
+        tipo "17 ago" ocupa ~44px a este tamaño de fuente); si no caben, se salta de N en N.
+        Antes era un "cada 2" fijo, que en rangos cortos dejaba huecos innecesarios y en rangos
+        largos seguía apretando. -->
+   ${(()=>{const paso=Math.max(1,Math.ceil(44/bw));
+     return ks.map((k,i)=>(i%paso)?'':`<text x="${P+i*bw+bw/2}" y="${H-22}" fill="#8A8AA3" font-size="9.5" font-family="JetBrains Mono" text-anchor="middle">${etiq(k)}</text>`).join('')})()}
+   ${(()=>{ // el año solo se escribe una vez, debajo del primer y del último punto etiquetado
+     const y1=dd(S.f1).getUTCFullYear(), y2=dd(S.f2).getUTCFullYear();
+     return y1===y2?`<text x="${W-P2}" y="${H-6}" fill="#5A5A72" font-size="8.5" font-family="JetBrains Mono" text-anchor="end">${y1}</text>`:'';})()}
+   <!-- capa de interacción: banda de la semana + guía vertical + los 3 puntos resaltados.
+        El <rect class="hit"> va AL FINAL para recibir el puntero en toda la caja del gráfico. -->
+   <rect class="cband" id="serieBand" x="0" y="${H-40-(H-70)}" width="0" height="${H-70}" rx="2"/>
+   <line class="cguide" id="serieGuide" x1="0" x2="0" y1="${H-40-(H-70)-6}" y2="${H-34}"/>
+   <circle class="chl" id="serieHlSp" r="4.5" fill="#A855F7"/>
+   <circle class="chl" id="serieHlRev" r="5" fill="#34D399"/>
+   <circle class="chl" id="serieHlLd" r="4.5" fill="#FBBF24"/>
+   <rect id="serieHit" x="${P}" y="0" width="${W-P-P2}" height="${H-28}" fill="transparent"/>
+   </svg></div><div class="lg"><span><i style="background:#A855F7"></i>Inversión</span><span><i style="background:#34D399"></i>Ingreso por cohorte</span><span><i style="background:#FBBF24"></i>Leads (eje derecho)</span><span style="color:var(--faint)">Pasa el cursor por la gráfica para ver la semana exacta</span></div></div></div>`;
+}
+
+/* ════════
+   bindSerie() — engancha el crosshair después de que render() inyecta el HTML.
+   Se apoya en S._serie, que serie() deja preparado con las mismas coordenadas que dibujó,
+   así el resaltado cae exactamente sobre las marcas y no se recalcula nada dos veces. */
+function bindSerie(){
+  const D=S._serie; if(!D) return;
+  const svg=document.getElementById('serieSvg'); if(!svg) return;
+  const wrap=document.getElementById('serieWrap'), tip=document.getElementById('serieTip');
+  const guide=document.getElementById('serieGuide'), band=document.getElementById('serieBand');
+  const hSp=document.getElementById('serieHlSp'), hRev=document.getElementById('serieHlRev'), hLd=document.getElementById('serieHlLd');
+  const {ks,wk,W,H,P,P2,bw,mx,mx2,lbl,sub}=D;
+  const cx=i=>P+i*bw+bw/2;
+  const yv=(v,m)=>H-40-v/m*(H-70);
+  let cur=-1;
+
+  const pinta=i=>{
+    if(i===cur) return; cur=i;
+    const k=ks[i], d=wk[k], x=cx(i);
+    guide.setAttribute('x1',x); guide.setAttribute('x2',x);
+    band.setAttribute('x',P+i*bw); band.setAttribute('width',bw);
+    hSp.setAttribute('cx',x);  hSp.setAttribute('cy',yv(d.sp,mx));
+    hRev.setAttribute('cx',x); hRev.setAttribute('cy',yv(d.rev,mx));
+    hLd.setAttribute('cx',x);  hLd.setAttribute('cy',yv(d.ld,mx2));
+    const fila=(color,nombre,valor,extra)=>`<div class="r${extra||''}"><span class="lb"><em style="background:${color}"></em>${nombre}</span><b>${valor}</b></div>`;
+    tip.innerHTML=`<div class="ct-h">${lbl[i]}<small>${sub[i]}</small></div>`
+      +fila('#A855F7','Inversión',fmt2(d.sp))
+      +fila('#34D399','Ingreso',fmt2(d.rev))
+      +fila('#FBBF24','Leads',num(d.ld))
+      +`<div class="r der ct-sep"><span class="lb">CPL</span><b>${d.ld?fmt2(d.sp/d.ld):'—'}</b></div>`
+      +`<div class="r der"><span class="lb">ROAS</span><b>${d.sp?(d.rev/d.sp).toFixed(2)+'×':'—'}</b></div>`;
+    wrap.classList.add('act');
+    // posición en píxeles reales: el SVG escala con el ancho del panel, así que se convierte
+    // de unidades del viewBox a px con la relación real medida en pantalla.
+    const r=svg.getBoundingClientRect(), esc=r.width/W;
+    const px=x*esc, tw=tip.offsetWidth;
+    let left=px+16; if(left+tw>r.width-6) left=px-tw-16; if(left<6) left=6;
+    tip.style.left=left+'px';
+    tip.style.top=Math.max(4, yv(Math.max(d.sp,d.rev),mx)*(r.height/H)-tip.offsetHeight-12)+'px';
+  };
+  const apaga=()=>{cur=-1;wrap.classList.remove('act')};
+  const idxDe=clientX=>{
+    const r=svg.getBoundingClientRect();
+    const xv=((clientX-r.left)/r.width)*W;
+    return Math.max(0,Math.min(ks.length-1,Math.round((xv-P-bw/2)/bw)));
+  };
+  svg.addEventListener('pointermove',e=>pinta(idxDe(e.clientX)));
+  svg.addEventListener('pointerdown',e=>pinta(idxDe(e.clientX)));
+  svg.addEventListener('pointerleave',apaga);
+  svg.addEventListener('blur',apaga);
+  svg.addEventListener('touchmove',e=>{const t=e.touches[0];if(t){pinta(idxDe(t.clientX));e.preventDefault()}},{passive:false});
+  // teclado: mismos datos que con el mouse (requisito de accesibilidad, no un extra)
+  svg.addEventListener('keydown',e=>{
+    if(e.key==='ArrowRight'||e.key==='ArrowLeft'){
+      const n=cur<0?(e.key==='ArrowRight'?0:ks.length-1):Math.max(0,Math.min(ks.length-1,cur+(e.key==='ArrowRight'?1:-1)));
+      pinta(n); e.preventDefault();
+    } else if(e.key==='Escape'){apaga()}
+  });
+  svg.addEventListener('focus',()=>{if(cur<0)pinta(ks.length-1)});
+}
+// ANÁLISIS DE GRÁFICAS 24 ago (aplicado): "Contribución por source" ya respondía "¿qué canal genera más
+// ingreso?" con su tabla y sus barras — pero nunca "¿de dónde viene el volumen?", que es una pregunta más
+// simple y la que more gente pregunta primero. Se agrupa en máximo 5 categorías (composición → dona, según
+// la guía de la skill de diseño: máx. 5 porciones) usando las mismas categorías que ya reconoce el resto
+// Composición por source, descubierta de los datos
+function donutComposicion(){
+  const cat=x=>(x.src||'Sin atribución').trim();
+  const g={}; leadsF().forEach(x=>{g[cat(x)]=(g[cat(x)]||0)+1});
+  // Ordenado por volumen DEL RANGO ACTIVO (el trozo más grande primero), pero cada origen
+  // conserva SU color de siempre — el color identifica al origen, nunca su posición en el ranking,
+  // así que cambiar de filtro no repinta a los que sobreviven.
+  const todos=SRCS.map(s=>s.id).filter(k=>g[k]).map(k=>({label:k,v:g[k],color:srcColor(k)}))
+    .sort((a,b)=>b.v-a.v);
+  const total=todos.reduce((s,r)=>s+r.v,0);
+  if(!total) return '';
+
+  /* AGRUPACIÓN EN "OTROS": con 20 orígenes un donut es ilegible y además obligaría a inventar
+     colores que nadie puede distinguir entre sí. Se pintan los que más pesan y el resto se suma
+     en un único trozo gris. No se pierde nada: la tabla de abajo sigue teniendo todas las filas. */
+  const TOPE=7;
+  let rows=todos.slice(0,TOPE);
+  const resto=todos.slice(TOPE);
+  if(resto.length===1) rows=todos.slice();
+  else if(resto.length>1) rows=rows.concat([{label:`Otros (${resto.length})`,v:resto.reduce((a,r)=>a+r.v,0),
+    color:'#94A3B8',otros:resto.map(r=>`${r.label}: ${num(r.v)}`).join(' · ')}]);
+
+  const R=68, SW=26, CIRC=2*Math.PI*R, GAP=rows.length>1?1.6:0;
+  let off=0;
+  const segs=rows.map((r,i)=>{
+    const len=Math.max((r.v/total)*CIRC-GAP,0.6);
+    const h=`<circle class="dnt-seg" data-i="${i}" cx="100" cy="100" r="${R}" fill="none" stroke="${r.color}"
+      stroke-width="${SW}" stroke-dasharray="${len} ${CIRC-len}" stroke-dashoffset="${-off}"
+      transform="rotate(-90 100 100)"/>`;
+    off+=(r.v/total)*CIRC; return h;
+  }).join('');
+
+  S._dnt={rows,total};
+  // tamaño del círculo y nº de columnas de la leyenda en función de cuántos orígenes hay
+  const nR=rows.length;
+  const anchoDonut = nR<=3?'21%' : nR<=5?'24%' : nR<=8?'27%' : '30%';
+  const cols = nR<=5?1 : 2;
+  const mxR=Math.max(...rows.map(r=>r.v))||1;
+  return `<div class="card dnt" id="dntCard" style="--dnt:${anchoDonut};">
+   <div class="dnt-h"><b>De dónde viene el volumen</b>
+    <span>· los mismos leads de la tabla de abajo, agrupados por origen en vez de por ingreso</span></div>
+   <div class="dnt-body">
+    <div class="dnt-viz" id="dntViz">
+     <svg viewBox="0 0 200 200" role="img" aria-label="Reparto de leads por origen">${segs}</svg>
+     <div class="dnt-c"><div class="v" id="dntV">${num(total)}</div><div class="k" id="dntK">leads</div></div>
+    </div>
+    <div class="dnt-lg" id="dntLg" style="--cols:${cols}">
+    ${rows.map((r,i)=>`<div class="dnt-r" data-i="${i}"${r.otros?` title="${r.otros.replace(/"/g,'&quot;')}"`:''}>
+      <i style="background:${r.color}"></i><span class="nm">${r.label}</span>
+      <span class="bb"><i style="width:${Math.max(r.v/mxR*100,3)}%;background:${r.color}"></i></span>
+      <b>${num(r.v)}</b><span class="pc">${pct(r.v/total*100)}</span></div>`).join('')}
+    </div>
+   </div></div>`;
+}
+
+/* ═══ interactividad del donut ═══
+   Hover (o dedo, o teclado) sobre un trozo o sobre su fila de la leyenda: se resalta ese trozo,
+   se atenúan los demás, se marca la fila y el CENTRO del donut pasa a mostrar de qué origen se
+   trata y sus cifras. Al salir vuelve al total. */
+function bindDonut(){
+  const D=S._dnt; if(!D) return;
+  const viz=document.getElementById('dntViz'), lg=document.getElementById('dntLg');
+  const vEl=document.getElementById('dntV'), kEl=document.getElementById('dntK');
+  if(!viz||!lg) return;
+  const segs=[...viz.querySelectorAll('.dnt-seg')], filas=[...lg.querySelectorAll('.dnt-r')];
+  const marca=i=>{
+    const r=D.rows[i]; if(!r) return;
+    viz.classList.add('hov');
+    segs.forEach(el=>el.classList.toggle('on',+el.dataset.i===i));
+    filas.forEach(el=>el.classList.toggle('on',+el.dataset.i===i));
+    vEl.textContent=num(r.v);
+    kEl.textContent=`${r.label} · ${pct(r.v/D.total*100)}`;
+  };
+  const limpia=()=>{
+    viz.classList.remove('hov');
+    segs.forEach(el=>el.classList.remove('on'));
+    filas.forEach(el=>el.classList.remove('on'));
+    vEl.textContent=num(D.total); kEl.textContent='leads';
+  };
+  segs.forEach(el=>{
+    el.addEventListener('pointerenter',()=>marca(+el.dataset.i));
+    el.addEventListener('pointerdown',()=>marca(+el.dataset.i));
+  });
+  filas.forEach(el=>{
+    el.addEventListener('pointerenter',()=>marca(+el.dataset.i));
+    el.addEventListener('pointerdown',()=>marca(+el.dataset.i));
+  });
+  viz.addEventListener('pointerleave',limpia);
+  lg.addEventListener('pointerleave',limpia);
+}
+
+function porSource(){
+  // FIX AUDITORÍA: el CRM guarda el mismo origen con distinta capitalización en distintos registros
+  // ("General for communication" / "General for Communication"), así que antes se contaban como dos
+  // filas separadas — repartiendo sus leads e ingreso en vez de sumarlos en una sola. Se agrupa por la
+  // versión en minúsculas del source, y se muestra la variante de mayúsculas/minúsculas que más se repite
+  // (no una inventada), para no perder ninguna fila real ni fusionar orígenes que en verdad son distintos.
+  const g={},variantes={};
+  leadsF().forEach(x=>{const raw=String(x.src||''),s=raw.trim().toLowerCase();g[s]=g[s]||{n:0,won:0,rev:0,ap:0};g[s].n++;if(x.st==='won'){g[s].won++;g[s].rev+=x.v}if(x.st==='open')g[s].ap++;
+    variantes[s]=variantes[s]||{};variantes[s][raw]=(variantes[s][raw]||0)+1});
+  const etiqueta=s=>Object.entries(variantes[s]).sort((a,b)=>b[1]-a[1])[0][0];
+  const rows=Object.entries(g).sort((a,b)=>b[1].rev-a[1].rev||b[1].n-a[1].n);
+  if(!rows.length)return `<div class="panel"><div class="empty">Sin registros en este rango.</div></div>`;
+  const mR=Math.max(...rows.map(r=>r[1].rev))||1,tot=rows.reduce((a,r)=>a+r[1].rev,0);
+  return `<div class="panel"><div class="ph"><div><h2>Contribución por source</h2>
+   <p>Todos los orígenes del CRM tras la auditoría de atribución. El valor por lead es lo que de verdad compara un canal gratuito con uno pagado.</p></div></div>
+   <div class="pb">${donutComposicion()}<div class="tw"><table>${(()=>{const R2=rows.map(([s,v])=>({src:etiqueta(s),n:v.n,ap:v.ap,won:v.won,cv:v.n?v.won/v.n*100:0,rev:v.rev,vpl:v.n?v.rev/v.n:0,pc:tot?v.rev/tot*100:0}));
+     // ITERACIÓN 2 · req.2: tooltips con el significado real de cada métrica de contribución por source
+     const C2=[{k:'src',h:'Source',t:'sel',d:'Origen del lead ya auditado (Meta, Google, GBP, IG DM, etc.), después de la revisión de atribución'},
+       {k:'n',h:'Leads',t:'num',d:'Total de oportunidades creadas desde este origen en el rango'},
+       {k:'ap',h:'Abiertos',t:'num',d:'Oportunidades de este origen que siguen en estado Abierto: aún en gestión. Antes esta columna decía "Agendados" y se calculaba por la posición de la etapa, lo que solo valía para un pipeline concreto'},
+       {k:'won',h:'Cerrados',t:'num',d:'Leads de este origen que terminaron en venta'},
+       {k:'cv',h:'Conv.',t:'num',d:'Porcentaje de leads de este origen que cerraron en venta (cerrados ÷ leads)'},
+       {k:'rev',h:'Ingreso',t:'num',d:'Valor total de las ventas ganadas atribuidas a este origen'},
+       {k:'vpl',h:'Valor / lead',t:'num',d:'Ingreso entre leads: cuánto vale en promedio un lead de este origen, sea pagado o gratis — así se compara un canal orgánico con uno pagado'},
+       {k:'pc',h:'% del ingreso',t:'num',d:'Qué porcentaje del ingreso total del rango aporta este origen'}];
+     window.__src={R:R2,C:C2}; return tHead('src',R2,C2)})()}<tbody>
+   ${(()=>{const {R,C}=window.__src; const f=tOrdenar('src',tFiltrar('src',R,C),C);
+     return f.length?f.map(v=>`<tr><td>${v.src}</td><td><b>${num(v.n)}</b></td><td>${v.ap||'—'}</td><td>${v.won||'—'}</td>
+     <td>${pct(v.cv)}</td><td>${v.rev?fmt2(v.rev):'—'}</td><td>${fmt2(v.vpl)}</td>
+     <td>${pct(v.pc)}</td></tr>`).join(''):`<tr><td colspan="8" style="text-align:center;color:var(--faint);padding:24px">Sin resultados con estos filtros.</td></tr>`})()}</tbody></table></div>
+   <div class="bars" style="margin-top:18px">${rows.slice(0,10).map(([s,v])=>`<div class="brow"><div>${etiqueta(s)}</div>
+     <div class="bb"><i style="width:${v.rev/mR*100}%;background:linear-gradient(90deg,#7C3AED,#A855F7)"></i></div>
+     <div class="vv">${fmt2(v.rev)}</div></div>`).join('')}</div>
+   <!-- FIX AUDITORÍA UX: "–" aparece seguido en Agendados/Cerrados/Ingreso para orígenes de cola larga;
+        sin esta nota no queda claro si significa cero o "sin datos". -->
+   <div class="note" style="margin-top:10px" title="Aplica a cualquier tabla del dashboard, no solo a esta">"–" significa que esa métrica no tiene ningún registro para este origen en el rango activo — no es lo mismo que cero.</div></div></div>`;
+}
+// FASE 1 · req.2 (Pipelines/SELS): antes cada barra mostraba "reach" (cuántos leads llegaron a esta etapa
+// O A UNA POSTERIOR), así que un mismo lead quedaba contado en varias barras a la vez — el registro de
+// etapas anteriores seguía "vivo" visualmente. Ahora la barra usa el conteo EXACTO de la etapa actual
+// de cada lead (mutuamente excluyente: cada lead aparece en una sola barra, la de su estado de hoy).
+// Esto es SOLO una vista distinta sobre los mismos datos: DATA.leads no se toca ni se borra nada,
+// cada lead sigue teniendo su historial completo en el dataset — únicamente deja de "duplicarse" en el
+// dibujo del embudo. El % de transición entre etapas (para saber cuántos leads llegan al final) sigue
+// necesitando el acumulado ("reach"), así que ese cálculo se conserva pero ya no se usa para el ancho
+// de las barras, solo para la columna de conversión etapa→etapa.
+// AUDITORÍA · un embudo solo tiene sentido dentro de UN pipeline: las etapas de dos embudos
+// distintos no son comparables ni apilables. Si el filtro está en "Todos los pipelines" (posible
+// solo cuando la cuenta tiene más de uno), se dibuja un bloque por pipeline en vez de mezclarlos.
