@@ -98,6 +98,25 @@ python operar.py construir SLUG              # construir y publicar
 cuántas etapas casaron con el SOP **antes** de tapar el reporte que el cliente ya está
 viendo. Si el resumen no cuadra, no se ha publicado nada.
 
+## Qué produjo la primera ejecución de verdad
+
+Sirve de vara de medir: si una noche los números se alejan mucho de esto sin que haya
+pasado nada, algo se rompió y no lo va a decir ningún error.
+
+| | 1 de septiembre de 2026, ventana 2026-05-04 → 2026-08-31 |
+|---|---|
+| `extractor-meta` | 12.927,25 de gasto · 36 campañas · 1.451 filas de anuncios · 147 miniaturas |
+| `extractor-ghl` | 994 oportunidades · 1 pipeline (11 etapas) · 1.091 conversaciones · 3.694 llamadas (3.097 salientes) |
+
+Dos cosas que el log dijo y conviene no olvidar:
+
+- **870 de 1.091 conversaciones traen llamadas.** Solo a esas se les piden los mensajes.
+  Si algún día ese número se acerca al total, la extracción pasará de ~18 minutos a
+  bastante más.
+- **14 conversaciones ganadas tienen su oportunidad fuera de la ventana**, así que su
+  ingreso no se atribuye al vendedor. No es un fallo: es el precio de una ventana móvil,
+  y por eso se dice en voz alta en vez de callarlo.
+
 ## Probarlos sin credenciales
 
 `pruebas/test_extractores.py` levanta un Graph API y un ghl-mcp de mentira con las
