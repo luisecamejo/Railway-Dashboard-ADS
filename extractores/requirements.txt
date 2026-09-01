@@ -1,0 +1,2 @@
+# Los extractores van a propósito sin dependencias: solo librería estándar.
+# Menos que instalar, menos que auditar y arranques de contenedor más rápidos.
