@@ -34,19 +34,35 @@ desplegar de nuevo ni regenerar ningún snapshot.
 ## Estructura
 
 ```
-web/                  servicio FastAPI
-  app/main.py         rutas y validador de snapshots
-  app/almacen.py      persistencia: Postgres si hay DATABASE_URL, ficheros si no
-  app/privacidad.py   enmascarado de datos personales para los enlaces demo
-  app/visor.py        parte un dashboard.html de una pieza en visor + datos
-extractor/            construcción del snapshot desde GHL + Meta + Google (Fase 1)
+web/                      servicio `reportes` (FastAPI). Raíz de despliegue: /web
+  visor/partes/*.part     el dashboard, partido en trozos. ESTA es la fuente
+  app/main.py             rutas y validador de snapshots
+  app/rutas_extraccion.py recibe los trozos crudos, los junta y publica
+  app/construir.py        construye el snapshot desde config + crudos
+  app/almacen.py          persistencia: Postgres si hay DATABASE_URL, ficheros si no
+  app/privacidad.py       enmascarado de datos personales para los enlaces demo
+  app/visor.py            parte un dashboard.html de una pieza en visor + datos
+extractores/              un servicio por fuente. Raíz de despliegue: /extractores
+  comun/                  HTTP con reintentos, cliente MCP, ventana de fechas
+  meta/extraer.py         gasto diario, anuncios y miniaturas (Marketing API)
+  ghl/extraer.py          oportunidades, pipelines, vendedores y llamadas (ghl-mcp)
+  google/                 pendiente: falta el developer token de Google Ads
+  config_ejemplo.json     la configuración que se manda a POST /admin/config/{slug}
 scripts/
-  subir_visor.py      sube un dashboard.html nuevo al servicio
-  publicar.py         sube un snapshot al servicio
-  partir_visor.py     parte un dashboard en local, para inspeccionarlo
+  subir_visor.py          sube un dashboard.html nuevo al servicio
+  publicar.py             sube un snapshot al servicio
+  partir_visor.py         parte un dashboard en local, para inspeccionarlo
+  partir_en_partes.py     regenera web/visor/partes/ desde un dashboard de una pieza
 pruebas/
-  test_validar.py     el snapshot roto no llega al cliente
+  test_validar.py         el snapshot roto no llega al cliente
+  test_seguridad.py       nadie llega a los datos de un cliente sin permiso
+  test_construir.py       el constructor genérico da el mismo snapshot que el de mano
+  test_extractores.py     cada extractor reproduce su trozo ya verificado
+  test_fase1.py           el circuito completo: crudos → rutas → snapshot idéntico
 ```
+
+El detalle de cada extractor, sus variables y por qué van en servicios separados está en
+[`extractores/README.md`](extractores/README.md).
 
 ## Modos de enlace
 
@@ -79,6 +95,20 @@ POST /admin/enlaces                         {cliente, modo, nota, caduca}
 GET  /admin/enlaces
 POST /admin/enlaces/{token}/revocar
 ```
+
+Extracción automática (las usan los servicios `extractor-*`, mismo `X-Admin-Token`):
+
+```
+POST /admin/config/{slug}           configuración de construcción del cliente
+GET  /admin/config/{slug}
+POST /admin/crudo/{slug}/{fuente}   un extractor deja su trozo (ghl | meta | google)
+GET  /admin/crudo/{slug}            qué trozos hay, de cuándo y qué traen
+POST /admin/construir/{slug}        junta, valida y publica ({"publicar": false} = ensayo)
+```
+
+El trozo se rechaza con `422` **donde se recibe** si viene mal (oportunidades duplicadas,
+gasto que declara la red equivocada, filas de gasto que cubren más de un día…), para que
+el extractor lo vea en su propio log y no reviente la construcción horas después.
 
 ## El snapshot no se publica si no cuadra
 
