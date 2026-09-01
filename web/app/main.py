@@ -41,6 +41,7 @@ from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Reques
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import (HTMLResponse, JSONResponse, PlainTextResponse,
                               RedirectResponse, Response)
+from starlette.exceptions import HTTPException as ErrorHTTP
 
 from .almacen import abrir_almacen
 from .rutas_panel import router as router_panel
@@ -171,23 +172,70 @@ def _dominios(e: dict) -> list[str]:
     return [x for x in d if seg.origen_valido(x)]
 
 
-_PAGINA_SIN_VISOR = (
-    "<!doctype html><meta charset=utf-8><title>Reporte no disponible</title>"
-    "<style>body{font:15px/1.6 system-ui;background:#0b0f14;color:#93a1b5;"
-    "display:grid;place-items:center;height:100vh;margin:0;text-align:center;padding:24px}"
-    "b{color:#e8edf4}</style>"
-    "<div><p><b>El reporte todavía no está disponible.</b></p>"
-    "<p>El visor no se ha cargado en el servicio. Avísale a tu contacto en Sentinel.</p></div>")
-
-_PAGINA_SIN_EMBED = (
-    "<!doctype html><meta charset=utf-8><title>Empotrado no permitido</title>"
-    "<style>body{font:15px/1.6 system-ui;background:#0b0f14;color:#93a1b5;"
-    "display:grid;place-items:center;height:100vh;margin:0;text-align:center;padding:24px}"
-    "b{color:#e8edf4}</style>"
-    "<div><p><b>Este enlace no está autorizado para empotrarse.</b></p>"
-    "<p>Hay que declarar en qué dominios se puede mostrar antes de usarlo en un iframe.</p></div>")
-
 CABECERAS_PRIVADAS = seg.cabeceras()
+
+
+def _pagina(titulo: str, texto: str, *, codigo: int = 200,
+            doms: list[str] | None = None) -> HTMLResponse:
+    """
+    Una página sobria para lo que ve el destinatario de un enlace.
+
+    Antes estos casos devolvían el JSON crudo del error ({"detail": "..."}), y dentro de
+    un iframe en la web del cliente eso es exactamente lo que se leía. Se sirve con los
+    dominios del propio enlace cuando se conocen, para que el aviso se vea DENTRO del
+    iframe en vez de dejar un hueco en blanco.
+    """
+    return HTMLResponse(
+        "<!doctype html><html lang=es><meta charset=utf-8>"
+        "<meta name=viewport content='width=device-width,initial-scale=1'>"
+        f"<title>{titulo}</title>"
+        "<style>body{font:15px/1.6 ui-sans-serif,system-ui,sans-serif;background:#0b0f14;"
+        "color:#93a1b5;display:grid;place-items:center;min-height:100vh;margin:0;"
+        "text-align:center;padding:28px}div{max-width:430px}"
+        "b{color:#e8edf4;font-size:16px}p{margin:0 0 8px}</style>"
+        f"<div><p><b>{titulo}</b></p><p>{texto}</p></div>",
+        status_code=codigo,
+        headers=seg.cabeceras(csp_reporte=True, empotrable_en=doms or None))
+
+
+_MOTIVOS = {
+    404: ("Este reporte no existe",
+          "El enlace es incorrecto o se dio de baja. Pide uno nuevo a tu contacto en Sentinel."),
+    403: ("Este enlace ya no es válido",
+          "Se revocó o caducó. Pide uno nuevo a tu contacto en Sentinel."),
+    429: ("Demasiadas peticiones",
+          "Espera unos minutos y vuelve a intentarlo."),
+    503: ("El reporte todavía no está disponible",
+          "Falta cargar el visor en el servicio. Avísale a tu contacto en Sentinel."),
+}
+
+
+@app.exception_handler(ErrorHTTP)
+async def errores(peticion: Request, exc: ErrorHTTP):
+    """
+    Para las rutas del reporte, un error se ve como una página; para el resto, como JSON.
+
+    El snapshot se queda en JSON a propósito: lo consume el cargador del visor, no una
+    persona, y así el aviso lo pinta el propio dashboard con su estilo.
+    """
+    ruta = peticion.url.path
+    es_reporte = ruta.startswith("/r/") and not ruta.endswith("snapshot.json")
+    if es_reporte and exc.status_code in _MOTIVOS:
+        titulo, texto = _MOTIVOS[exc.status_code]
+        # Se recuperan los dominios del enlace (aunque esté revocado) para que el aviso
+        # se pueda ver dentro del iframe donde estaba puesto.
+        doms = []
+        try:
+            partes = ruta.split("/")
+            if len(partes) > 2:
+                e = almacen.enlace(partes[2])
+                if e:
+                    doms = _dominios(e)
+        except Exception:
+            pass
+        return _pagina(titulo, texto, codigo=exc.status_code, doms=doms)
+    return JSONResponse({"detail": exc.detail}, status_code=exc.status_code,
+                        headers=getattr(exc, "headers", None) or CABECERAS_PRIVADAS)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -247,12 +295,13 @@ def embed(token: str, peticion: Request):
     e = _resolver_enlace(token, peticion)
     doms = _dominios(e)
     if not doms:
-        return HTMLResponse(_PAGINA_SIN_EMBED, status_code=403,
-                            headers=seg.cabeceras())
+        return _pagina("Este enlace no está autorizado para empotrarse",
+                       "Hay que declarar en qué dominios se puede mostrar antes de usarlo "
+                       "en un iframe. Se hace en el panel, en la columna «Empotrar».",
+                       codigo=403)
     vis = _cargar_visor()
     if not vis:
-        return HTMLResponse(_PAGINA_SIN_VISOR, status_code=503,
-                            headers=seg.cabeceras(csp_reporte=True, empotrable_en=doms))
+        return _pagina(*_MOTIVOS[503], codigo=503, doms=doms)
     almacen.marcar_acceso(token)
     # El visor pide 'snapshot.json' relativo a su URL: desde /r/{t}/embed eso resolvería
     # a /r/{t}/snapshot.json igual, porque 'embed' no lleva barra final. Se deja explícito
@@ -269,8 +318,7 @@ def visor(token: str, peticion: Request):
     doms = _dominios(e)
     vis = _cargar_visor()
     if not vis:
-        return HTMLResponse(_PAGINA_SIN_VISOR, status_code=503,
-                            headers=seg.cabeceras(csp_reporte=True, empotrable_en=doms))
+        return _pagina(*_MOTIVOS[503], codigo=503, doms=doms)
     almacen.marcar_acceso(token)
     return HTMLResponse(vis["index"], headers=seg.cabeceras(
         {"Cache-Control": "private, max-age=60"},
