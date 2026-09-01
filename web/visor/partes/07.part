@@ -1,0 +1,191 @@
+const MESES_L=['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+function updateDateLabel(){
+  const n=nDias(S.f1,S.f2);
+  document.getElementById('dateLbl').textContent=`${fmtD(S.f1)} – ${fmtD(S.f2)} · ${n} d`;
+}
+let calView=dd(S.f2), pick={a:S.f1,b:S.f2};
+function closeDatePop(){document.getElementById('datePop').classList.remove('show')}
+function renderCal(){
+  const LM=lim();
+  // dias que de verdad tienen al menos un lead con la cohorte activa; los que no, se marcan con un
+  // punto ambar. Siguen siendo elegibles (un dia sin leads es un cero legitimo, no un hueco de datos),
+  // pero se ven, que es lo que evita interpretar un 0 como error de filtrado.
+  const DIAS=new Set(L.map(x=>x[S.coh]).filter(v=>v&&v>=LM.min&&v<=LM.max));
+  const y=calView.getUTCFullYear(),m=calView.getUTCMonth();
+  const startDow=(new Date(Date.UTC(y,m,1)).getUTCDay()+6)%7; // lunes=0
+  const days=new Date(Date.UTC(y,m+1,0)).getUTCDate();
+  const lo=(pick.a&&pick.b)?(pick.a<pick.b?pick.a:pick.b):pick.a, hi=(pick.a&&pick.b)?(pick.a<pick.b?pick.b:pick.a):pick.a;
+  let cells='';
+  for(let i=0;i<startDow;i++)cells+='<div class="day mut"></div>';
+  for(let d=1;d<=days;d++){
+    const iso_=iso(new Date(Date.UTC(y,m,d)));
+    let cls='day';
+    // BLOQUEO DE RANGO: el limite ya no es la ventana declarada del export (DATA.desde/DATA.hasta)
+    // sino la ventana de 120 dias recortada por la cobertura REAL de la cohorte activa. Con cohorte
+    // "Oportunidad" hay dias al principio del rango que el export declara pero donde no existe ni
+    // una sola oportunidad: elegirlos daba 0 aqui y numeros reales en GHL. Ahora no son clicables.
+    if(iso_<LM.min||iso_>LM.max)cls+=' mut';
+    else{
+      if(!DIAS.has(iso_))cls+=' nocov'; // dentro de la ventana pero sin ningun lead ese dia (cero real)
+      if(lo&&hi&&iso_>lo&&iso_<hi)cls+=' inrange';
+      if(iso_===lo&&iso_===hi)cls+=' edge only';else if(iso_===lo)cls+=' edge start';else if(iso_===hi)cls+=' edge end';
+    }
+    cells+=`<div class="${cls}"${cls.includes('mut')?'':` data-iso="${iso_}"`}>${d}</div>`;
+  }
+  document.getElementById('calgrid').innerHTML=['L','M','X','J','V','S','D'].map(x=>`<div class="dow">${x}</div>`).join('')+cells;
+  const t=MESES_L[m]; document.getElementById('calTitle').textContent=`${t.charAt(0).toUpperCase()+t.slice(1)} ${y}`;
+  // BLOQUEO DE RANGO: no se puede navegar a meses enteramente fuera de la ventana. Antes se podia
+  // pasear hasta 2024 viendo rejillas grises sin ninguna explicacion de por que nada era clicable.
+  const pv=document.getElementById('calPrev'), nx=document.getElementById('calNext');
+  pv.disabled = iso(new Date(Date.UTC(y,m,0)))   < LM.min;   // ultimo dia del mes anterior
+  nx.disabled = iso(new Date(Date.UTC(y,m+1,1))) > LM.max;   // primer dia del mes siguiente
+  pv.title = pv.disabled?`No hay datos antes del ${fmtD(LM.min)}`:'Mes anterior';
+  nx.title = nx.disabled?`No hay datos después del ${fmtD(LM.max)}`:'Mes siguiente';
+  document.querySelectorAll('#calgrid .day[data-iso]').forEach(el=>{el.onclick=e=>{
+    // BUG REAL (encontrado con Playwright, no hipotético): renderCal() reemplaza el innerHTML de
+    // #calgrid, así que el <div> que disparó este click queda desconectado del documento MIENTRAS el
+    // evento todavía sigue burbujeando hacia arriba. El listener global de "clic afuera cierra el
+    // popover" (más abajo) usa e.target.closest('.pop-wrap'), y closest() sobre un nodo ya desconectado
+    // devuelve null — así que el popover se cerraba solo al primer clic, antes de poder elegir el
+    // segundo día del rango. Se corta la propagación aquí para que nunca llegue a ese listener.
+    e.stopPropagation();
+    const v=el.dataset.iso;
+    if(!pick.a||(pick.a&&pick.b))pick={a:v,b:null};
+    else pick=v<pick.a?{a:v,b:pick.a}:{a:pick.a,b:v};
+    renderCal();
+  }});
+  // FIX AUDITORÍA UX: sincroniza qué botón de preset (30/60/90/120d) se ve "elegido" con el rango real
+  // que se va a aplicar (pick) — se llama aquí porque renderCal() corre después de CUALQUIER cambio al
+  // rango (clic en un preset, clic manual en un día, o simplemente abrir el calendario), así que un solo
+  // lugar cubre los tres casos sin repetir esta lógica en cada handler.
+  document.querySelectorAll('.pop-presets button').forEach(btn=>{
+    const r=rangoPreset(btn.dataset.p);
+    btn.classList.toggle('on', pick.a===r.f1 && pick.b===r.f2);
+    // BLOQUEO DE RANGO: un preset que no toca la ventana con datos se apaga en vez de devolver
+    // silenciosamente un rango recortado que no es lo que dice su nombre.
+    btn.disabled = !!(r.fuera||r.vacio);
+    const base=btn.dataset.p;
+    btn.title = r.fuera||r.vacio
+      ? 'Sin datos en ese periodo — el reporte llega hasta el '+fmtD(lim().max)
+      : `${fmtD(r.f1)} – ${fmtD(r.f2)} · ${nDias(r.f1,r.f2)} días`
+        +(r.rec?' (recortado a la ventana con datos)':'')
+        +(base==='hoy'||base==='ayer'?' · relativo al último día con datos, no a hoy':'');
+  });
+  // nota al pie del calendario: que se puede elegir y por que
+  const nota=document.getElementById('calNote');
+  if(nota){
+    const cohLbl=S.coh==='f'?'alta del contacto':'creación de la oportunidad';
+    nota.innerHTML=`Rango filtrable: <b>${fmtD(LM.min)} – ${fmtD(LM.max)}</b> (${nDias(LM.min,LM.max)} días · cohorte por ${cohLbl}).`
+      +` Fuera de ahí el reporte no tiene datos y el filtro queda bloqueado.`
+      +((LM.min!==WIN.min||LM.max!==WIN.max)?`<br>El export declara ${fmtD(WIN.desde)} – ${fmtD(WIN.max)}, pero con esta cohorte no hay registros en los días que faltan.`:'')
+      +(WIN.atraso?`<br>Última extracción: ${fmtD(WIN.max)} · hoy ${fmtD(WIN.hoy)} · <b>${WIN.atraso} días sin actualizar</b>.`:'');
+  }
+}
+document.getElementById('calPrev').onclick=()=>{calView=new Date(Date.UTC(calView.getUTCFullYear(),calView.getUTCMonth()-1,1));renderCal()};
+document.getElementById('calNext').onclick=()=>{calView=new Date(Date.UTC(calView.getUTCFullYear(),calView.getUTCMonth()+1,1));renderCal()};
+document.querySelectorAll('.pop-presets button').forEach(b=>b.onclick=()=>{
+  const r=rangoPreset(b.dataset.p);
+  pick={a:r.f1,b:r.f2}; calView=dd(r.f2); renderCal();
+});
+document.getElementById('calCancel').onclick=closeDatePop;
+document.getElementById('calApply').onclick=()=>{
+  if(pick.a&&!pick.b)pick.b=pick.a;
+  const LM=lim();
+  const a=clampF(pick.a<pick.b?pick.a:pick.b,LM), b=clampF(pick.a<pick.b?pick.b:pick.a,LM);
+  S.f1=a;S.f2=b;f1.value=a;f2.value=b;S.page=0;
+  document.querySelectorAll('#presets button').forEach(x=>x.classList.remove('on'));
+  updateDateLabel();closeDatePop();render();
+};
+// BUG REAL (encontrado con Playwright en viewport de 390px): un popover de 300px de ancho, posicionado
+// con left:0 respecto a su propio botón, se sale del viewport en mobile cuando ese botón no está pegado
+// al borde izquierdo — la fila de filtros se envuelve (flex-wrap) y "Más filtros"/"Reiniciar" terminan
+// más hacia la derecha. clampPop() mide el hueco real disponible después de mostrar el popover y ajusta
+// su "left" para que quede siempre dentro de la pantalla, con 8px de margen a cada lado.
+function clampPop(pop){
+  pop.style.left='0px';
+  const wrap=pop.parentElement.getBoundingClientRect();
+  const popW=pop.offsetWidth, margin=8;
+  let left=0;
+  if(wrap.left+popW>window.innerWidth-margin) left=(window.innerWidth-margin-popW)-wrap.left;
+  if(wrap.left+left<margin) left=margin-wrap.left;
+  pop.style.left=left+'px';
+}
+document.getElementById('dateBtn').onclick=e=>{e.stopPropagation();
+  const willOpen=!document.getElementById('datePop').classList.contains('show');
+  document.getElementById('masPop').classList.remove('show');closeDatePop();
+  if(willOpen){const LM=lim();pick={a:clampF(S.f1,LM),b:clampF(S.f2,LM)};calView=dd(pick.b);renderCal();const p=document.getElementById('datePop');p.classList.add('show');clampPop(p)}
+};
+document.getElementById('masBtn').onclick=e=>{e.stopPropagation();
+  const willOpen=!document.getElementById('masPop').classList.contains('show');
+  closeDatePop();const p=document.getElementById('masPop');p.classList.toggle('show',willOpen);
+  if(willOpen)clampPop(p);
+};
+document.getElementById('masClose').onclick=()=>document.getElementById('masPop').classList.remove('show');
+document.addEventListener('click',e=>{if(!e.target.closest('.pop-wrap')){closeDatePop();document.getElementById('masPop').classList.remove('show')}});
+function updateMasCount(){
+  let n=0;if(S.src!=='')n++;if(S.camp!=='')n++;if(S.prod!=='')n++;if(!S.noattr)n++;if(S.recur)n++;
+  if(S.orig!=='src')n++;
+  if(S.pipe&&(DATA.pipelines||[]).length>1)n++;
+  document.getElementById('masCount').textContent=n?` (${n})`:'';
+  document.getElementById('masBtn').classList.toggle('active',n>0);
+}
+function updateOrigChip(){
+  const c=document.getElementById('origChip'); if(!c) return;
+  if(S.orig==='src'||S.t==='ventas'){c.style.display='none';c.textContent='';return}
+  const g=S.pipe?L.filter(x=>x.pipe===S.pipe):L;
+  const sin=S.orig==='l'?g.filter(x=>!x.sl).length:g.filter(x=>!x.sess).length;
+  c.textContent=`Origen por ${S.orig==='f'?'primer':'último'} contacto`+(sin?` · ${num(sin)} sin dato`:'');
+  c.style.display='inline-flex';
+  c.title=`Estás agrupando el origen por la atribución de sesión de GoHighLevel, no por el campo Source.`
+    +`\nLos orígenes son más genéricos (Paid Social, Social media…) y ${num(sin)} oportunidades no tienen ese dato.`
+    +`\nLo que NO cambia: el gasto, el emparejamiento con campañas y qué leads cuentan como de pago (eso sigue saliendo del Source de GoHighLevel), así que CPL, CAC y ROAS no se mueven.`
+    +`\nPara volver: Más filtros → Origen por → Source de GoHighLevel.`;
+}
+function updateActiveBadge(){
+  let n=0;if(S.plat!=='all')n++;if(S.coh!=='f')n++;if(S.src!=='')n++;if(S.camp!=='')n++;if(S.prod!=='')n++;if(!S.noattr)n++;if(S.recur)n++;if(S.q!=='')n++;
+  if(S.orig!=='src')n++;if(S.pipe&&(DATA.pipelines||[]).length>1)n++;
+  const b=document.getElementById('activeBadge');
+  b.textContent=n?`${n} filtro${n>1?'s':''} activo${n>1?'s':''}`:'';
+  b.style.display=(n&&S.t!=='ventas')?'inline-flex':'none';
+}
+// AUDITORÍA VENDEDORES · hallazgo 2: atenúa la barra de filtros y muestra el aviso mientras
+// se está en la pestaña Vendedores, donde ninguno de estos controles afecta la data mostrada.
+function updateBarMode(){
+  const ventas=S.t==='ventas';
+  document.querySelector('.bar-in').classList.toggle('bar-mute',ventas);
+  const av=document.getElementById('vendNotice');
+  av.style.display=ventas?'inline-flex':'none';
+  if(ventas){
+    // el aviso dice literalmente los días, sin adornos: es la pregunta que se hace uno al llegar aquí
+    const sp=DATA.sp||{};
+    // corto a propósito: las fechas exactas ya están, bien visibles, en el botón de fecha de al lado
+    av.textContent='Los filtros no aplican en esta hoja';
+    av.title=`La hoja de Vendedores se alimenta de un export propio de conversaciones con su propia ventana (${sp.desde} → ${sp.hasta}). No usa el rango de fechas del reporte ni ningún otro filtro de esta barra.`;
+  }
+  // el chip "Datos: ..." describe los LÍMITES del filtro de fechas (la ventana de 120 días del
+  // reporte). En Vendedores no hay filtro de fechas, así que ahí solo confundía: se oculta.
+  const wc=document.getElementById('winChip');
+  if(wc && ventas) wc.style.display='none';
+  const oc=document.getElementById('origChip');
+  if(oc && ventas) oc.style.display='none';
+}
+// AUDITORÍA DISEÑO · hallazgos 1.2/1.3: pinta los degradados de "hay más para deslizar" en cualquier
+// contenedor .tw (tablas anchas) o .tabs (pestañas en mobile) que de verdad tenga contenido oculto a los
+// lados — nada de esto se muestra si el contenido ya cabe completo. Se llama tras cada render() (porque
+// el HTML de las tablas se reconstruye entero) y en cada scroll/resize.
+function updateFade(el){
+  if(!el||!el.classList||!(el.classList.contains('tw')||el.classList.contains('tabs')))return;
+  const canL=el.scrollLeft>2, canR=el.scrollLeft<el.scrollWidth-el.clientWidth-2;
+  el.classList.toggle('can-scroll-left',canL);
+  el.classList.toggle('can-scroll-right',canR);
+}
+function updateAllFades(){document.querySelectorAll('.tw,.tabs').forEach(updateFade)}
+document.addEventListener('scroll',e=>updateFade(e.target),true);
+window.addEventListener('resize',updateAllFades);
+updateDateLabel();
+(()=>{const c=document.getElementById('cliName'),a=document.getElementById('agName');
+  if(c)c.textContent=(DATA.cliente&&DATA.cliente.nombre)||'';
+  if(a&&DATA.agencia)a.innerHTML=DATA.agencia+'<span>.</span>';
+  document.title=((DATA.cliente&&DATA.cliente.nombre)?DATA.cliente.nombre+' · ':'')+'Rendimiento de adquisición';})();
+render();
+</script></body></html>
