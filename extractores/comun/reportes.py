@@ -27,7 +27,7 @@ class Reportes:
         self.cab = {"X-Admin-Token": token}
         self.timeout = timeout
 
-    # ── lectura ─────────────────────────────────────────────────────
+    # ── lectura ───────────────────────────────────────────────
     def clientes(self) -> list[dict]:
         return json_get(f"{self.base}/admin/estado", cabeceras=self.cab,
                         timeout=self.timeout).get("clientes") or []
@@ -67,7 +67,18 @@ class Reportes:
                           "tz": cfg["tz"], "cuentas": cuentas, "config": cfg})
         return fuera
 
-    # ── escritura ─────────────────────────────────────────────────
+    # ── escritura ────────────────────────────────────────────
+    def guardar_config(self, slug: str, cfg: dict) -> dict:
+        """
+        Deja la configuración de construcción del cliente.
+
+        No la usa la extracción diaria: la usa `operar.py config` al dar de alta un
+        cliente o cuando su configuración cambia. Está aquí y no en el script para que
+        haya un solo sitio que sepa hablar con el servicio.
+        """
+        return json_post(f"{self.base}/admin/config/{slug}", cfg,
+                         cabeceras=self.cab, timeout=self.timeout)
+
     def enviar_crudo(self, slug: str, fuente: str, datos: dict) -> dict:
         crudo = json.dumps(datos, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         _c, cuerpo, _h = pedir(
