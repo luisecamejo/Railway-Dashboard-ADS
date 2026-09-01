@@ -26,9 +26,9 @@ from collections import defaultdict, deque
 
 log = logging.getLogger("reportes.seguridad")
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════════
 #  Cabeceras
-# ══════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════════
 BASE = {
     "X-Robots-Tag": "noindex, nofollow, noarchive, nosnippet",
     "Referrer-Policy": "no-referrer",
@@ -45,9 +45,13 @@ BASE = {
 _CSP_REPORTE = [
     "default-src 'none'",
     "script-src 'self' 'unsafe-inline'",   # el dashboard lleva su script en línea
-    "style-src 'self' 'unsafe-inline'",
+    # Google Fonts: el dashboard pide Montserrat y JetBrains Mono. Sin estos dos origenes
+    # la CSP bloquea la hoja de estilos y el reporte del cliente sale en la fuente del
+    # sistema (verificado con Playwright: "Refused to load the stylesheet"). Son dos
+    # hosts de solo lectura de Google, no reciben ningun dato del reporte.
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
     "img-src 'self' data: https:",
-    "font-src 'self' data:",
+    "font-src 'self' data: https://fonts.gstatic.com",
     "connect-src 'self'",                  # solo pide su propio snapshot
     "base-uri 'none'",
     "form-action 'none'",
@@ -101,9 +105,9 @@ def cabeceras(extra: dict | None = None, *, csp_reporte: bool = False,
     return h
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════════
 #  Límite de intentos
-# ══════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════════
 class Limitador:
     """
     Ventana deslizante por IP. Solo cuentan los FALLOS: quien acierta no gasta cuota.
@@ -183,9 +187,9 @@ def ip_cliente(request) -> str:
     return (getattr(request, "client", None) and request.client.host) or "desconocida"
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════════
 #  Topes de tamaño
-# ══════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════════
 async def leer_cuerpo(request, tope_mb: float, que: str) -> bytes:
     """Lee el cuerpo rechazando lo que pase del tope, sin cargarlo entero en memoria antes."""
     tope = int(tope_mb * 1024 * 1024)
