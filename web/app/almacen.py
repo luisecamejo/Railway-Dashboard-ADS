@@ -40,9 +40,9 @@ def slug_valido(v) -> bool:
     return bool(_SLUG.match(str(v or "")))
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════════
 #  Postgres
-# ══════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════════
 ESQUEMA = """
 CREATE TABLE IF NOT EXISTS clientes (
   slug              TEXT PRIMARY KEY,
@@ -92,6 +92,23 @@ CREATE TABLE IF NOT EXISTS visor (
   subido     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Configuracion de construccion del snapshot (productos, SOP, roles, cuentas...).
+-- Vive con el cliente y no en el repositorio porque es dato de negocio, cambia sin
+-- desplegar y cada cliente tiene la suya. La consume web/app/construir.py.
+ALTER TABLE clientes ADD COLUMN IF NOT EXISTS config JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+-- Un trozo de datos crudos por fuente y cliente. Cada extractor escribe SOLO su
+-- trozo y se sobreescribe: no hay historial a proposito, el historial que importa
+-- es el de snapshots. Asi los extractores no comparten volumen ni se pisan.
+CREATE TABLE IF NOT EXISTS crudos (
+  cliente   TEXT NOT NULL REFERENCES clientes(slug) ON DELETE CASCADE,
+  fuente    TEXT NOT NULL,
+  datos     JSONB NOT NULL,
+  recibido  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  bytes     INTEGER,
+  PRIMARY KEY (cliente, fuente)
+);
+
 CREATE TABLE IF NOT EXISTS extracciones (
   id         BIGSERIAL PRIMARY KEY,
   cliente    TEXT NOT NULL,
@@ -118,7 +135,7 @@ class AlmacenPostgres:
         with self.pool.connection() as c:
             c.execute(ESQUEMA)
 
-    # ── clientes ──────────────────────────────────────────────────────────
+    # ── clientes ─────────────────────────────────────────────────────
     def guardar_cliente(self, slug, nombre, ghl_location_id=None, tz=None, fuentes=None):
         with self.pool.connection() as c:
             c.execute(
@@ -134,11 +151,12 @@ class AlmacenPostgres:
 
     def cliente(self, slug) -> Optional[dict]:
         with self.pool.connection() as c:
-            r = c.execute("SELECT slug,nombre,ghl_location_id,tz,fuentes,activo,creado "
+            r = c.execute("SELECT slug,nombre,ghl_location_id,tz,fuentes,activo,creado,config "
                           "FROM clientes WHERE slug=%s", (slug,)).fetchone()
         if not r:
             return None
-        return dict(zip(("slug", "nombre", "ghl_location_id", "tz", "fuentes", "activo", "creado"), r))
+        return dict(zip(("slug", "nombre", "ghl_location_id", "tz", "fuentes",
+                         "activo", "creado", "config"), r))
 
     def clientes(self) -> list[dict]:
         with self.pool.connection() as c:
@@ -148,7 +166,33 @@ class AlmacenPostgres:
                               FROM clientes c ORDER BY c.nombre""").fetchall()
         return [dict(zip(("slug", "nombre", "activo", "ultimo_snapshot", "enlaces"), r)) for r in rs]
 
-    # ── snapshots ─────────────────────────────────────────────────────────
+    # ── configuracion de construccion y datos crudos ─────────────────────
+    def guardar_config(self, slug, config: dict) -> dict:
+        with self.pool.connection() as c:
+            n = c.execute("UPDATE clientes SET config=%s WHERE slug=%s",
+                          (json.dumps(config or {}), slug)).rowcount
+        if not n:
+            raise KeyError(slug)
+        return self.cliente(slug)
+
+    def guardar_crudo(self, cliente, fuente, datos) -> dict:
+        crudo = json.dumps(datos, ensure_ascii=False, separators=(",", ":"))
+        with self.pool.connection() as c:
+            c.execute("""INSERT INTO crudos (cliente,fuente,datos,bytes,recibido)
+                         VALUES (%s,%s,%s,%s,now())
+                         ON CONFLICT (cliente,fuente) DO UPDATE SET
+                           datos=EXCLUDED.datos, bytes=EXCLUDED.bytes,
+                           recibido=EXCLUDED.recibido""",
+                      (cliente, fuente, crudo, len(crudo.encode())))
+        return {"fuente": fuente, "bytes": len(crudo.encode())}
+
+    def crudos(self, cliente) -> dict:
+        with self.pool.connection() as c:
+            rs = c.execute("SELECT fuente,datos,recibido,bytes FROM crudos "
+                           "WHERE cliente=%s", (cliente,)).fetchall()
+        return {r[0]: {"datos": r[1], "recibido": r[2], "bytes": r[3]} for r in rs}
+
+    # ── snapshots ─────────────────────────────────────────────────
     def publicar_snapshot(self, cliente, datos: dict) -> dict:
         crudo = json.dumps(datos, ensure_ascii=False, separators=(",", ":"))
         with self.pool.connection() as c:
@@ -181,7 +225,7 @@ class AlmacenPostgres:
                           (cliente, cliente, conservar))
             return r.rowcount
 
-    # ── visor ─────────────────────────────────────────────────────────────
+    # ── visor ──────────────────────────────────────────────────────
     def guardar_visor(self, index_html, app_js, hash_) -> dict:
         with self.pool.connection() as c:
             c.execute("""INSERT INTO visor (id,index_html,app_js,hash,subido)
@@ -199,7 +243,7 @@ class AlmacenPostgres:
             return None
         return {"index": r[0], "app": r[1], "hash": r[2], "subido": r[3]}
 
-    # ── enlaces ───────────────────────────────────────────────────────────
+    # ── enlaces ───────────────────────────────────────────────────
     def crear_enlace(self, cliente, modo="cliente", nota=None, caduca=None,
                      dominios=None) -> dict:
         tok = nuevo_token()
@@ -253,9 +297,9 @@ class AlmacenPostgres:
             pass  # contar accesos nunca debe tumbar una visita
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════════
 #  Ficheros (desarrollo, pruebas y despliegue con volumen)
-# ══════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════════
 class AlmacenFicheros:
     tipo = "ficheros"
 
@@ -265,10 +309,15 @@ class AlmacenFicheros:
         self._lock = threading.Lock()
         self._idx = self.raiz / "indice.json"
         if not self._idx.exists():
-            self._escribir({"clientes": {}, "enlaces": {}, "historial": {}})
+            self._escribir({"clientes": {}, "enlaces": {}, "historial": {}, "crudos": {}})
 
     def _leer(self) -> dict:
-        return json.loads(self._idx.read_text(encoding="utf-8"))
+        d = json.loads(self._idx.read_text(encoding="utf-8"))
+        # Un indice escrito por una version anterior no tiene "crudos". Se rellena al
+        # leer en vez de migrar, para que un despliegue sobre el volumen ya existente
+        # no necesite ningun paso manual.
+        d.setdefault("crudos", {})
+        return d
 
     def _escribir(self, d: dict) -> None:
         tmp = self._idx.with_suffix(".tmp")
@@ -286,12 +335,52 @@ class AlmacenFicheros:
                 "fuentes": fuentes or prev.get("fuentes") or ["crm"],
                 "activo": prev.get("activo", True),
                 "creado": prev.get("creado") or ahora().isoformat(),
+                "config": prev.get("config") or {},
             }
             self._escribir(d)
         return self.cliente(slug)
 
     def cliente(self, slug):
         return self._leer()["clientes"].get(slug)
+
+    # ── configuracion de construccion y datos crudos ─────────────────────
+    def guardar_config(self, slug, config: dict) -> dict:
+        with self._lock:
+            d = self._leer()
+            if slug not in d["clientes"]:
+                raise KeyError(slug)
+            d["clientes"][slug]["config"] = config or {}
+            self._escribir(d)
+        return self.cliente(slug)
+
+    def guardar_crudo(self, cliente, fuente, datos) -> dict:
+        if not slug_valido(cliente) or not slug_valido(fuente):
+            raise ValueError(f"Identificador no valido: {cliente!r}/{fuente!r}")
+        crudo = json.dumps(datos, ensure_ascii=False, separators=(",", ":"))
+        # Fuera del indice: un trozo crudo puede pesar megas y meterlo en indice.json
+        # obligaria a reescribirlo entero en cada guardado.
+        carpeta = self.raiz / "crudos" / cliente
+        carpeta.mkdir(parents=True, exist_ok=True)
+        tmp = carpeta / f"{fuente}.tmp"
+        tmp.write_text(crudo, encoding="utf-8")
+        tmp.replace(carpeta / f"{fuente}.json")
+        with self._lock:
+            d = self._leer()
+            d["crudos"].setdefault(cliente, {})[fuente] = {
+                "recibido": ahora().isoformat(), "bytes": len(crudo.encode())}
+            self._escribir(d)
+        return {"fuente": fuente, "bytes": len(crudo.encode())}
+
+    def crudos(self, cliente) -> dict:
+        meta = self._leer()["crudos"].get(cliente) or {}
+        fuera = {}
+        for fuente, m in meta.items():
+            f = self.raiz / "crudos" / cliente / f"{fuente}.json"
+            if not f.exists():
+                continue
+            fuera[fuente] = {"datos": json.loads(f.read_text(encoding="utf-8")),
+                             "recibido": m.get("recibido"), "bytes": m.get("bytes")}
+        return fuera
 
     def clientes(self):
         d = self._leer()
