@@ -47,7 +47,8 @@ extractores/              un servicio por fuente. Raíz de despliegue: /extracto
   meta/extraer.py         gasto diario, anuncios y miniaturas (Marketing API)
   ghl/extraer.py          oportunidades, pipelines, vendedores y llamadas (ghl-mcp)
   google/                 pendiente: falta el developer token de Google Ads
-  config_ejemplo.json     la configuración que se manda a POST /admin/config/{slug}
+  operar.py               dar de alta la config de un cliente, construir a mano
+  clientes/SLUG.json      la config de cada cliente (se siembra con operar.py)
 scripts/
   subir_visor.py          sube un dashboard.html nuevo al servicio
   publicar.py             sube un snapshot al servicio

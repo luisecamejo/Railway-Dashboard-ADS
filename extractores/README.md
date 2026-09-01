@@ -9,6 +9,10 @@ servicio encendido: solo se paga lo que corre.
 | `extractor-meta` | `python -m meta.extraer` | Meta Ads: gasto diario, campañas, anuncios, miniaturas. |
 | `extractor-google` | `python -m google.extraer` | Google Ads (pendiente del token de desarrollador). |
 
+Un solo token de desarrollador de Google Ads sirve para **todos** los clientes: se pide
+una vez sobre una cuenta MCC y lo que cambia por cliente es la cuenta que se lee, que
+sale de su `clientes/SLUG.json`. Por eso no se monta nada por cliente para Google.
+
 **Directorio raíz de los tres servicios en Railway: `/extractores`.**
 
 ## Cómo encajan
@@ -22,6 +26,11 @@ extractor-google ──POST /admin/crudo/{cliente}/google─┘    y publica el 
 Ninguno construye el snapshot ni sabe qué clientes hay: **se lo preguntan a `reportes`**,
 que guarda la configuración de cada cliente. Añadir un cliente nuevo no toca ningún
 extractor.
+
+**Nada de esto es de un cliente concreto.** Cada extractor recorre TODOS los clientes
+activos que declaren una cuenta de su plataforma (`SOLO_CLIENTE` existe solo para
+probar). Un cliente sin cuenta de Google no es un error: ese extractor simplemente no
+tiene nada que hacer con él.
 
 Si Meta falla un día, su trozo se queda con los datos de ayer y el reporte sigue en pie
 con el resto, en vez de quedarse sin snapshot entero.
@@ -68,6 +77,26 @@ pero el SDK de MCP que usa `ghl-mcp` **valida la cabecera `Host`** contra su var
 Para pasar a red privada: **añade `ghl-mcp.railway.internal` a `ALLOWED_HOSTS` de
 ghl-mcp** (sin quitar lo que ya hay) y cambia `GHL_MCP_URL` a
 `http://ghl-mcp.railway.internal:8080`. El código no necesita ningún cambio.
+
+## Dar de alta un cliente
+
+La configuración de construcción (productos, roles, SOP, cuentas de anuncios) vive en
+el servicio, no aquí: es dato de negocio y cambia sin desplegar. `clientes/SLUG.json`
+es solo el valor inicial, y `operar.py` lo deja en el servicio:
+
+```bash
+export REPORTES_URL=https://reportes-production-a40d.up.railway.app
+export REPORTES_ADMIN_TOKEN=...              # nunca en la línea de comandos
+
+python operar.py estado                      # qué clientes hay y a cuál le falta config
+python operar.py config SLUG clientes/SLUG.json
+python operar.py construir SLUG --ensayo     # construir SIN publicar, y mirar el resumen
+python operar.py construir SLUG              # construir y publicar
+```
+
+`--ensayo` es la red de seguridad del primer arranque: enseña leads, gasto, llamadas y
+cuántas etapas casaron con el SOP **antes** de tapar el reporte que el cliente ya está
+viendo. Si el resumen no cuadra, no se ha publicado nada.
 
 ## Probarlos sin credenciales
 
