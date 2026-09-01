@@ -1,0 +1,334 @@
+function creativos(){
+  const A=DATA.ads.filter(a=>{
+    if(S.plat!=='all'&&platCamp(a)!==S.plat)return false;
+    if(S.src){ const alg=L.some(x=>x.c===a.c&&(x.src||'').trim()===S.src); if(!alg)return false; }
+    if(S.prod&&a.prod!=='Sin clasificar'&&a.prod!==S.prod)return false;
+    // NUEVO · FASE 1 req.1: el filtro general de Campaña también acota los creativos (misma campaña, vía a.c)
+    if(S.camp==='__sin__')return false; // un creativo siempre pertenece a una campaña real; "sin campaña" no aplica aquí
+    if(S.camp&&a.c!==S.camp)return false;
+    return a.sp>0;});
+  if(!A.length)return '';
+  // ventas por creativo: se cruzan por (campaña + nombre del anuncio) cuando el CRM trae utm_content
+  const ventas={};
+  leadsF().forEach(x=>{ if(!x.con||!x.c) return; const k=x.c+'|'+x.con;
+    ventas[k]=ventas[k]||{w:0,r:0,n:0}; ventas[k].n++;
+    if(x.st==='won'){ventas[k].w++; ventas[k].r+=x.v;} });
+  const hayVentas=Object.keys(ventas).length>0;
+  const rows=A.map(a=>{const v=ventas[a.c+'|'+a.n]||{w:0,r:0,n:0};
+    return {...a, won:v.w, rev:v.r, crm:v.n,
+    cpl:a.ld?a.sp/a.ld:0, ctr:a.im?a.cl/a.im*100:0, cpm:a.im?a.sp/a.im*1000:0,
+    roas:a.sp?v.r/a.sp:0};});
+  // ITERACIÓN 2 · req.2: tooltips con el significado real de cada métrica de creativos
+  const cols=[
+    {k:'n',h:'Creativo',t:'txt',d:'Nombre del anuncio en Ads Manager'},
+    {k:'camp',h:'Campaña',t:'sel',get:r=>String(r.camp||'').replace(/_/g,' '),d:'Campaña a la que pertenece este creativo'},
+    {k:'tipo',h:'Tipo',t:'sel',d:'Formato del anuncio (imagen, video, carrusel…)'},
+    {k:'red',h:'Red',t:'sel',d:'Plataforma publicitaria de la que vino el gasto de este creativo'},
+    {k:'sp',h:'Gasto',t:'num',d:'Inversión de este creativo en el rango'},
+    {k:'im',h:'Impres.',t:'num',d:'Veces que se mostró este creativo'},
+    {k:'ctr',h:'CTR',t:'num',d:'Porcentaje de impresiones que terminó en clic'},
+    {k:'cpm',h:'CPM',t:'num',d:'Costo por cada mil impresiones de este creativo'},
+    {k:'ld',h:'Leads Meta',t:'num',d:'Conversiones que Meta le atribuye a este anuncio — no el CRM'},
+    {k:'cpl',h:'CPL',t:'num',d:'Gasto entre leads que declara Meta para este creativo'},
+    {k:'crm',h:'Leads CRM',t:'num',d:'Leads reales del CRM cruzados por utm_campaign_id + utm_content contra este anuncio'},
+    {k:'won',h:'Ventas',t:'num',d:'Cuántos de esos leads del CRM cerraron en venta'},
+    {k:'rev',h:'Ingreso',t:'num',d:'Valor de las ventas cerradas atribuidas a este creativo'},
+    {k:'roas',h:'ROAS',t:'num',d:'Ingreso por cada dólar invertido en este creativo — cuidado con ROAS altos sobre poco gasto, ver nota abajo'},
+    {k:'pv',h:'Preview',t:'none',d:'Miniatura del creativo servida directo desde el CDN de Meta'}];
+  const id='crea';
+  if(!S.ts[id])S.ts[id]={k:'ld',d:-1};
+  const f=tOrdenar(id,tFiltrar(id,rows,cols),cols);
+  const tot=f.reduce((a,r)=>({sp:a.sp+r.sp,im:a.im+r.im,cl:a.cl+r.cl,ld:a.ld+r.ld}),{sp:0,im:0,cl:0,ld:0});
+  const mx=Math.max(...f.map(r=>r.ld))||1;
+  return `<div class="panel"><div class="ph"><div><h2>Rendimiento por creativo</h2>
+   <p>Cada anuncio con su gasto y los leads que <b>Meta</b> le atribuye. Ordena por cualquier columna y filtra en la fila bajo las cabeceras. El enlace abre el anuncio en Ads Manager, donde se ve la pieza.</p></div>
+   <div class="mut" style="font-family:var(--m);font-size:10.5px">${num(f.length)} de ${num(rows.length)} creativos</div></div>
+   <!-- ANÁLISIS DE GRÁFICAS 24 ago (aplicado): con hasta 84 filas, no había ninguna señal visual de cuáles
+        creativos ganan sin ordenar la tabla a mano. Se usa "leads CRM" (no "Leads Meta") como métrica del
+        ranking porque es la que el resto del dashboard trata como la que de verdad cuenta — solo 13 de 84
+        creativos tienen alguna venta cerrada, así que ROAS dejaría fuera a la mayoría; leads CRM sí tiene
+        datos en 42 de 84 y es la métrica intermedia más honesta para un top 10. -->
+   ${(()=>{const top=[...f].filter(r=>r.crm>0).sort((a,b)=>b.crm-a.crm).slice(0,10);
+     if(!top.length)return '';
+     const mxc=Math.max(...top.map(r=>r.crm))||1;
+     return `<div class="bars" style="margin:2px 20px 18px">${top.map(r=>{
+       // varios creativos comparten el mismo nombre genérico en Ads Manager (ej. 5 "Image_V2" de campañas
+       // distintas) — sin la campaña en el tooltip, dos barras podrían parecer el mismo anuncio repetido.
+       const camp=String(r.camp||'').replace(/_/g,' ');
+       return `<div class="brow" title="Campaña: ${camp} · ${fmt2(r.sp)} de gasto · ${r.won} venta${r.won===1?'':'s'} · ${r.rev?fmt2(r.rev)+' de ingreso':'sin ventas cerradas todavía'}">
+       <div style="font-size:10.5px" title="${String(r.n||'').replace(/_/g,' ')}">${String(r.n||'').replace(/_/g,' ').slice(0,22)}</div>
+       <div class="bb"><i style="width:${r.crm/mxc*100}%;background:linear-gradient(90deg,#7C3AED,#A855F7)"></i></div>
+       <div class="vv">${num(r.crm)} leads CRM</div></div>`;}).join('')}</div>
+     <div class="note" style="margin:0 20px 16px" title="Aplica solo a este top 10, no a la tabla completa de abajo">Top 10 por leads verificados en el CRM (no por lo que declara Meta). Pasa el mouse sobre cada barra para ver gasto, ventas e ingreso.</div>`;})()}
+   <div class="tw" style="max-height:560px;overflow-y:auto"><table>${tHead(id,rows,cols)}<tbody>
+   ${f.length?f.map(r=>`<tr id="crow_${r.id}">
+     <td><b>${String(r.n||'').replace(/_/g,' ')}</b>${r.pv?' <span class="tag t-org" title="Preview visible arriba">PREVIEW</span>':''}<div style="height:3px;background:var(--pan2);border-radius:2px;margin-top:4px;overflow:hidden"><i style="display:block;height:100%;width:${r.ld/mx*100}%;background:linear-gradient(90deg,#7C3AED,#A855F7)"></i></div></td>
+     <td style="font-size:10.5px">${String(r.camp||'').replace(/_/g,' ')}</td>
+     <td>${r.tipo}</td><td>${badge(platCamp(r))}</td>
+     <td>${fmt2(r.sp)}</td><td>${num(r.im)}</td><td>${pct(r.ctr)}</td><td>${fmt2(r.cpm)}</td>
+     <td><b>${r.ld||'—'}</b></td>
+     <td class="${r.ld&&r.cpl<=20?'pos':r.ld?'warn':'mut'}">${r.ld?fmt2(r.cpl):'—'}</td>
+     <td>${r.crm||'—'}</td>
+     <td class="${r.won?'pos':'mut'}">${r.won||'—'}</td>
+     <td class="${r.rev?'pos':'mut'}">${r.rev?fmt2(r.rev):'—'}</td>
+     <td class="${r.rev&&r.roas>=2?'pos':r.rev?'warn':'mut'}">${r.rev?r.roas.toFixed(2)+'×':'—'}</td>
+     <td>${r.pv?`<span class="thumb-wrap"><img src="${r.pv}" class="thumb" data-full="${r.pv}" data-cap="${String(r.n||'').replace(/_/g,' ')} · ${fmt2(r.sp)} · ${r.won} ventas · ${fmt2(r.rev)}" loading="lazy" alt="${String(r.n||'')}" title="Miniatura del creativo tal como la entrega la API de Meta (campo thumbnail_url). El enlace va firmado y CADUCA a las pocas semanas: si sale 'vencida', regenera el dashboard y se refresca." onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"><span class="thumb-fallback" style="display:none" title="El enlace de Meta para esta miniatura expiró">vencida</span></span>`:'<span class="mut" style="font-size:10.5px">—</span>'}</td></tr>`).join('')
+    // FIX AUDITORÍA UX: antes, si el link de Meta ya había expirado, quedaba un ícono de imagen rota
+    // (o un lightbox negro al hacer clic). Ahora se detecta con onerror y se muestra "vencida" en su lugar,
+    // sin invitar a hacer clic en algo que no va a mostrar nada.
+    :`<tr><td colspan="15" style="text-align:center;color:var(--faint);padding:28px">Ningún creativo pasa estos filtros.</td></tr>`}
+   </tbody><tfoot><tr style="border-top:1px solid var(--line)">
+     <td style="font-weight:700">Total · ${num(f.length)}</td><td></td><td></td><td></td>
+     <td><b>${fmt2(tot.sp)}</b></td><td>${num(tot.im)}</td><td>${pct(tot.im?tot.cl/tot.im*100:0)}</td>
+     <td>${fmt2(tot.im?tot.sp/tot.im*1000:0)}</td><td><b>${num(tot.ld)}</b></td>
+     <td>${fmt2(tot.ld?tot.sp/tot.ld:0)}</td>
+     <td><b>${num(f.reduce((a,r)=>a+r.crm,0))}</b></td><td><b>${num(f.reduce((a,r)=>a+r.won,0))}</b></td>
+     <td><b>${fmt2(f.reduce((a,r)=>a+r.rev,0))}</b></td>
+     <td><b>${(tot.sp?f.reduce((a,r)=>a+r.rev,0)/tot.sp:0).toFixed(2)}×</b></td><td></td></tr></tfoot></table></div>
+   <div class="pb"><div class="note"><b>Cómo se cruza.</b> <b>Leads Meta</b> es lo que declara la plataforma. <b>Leads CRM</b>, <b>Ventas</b>, <b>Ingreso</b> y <b>ROAS</b> salen del CRM, emparejando
+   <span style="font-family:var(--m)">utm_campaign_id + utm_content</span> de cada contacto contra <span style="font-family:var(--m)">campaign_id + nombre del anuncio</span> de Meta.
+   El nombre solo no basta: "Image_V2" existe en varias campañas y sin el id se mezclarían.
+   <br><br><b>Cuidado con los ROAS altos sobre poco gasto.</b> Un creativo con $200 de inversión y una venta de $7,000 sale a 36×, y eso no significa que multiplicar su presupuesto vaya a repetir el resultado: es una sola venta. Ordena por <b>Ingreso</b> y mira el volumen de leads antes de decidir.
+   <br><br>Los creativos sin cruce muestran "—": o no generaron leads que llegaran al CRM, o sus leads entraron por un canal que no arrastra <span style="font-family:var(--m)">utm_content</span>.
+   <br><br><b>Miniaturas.</b> Están cargadas para <b>todos los creativos que generaron al menos una venta</b>. Son imágenes servidas directamente por el CDN de Meta: no hay iframe, ni sesión, ni aviso de cookies. En los vídeos se muestra el fotograma de portada, suficiente para reconocer la pieza. Haz clic en cualquiera para verla en grande.</div></div>
+   </div>`;
+}
+
+
+/* ===== Contexto por página · cada pestaña solo ofrece los filtros que ahí tienen efecto =====
+   Paid Media trabaja sobre gasto publicitario, así que su desplegable de Source solo lista los
+   sources que casaron con alguna campaña con inversión. Overview trabaja sobre todo el CRM, así
+   que los lista todos. Vendedores y Notas no filtran por source ni por red. */
+function ctxPagina(){
+  // pipe/orig: visibles en las pestañas que leen oportunidades (Overview y Paid Media).
+  if(S.t==='paid')     return {src:SRCS.filter(x=>x.pagado), red:true,  camp:true,  prod:true, coh:true, recur:true, noattr:true, pipe:true, orig:true};
+  if(S.t==='overview') return {src:SRCS,                     red:false, camp:false, prod:true, coh:true, recur:true, noattr:false,pipe:true, orig:true};
+  if(S.t==='ventas')   return {src:[],                       red:false, camp:false, prod:false,coh:false,recur:false,noattr:false,pipe:false,orig:false};
+  return                      {src:[],                       red:false, camp:false, prod:false,coh:false,recur:false,noattr:false,pipe:false,orig:false};
+}
+function aplicaContexto(){
+  const cx=ctxPagina();
+  // el Source elegido deja de existir en esta página -> se limpia para no filtrar a ciegas
+  if(S.src && !cx.src.some(x=>x.id===S.src)) S.src='';
+  if(!cx.red && S.plat!=='all') S.plat='all';
+  if(!cx.camp && S.camp) S.camp='';
+  if(!cx.prod && S.prod) S.prod='';
+
+  const sel=document.getElementById('srcsel');
+  if(sel){
+    const grp=document.getElementById('srcgrp');
+    if(grp) grp.style.display = cx.src.length?'':'none';
+    sel.innerHTML='<option value="">Todos los sources</option>'+cx.src.map(x=>`<option value="${x.id}"${S.src===x.id?' selected':''}>${x.id} (${x.n})</option>`).join('');
+  }
+  // Red: se apaga cuando hay un Source elegido, porque el source ya determina la plataforma
+  const pg=document.getElementById('platgrp');
+  if(pg){
+    const bloqueado = !cx.red || !!S.src;
+    pg.style.display = cx.red?'':'none';
+    pg.style.opacity = bloqueado?'.35':'1';
+    pg.style.pointerEvents = bloqueado?'none':'auto';
+    pg.title = S.src ? `Bloqueado: el Source "${S.src}" ya determina la red. Quita el Source para volver a elegir red.`
+                     : 'Plataforma publicitaria de la que vino el gasto';
+    if(S.src){const info=srcInfo(S.src);
+      pg.querySelectorAll('button').forEach(b=>b.classList.toggle('on', b.dataset.p===(info.plat||'all')));}
+  }
+  // Pipeline: se rellena aquí porque su lista es fija (viene de DATA.pipelines)
+  const pipeSel=document.getElementById('pipesel');
+  if(pipeSel){
+    const ps=DATA.pipelines||[];
+    const unico=ps.length<=1;
+    pipeSel.innerHTML=(unico?'':'<option value="">Todos los pipelines</option>')
+      +ps.map(p=>`<option value="${p.id}">${p.n}</option>`).join('');
+    if(unico&&ps.length) S.pipe=ps[0].id;
+    pipeSel.value=S.pipe;
+    pipeSel.disabled=unico;
+    pipeSel.title=unico?`Esta cuenta solo tiene un pipeline activo: ${ps.length?ps[0].n:'—'}. Todos los datos del reporte salen de sus oportunidades.`
+                       :'Los datos del reporte salen de las oportunidades del pipeline elegido';
+  }
+  const origSel=document.getElementById('origsel');
+  if(origSel) origSel.value=S.orig;
+
+  [['campgrp',cx.camp],['prodgrp',cx.prod],['cohgrp',cx.coh],['recur',cx.recur],['noattr',cx.noattr],['pipegrp',cx.pipe],['origrp',cx.orig]].forEach(([id,ok])=>{
+    const el=document.getElementById(id); if(el) el.style.display=ok?'':'none';
+  });
+}
+
+function render(){
+  // BLOQUEO DE RANGO: antes de calcular NADA se normaliza el rango a los limites con datos.
+  // Es el guardia unico: cualquier ruta que cambie fechas termina pasando por aqui.
+  syncLimits();
+  aplicaContexto();
+  // FASE 1 · req.1: el filtro de Campaña es dependiente — si el valor elegido ya no aparece entre las
+  // opciones vigentes (porque cambió Red/Source/Producto), se resetea a "todas" en vez de quedar oculto.
+  if(S.camp && S.camp!=='__sin__' && !campOptions().some(c=>c.id===S.camp)) S.camp='';
+  const campSel=document.getElementById('camp');
+  if(campSel){
+    const opts=campOptions();
+    campSel.innerHTML='<option value="">Todas las campañas</option>'
+      +`<option value="__sin__">Sin campaña</option>`
+      +opts.map(c=>`<option value="${c.id}">${String(c.nombre||'').replace(/_/g,' ')}</option>`).join('');
+    campSel.value=S.camp;
+    // ITERACIÓN 2 · req.2: el title del <select> se recalcula según el valor elegido, porque el title de
+    // un <option> no aparece de forma confiable en todos los navegadores (Chrome no lo muestra en el cerrado).
+    campSel.title = S.camp==='__sin__'
+      ? "Solo leads pagados (Meta o Google) sin utm_campaign_id ni nombre de campaña resoluble — categoría todavía en revisión, pendiente de que Jesus defina exactamente qué debe entrar aquí"
+      : S.camp
+        ? `Aísla la campaña "${(opts.find(c=>c.id===S.camp)||{}).nombre||''}" en TODAS las tablas (campañas, creativos, funnel, source, series)`
+        : "Filtro dependiente de Red / Source / Producto ya elegidos arriba; al fijar una campaña, acota TODAS las tablas del dashboard a ella";
+  }
+  ledger();
+  const a=leadsF();
+  let sp=0;C.forEach(c=>{if(campVisible(c))sp+=spendOf(c).sp});
+  const paidN=L.filter(x=>x[S.coh]>=S.f1&&x[S.coh]<=S.f2&&platLead(x)!=='Otros').length;
+  document.getElementById('n1').textContent=num(paidN);
+  // FASE 1 · req.2: n2 ahora acompaña a la pestaña fusionada "Orgánico y Pipeline" y refleja el total de
+  // leads bajo los filtros activos (todo el pipeline, no solo los de fuente orgánica como antes).
+  document.getElementById('n2').textContent=num(a.length);
+  let h='';
+  if(S.t==='paid'){
+    const ap=a;
+    // ITERACIÓN 2 · req.1: se retiró scatter() ("Eficiencia por campaña") del layout; porProducto() ya no
+    // comparte el grid ".two" con nada y pasa a ocupar el ancho completo del panel por sí sola.
+    h=kpis(ap,sp)+tablaCamp()+creativos()+porProducto()+serie()+listado()+
+      `<div class="note" style="margin-top:8px"><b>Qué incluye esta pestaña.</b> Solo los leads que vinieron de una plataforma con gasto publicitario. Los orígenes sin inversión (orgánico, perfil de negocio, mensajería directa, referidos) viven en <b>Overview</b>. Por eso el total de aquí es menor que el del CRM completo.</div>`;
+  } else if(S.t==='overview'){
+    // FASE 1 · req.2: "Orgánico" y "Pipeline" fusionados en una sola pestaña:
+    // KPIs del pipeline completo + Overview del embudo (funnel, ya redefinido arriba) + contribución por
+    // source (incluye orgánico y pagado) + listado de leads uno por uno (antes solo estaba en org/paid).
+    S._serie=null; h=kpis(a,sp)+funnel()+porSource()+listado();
+  } else if(S.t==='ventas'){
+    S._serie=null; S._dnt=null; h=vendedores();
+  } else {
+    S._serie=null; S._dnt=null; h=notas();
+  }
+  // REDISEÑO DE FILTROS: se refresca aquí, dentro de render(), porque render() ya se llama después de
+  // CUALQUIER cambio de filtro (plat, coh, mm, camp, prod, noattr, recur, q, fechas, reset, cambio de pestaña)
+  // — así el botón de fecha, el contador de "Más filtros" y el badge de filtros activos nunca se desincronizan
+  // sin tener que repetir esta llamada en cada handler.
+  if(typeof updateDateLabel==='function'){updateDateLabel();updateMasCount();updateActiveBadge();updateOrigChip();updateBarMode()}
+  document.getElementById('view').innerHTML=h;
+  bindLeads(); tBind(); bindSerie(); bindDonut();
+  if(typeof updateAllFades==='function')updateAllFades();
+  document.querySelectorAll('.thumb').forEach(t=>t.onclick=()=>{
+    const lb=document.getElementById('lb'), img=document.getElementById('lbimg'), err=document.getElementById('lberr');
+    // FIX AUDITORÍA UX: se resetea el estado de error en cada apertura y se
+    // engancha onerror sobre la imagen grande también (no solo la miniatura),
+    // por si la miniatura cargó pero el enlace de la versión completa ya no.
+    img.style.display='';err.style.display='none';
+    img.onerror=()=>{img.style.display='none';err.style.display='block'};
+    img.src=t.dataset.full;
+    document.getElementById('lbcap').textContent=t.dataset.cap;
+    lb.style.display='flex';});
+  document.getElementById('foot').innerHTML=`<b>Método.</b> Cohorte: el ingreso se atribuye a la fecha en que entró el lead, no a la del cierre.
+   El origen de cada oportunidad es el campo <span style="font-family:var(--m)">Source</span> de GoHighLevel, sin reglas añadidas por este reporte.
+   El emparejamiento con campaña usa <span style="font-family:var(--m)">utm_campaign_id</span>; el gasto viene desglosado <b>por día</b> directamente de cada plataforma, así que cualquier rango suma exactamente los días elegidos, sin prorrateos.
+   <br><b>Fuentes.</b> ${(DATA.cuentas||[]).map(c=>c.plataforma+' '+c.id).join(' · ')||PLATS.join(' · ')} · GoHighLevel${DATA.cliente&&DATA.cliente.ghlLocationId?' '+DATA.cliente.ghlLocationId:''} · ${num(L.length)} oportunidades entre ${fmtD(WIN.min)} y ${fmtD(WIN.max)} (ventana bloqueada de ${WIN.dias} días) · ${num(SRCS.length)} sources`
+}
+/* eventos */
+document.getElementById('f1').value=S.f1;document.getElementById('f2').value=S.f2;
+const PR=[...new Set(L.map(x=>x.p))].sort();
+document.getElementById('prod').innerHTML='<option value="">Todos</option>'+PR.map(p=>`<option>${p}</option>`).join('');
+// BLOQUEO DE RANGO: los <input type="date"> ocultos tambien se recortan. min/max los pone
+// syncLimits(); esto cubre el caso de teclear una fecha a mano (que se salta min/max en varios
+// navegadores) y el de que alguien vuelva a mostrar estos controles en el futuro.
+f1.onchange=e=>{const L=lim();S.f1=clampF(e.target.value||L.min,L);if(S.f1>S.f2)S.f2=S.f1;S.page=0;render()};
+f2.onchange=e=>{const L=lim();S.f2=clampF(e.target.value||L.max,L);if(S.f2<S.f1)S.f1=S.f2;S.page=0;render()};
+prod.onchange=e=>{S.prod=e.target.value;S.page=0;render()};
+// NUEVO · FASE 1 req.1: el <select> de Campaña se repuebla en cada render() (campOptions() depende de
+// Red/Source/Producto), aquí solo se conecta el cambio de valor con el estado global.
+document.getElementById('camp').onchange=e=>{S.camp=e.target.value;S.page=0;render()};
+document.getElementById('pipesel').onchange=e=>{S.pipe=e.target.value;S.camp='';S.page=0;render()};
+document.getElementById('origsel').onchange=e=>{
+  S.orig=e.target.value; S.src=''; S.page=0;
+  aplicaOrigen(); reindexOrigen();   // x.src cambia -> hay que rehacer la lista de sources y sus colores
+  render();
+};
+q.oninput=e=>{S.q=e.target.value.toLowerCase().trim();S.page=0;render()};
+// REDISEÑO DE FILTROS: "Incluir sin campaña" y "+ Clientes recurrentes" pasaron de <button class="chip">
+// a interruptor visual (.swbtn, con un <span class="trk"> y un <span class="lbl"> adentro). Por eso ahora
+// se usa e.currentTarget en vez de e.target — un clic puede caer sobre el trk/lbl interno, no solo el
+// <button> — y el texto se actualiza sobre el .lbl en vez de sobre el textContent completo del botón
+// (que borraría el .trk). Misma lógica de negocio de siempre, solo se corrige a qué nodo se apunta.
+document.getElementById('recur').onclick=e=>{const b=e.currentTarget;S.recur=!S.recur;b.classList.toggle('on',S.recur);b.setAttribute('aria-checked',S.recur);S.page=0;render()};
+document.getElementById('noattr').onclick=e=>{const b=e.currentTarget;S.noattr=!S.noattr;b.classList.toggle('on',S.noattr);b.setAttribute('aria-checked',S.noattr);b.querySelector('.lbl').textContent=S.noattr?'Incluir sin campaña':'Solo con campaña';
+  // ITERACIÓN 2 · req.2: el tooltip cambia según el estado, explicando qué pasa con los totales en cada caso
+  b.title=S.noattr?"Activo: los leads pagados sin utm_campaign_id ni nombre de campaña resoluble SÍ suman en el gasto, leads e ingreso de las tablas de arriba":"Los leads pagados sin campaña identificada quedan FUERA de los totales; solo cuenta lo que ya tiene una campaña resuelta";
+  render()};
+document.querySelectorAll('#presets button').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('#presets button').forEach(x=>x.classList.remove('on'));b.classList.add('on');
+  // BLOQUEO DE RANGO: anclado al ultimo dia FILTRABLE de la cohorte activa, no a DATA.hasta.
+  const LM=lim(), end=dd(LM.max), st=new Date(end.getTime()-(+b.dataset.d-1)*864e5);
+  S.f1=clampF(iso(st),LM);S.f2=LM.max;f1.value=S.f1;f2.value=S.f2;S.page=0;render()});
+document.querySelectorAll('#plat button').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('#plat button').forEach(x=>x.classList.remove('on'));b.classList.add('on');S.plat=b.dataset.p;S.page=0;render()});
+document.querySelectorAll('#coh button').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('#coh button').forEach(x=>x.classList.remove('on'));b.classList.add('on');if(S.lsort.k==='f'||S.lsort.k==='fo')S.lsort.k=b.dataset.c;S.coh=b.dataset.c;S.page=0;
+  // BLOQUEO DE RANGO: cambiar de cohorte cambia que dias tienen datos. syncLimits() (dentro de render)
+  // recorta el rango si hace falta; aqui solo se refresca el calendario si esta abierto.
+  render();
+  if(document.getElementById('datePop').classList.contains('show')){const LM=lim();pick={a:clampF(S.f1,LM),b:clampF(S.f2,LM)};renderCal()}
+});
+// Selector de Source · se rellena con los sources que existan en el CRM del cliente
+(()=>{const sel=document.getElementById('srcsel');
+  sel.onchange=e=>{S.src=e.target.value;S.page=0;render()};})();
+// Selector de Red · una pestaña por plataforma publicitaria con gasto, más "Otros" si hay leads sin ella
+(()=>{const cont=document.getElementById('plat');
+  const hayOtros=L.some(x=>platLead(x)==='Otros');
+  const opts=['all',...PLATS].concat(hayOtros?['Otros']:[]);
+  cont.innerHTML=opts.map((p,i)=>`<button data-p="${p}"${i===0?' class="on"':''}>${p==='all'?'Todo':p}</button>`).join('');
+  cont.querySelectorAll('button').forEach(b=>b.onclick=()=>{
+    cont.querySelectorAll('button').forEach(x=>x.classList.remove('on'));b.classList.add('on');
+    S.plat=b.dataset.p;S.page=0;render()});})();
+document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('.tabs button').forEach(x=>x.classList.remove('on'));b.classList.add('on');
+  const antes=S.t; S.t=b.dataset.t; S.page=0;
+  if(S.t==='ventas' && antes!=='ventas'){
+    // FIX AUDITORÍA: se agrega "antes!=='ventas'" para que un reclic sobre la
+    // pestaña Vendedores (ya activa) no vuelva a pisar S._prev con el rango
+    // forzado de 30 días, perdiendo el rango original del usuario.
+    S._prev={f1:S.f1,f2:S.f2};
+    // BLOQUEO DE RANGO: esta pestaña se alimenta de DATA.sp, que trae SU PROPIA ventana. Antes se
+    // forzaban "30 dias hacia atras desde DATA.hasta", que no es la misma ventana (el export de
+    // vendedores acaba antes) — el boton de fecha mostraba un rango que no era el de la tabla.
+    // Ahora se muestra literalmente la ventana de DATA.sp, recortada a lo filtrable.
+    const LM=lim(), end=dd(LM.max), st=new Date(end.getTime()-29*864e5);
+    S.f1=clampF((DATA.sp&&DATA.sp.desde)||iso(st),LM);
+    S.f2=clampF((DATA.sp&&DATA.sp.hasta)||LM.max,LM);
+    f1.value=S.f1; f2.value=S.f2;
+    document.querySelectorAll('#presets button').forEach(x=>x.classList.toggle('on',x.dataset.d==='30'));
+  } else if(antes==='ventas'&&S._prev){
+    S.f1=S._prev.f1; S.f2=S._prev.f2; f1.value=S.f1; f2.value=S.f2; S._prev=null;
+    document.querySelectorAll('#presets button').forEach(x=>x.classList.toggle('on',x.dataset.d==='120'));
+  }
+  render()});
+document.getElementById('reset').onclick=()=>{Object.assign(S,{t:S.t,f1:WIN.min,f2:WIN.max,src:'',prod:'',q:'',noattr:true,recur:false,plat:'all',coh:'f',page:0,camp:'',
+    pipe:(DATA.pipelines&&DATA.pipelines.length===1)?DATA.pipelines[0].id:'', orig:'src'});
+  aplicaOrigen(); reindexOrigen(); // NUEVO: también resetea el filtro de Campaña; FIX AUDITORÍA: se agrega coh:'f' porque antes la cohorte no se reseteaba
+  // FIX AUDITORÍA VENDEDORES · hallazgo 1: si Reiniciar se pulsa estando en la pestaña Vendedores, S.f1/f2
+  // quedan en el rango completo, pero S._prev seguía guardando el rango de ANTES de entrar a la pestaña —
+  // al salir, ese rango viejo pisaba silenciosamente lo que Reiniciar acababa de poner. Se sincroniza también
+  // S._prev para que el reinicio sobreviva al salir de Vendedores.
+  if(S._prev)S._prev={f1:WIN.min,f2:WIN.max};
+  f1.value=S.f1;f2.value=S.f2;prod.value='';q.value='';
+  const ss=document.getElementById('srcsel'); if(ss)ss.value='';
+  document.querySelectorAll('#plat button').forEach((x,i)=>x.classList.toggle('on',i===0));
+  document.querySelectorAll('#presets button').forEach((x,i)=>x.classList.toggle('on',i===3));
+  // FIX AUDITORÍA: #plat y #coh se reseteaban internamente en S pero nunca se
+  // les quitaba la clase visual ".on" del botón previamente activo.
+  document.querySelectorAll('#plat button').forEach((x,i)=>x.classList.toggle('on',i===0));
+  document.querySelectorAll('#coh button').forEach((x,i)=>x.classList.toggle('on',i===0));
+  const na=document.getElementById('noattr');
+  na.classList.add('on');na.setAttribute('aria-checked','true');na.querySelector('.lbl').textContent='Incluir sin campaña';
+  na.title="Activo: los leads pagados sin utm_campaign_id ni nombre de campaña resoluble SÍ suman en el gasto, leads e ingreso de las tablas de arriba";
+  // FIX AUDITORÍA (heredado, ya existía antes del rediseño): el botón nunca recuperaba su texto/title
+  // original al reiniciar si se había alternado a "Solo con campaña" — solo se le devolvía la clase ".on".
+  S.recur=false;const rc=document.getElementById('recur');rc.classList.remove('on');rc.setAttribute('aria-checked','false');
+  closeDatePop();document.getElementById('masPop').classList.remove('show');
+  render()};
+document.getElementById('lb').onclick=()=>{document.getElementById('lb').style.display='none'};
+document.addEventListener('keydown',e=>{if(e.key==='Escape'){document.getElementById('lb').style.display='none';closeDatePop();document.getElementById('masPop').classList.remove('show')}});
+
+/* ===========================================================================
+   REDISEÑO DE FILTROS — botón único de rango de fechas con calendario real,
+   y panel "Más filtros". No reemplaza la lógica de negocio de arriba: solo
+   la maneja desde una interfaz nueva. Ver comentario largo junto al <div class="bar">. */
