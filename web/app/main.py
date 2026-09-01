@@ -27,6 +27,13 @@ Rutas de administración (cabecera X-Admin-Token)
     GET  /admin/enlaces
     POST /admin/enlaces/{token}/dominios
     POST /admin/enlaces/{token}/revocar
+
+Rutas de extracción (Fase 1, en rutas_extraccion.py)
+    POST /admin/config/{slug}         → configuración de construcción del cliente
+    GET  /admin/config/{slug}
+    POST /admin/crudo/{slug}/{fuente} → un extractor deja su trozo (ghl|meta|google)
+    GET  /admin/crudo/{slug}          → qué trozos hay y de cuándo
+    POST /admin/construir/{slug}      → junta, valida y publica el snapshot
 """
 from __future__ import annotations
 
@@ -46,6 +53,7 @@ from starlette.exceptions import HTTPException as ErrorHTTP
 
 from .almacen import abrir_almacen
 from .rutas_panel import router as router_panel
+from . import rutas_extraccion
 from .privacidad import MODOS, aplicar
 from . import seguridad as seg
 from .visor import partir_html
@@ -635,3 +643,12 @@ def validar(d: Any) -> list[str]:
             p.append(f"El snapshot contiene {token}, que no es JSON válido en todos los lectores.")
 
     return p
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Rutas de la Fase 1 (extracción) — se montan al final porque necesitan
+#  exige_admin y validar, que se definen arriba.
+# ═════════════════════════════════════════════════════════════════════════════
+rutas_extraccion.montar(app, almacen=almacen, exige_admin=exige_admin,
+                        validar=validar, leer_cuerpo=seg.leer_cuerpo,
+                        tope_mb=TOPE_SNAPSHOT_MB)
