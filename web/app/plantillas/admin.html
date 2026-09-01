@@ -1,0 +1,376 @@
+<!doctype html>
+<html lang="es"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Panel · Reportes Sentinel</title>
+<style>
+:root{
+  --bg:#0b0f14; --pn:#121821; --pn2:#171f2a; --line:#212c3a; --line2:#1a232f;
+  --tx:#e8edf4; --mut:#93a1b5; --faint:#6b7a8f;
+  --pu:#8b7cf6; --gr:#34d399; --rd:#f87171; --yl:#fbbf24; --bl:#60a5fa;
+  --d:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --m:ui-monospace,SFMono-Regular,"SF Mono",Menlo,monospace;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:14px/1.55 var(--d)}
+.wrap{max-width:1000px;margin:0 auto;padding:28px 22px 80px}
+h1{font-size:19px;font-weight:700;letter-spacing:-.01em;margin:0}
+h1 span{color:var(--pu)}
+h2{font-size:14px;font-weight:600;margin:0 0 4px}
+.sub{color:var(--mut);font-size:12.5px;margin:0 0 16px}
+header.top{display:flex;align-items:baseline;justify-content:space-between;gap:16px;
+  padding-bottom:16px;border-bottom:1px solid var(--line);margin-bottom:24px;flex-wrap:wrap}
+.est{font-family:var(--m);font-size:11.5px;color:var(--faint)}
+.est b{color:var(--mut);font-weight:500}
+.panel{background:var(--pn);border:1px solid var(--line);border-radius:8px;padding:18px 20px;margin-bottom:16px}
+label{display:block;font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;
+  color:var(--faint);margin:0 0 5px}
+input[type=text],input[type=password],select,input[type=file]{
+  width:100%;background:var(--pn2);border:1px solid var(--line);color:var(--tx);
+  border-radius:6px;padding:8px 10px;font:13px var(--d);outline:none}
+input:focus,select:focus{border-color:var(--pu)}
+input[type=file]{font-family:var(--m);font-size:11.5px;padding:7px 9px;cursor:pointer}
+button{background:var(--pu);color:#fff;border:0;border-radius:6px;padding:8px 15px;
+  font:600 13px var(--d);cursor:pointer;white-space:nowrap}
+button:hover{filter:brightness(1.1)}
+button:disabled{opacity:.5;cursor:default;filter:none}
+button.sec{background:var(--pn2);color:var(--tx);border:1px solid var(--line)}
+button.dgr{background:transparent;color:var(--rd);border:1px solid rgba(248,113,113,.35);padding:5px 10px;font-size:11.5px}
+.fila{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap}
+.fila>div{flex:1 1 160px;min-width:0}
+.msg{margin-top:12px;padding:11px 13px;border-radius:6px;font-size:12.8px;line-height:1.5;display:none}
+.msg.ok{display:block;background:rgba(52,211,153,.1);border:1px solid rgba(52,211,153,.3);color:var(--gr)}
+.msg.err{display:block;background:rgba(248,113,113,.09);border:1px solid rgba(248,113,113,.3);color:var(--rd)}
+.msg ul{margin:7px 0 0;padding-left:18px}
+.msg li{margin-bottom:3px}
+.msg.cargando{display:block;background:var(--pn2);border:1px solid var(--line);color:var(--mut)}
+table{width:100%;border-collapse:collapse;font-size:12.8px;margin-top:6px}
+th{text-align:left;font-size:10.5px;font-weight:600;letter-spacing:.07em;text-transform:uppercase;
+  color:var(--faint);padding:8px 10px;border-bottom:1px solid var(--line)}
+td{padding:9px 10px;border-bottom:1px solid var(--line2);vertical-align:middle;color:var(--mut)}
+td:first-child{color:var(--tx)}
+tr:last-child td{border-bottom:0}
+.tw{overflow-x:auto}
+.mono{font-family:var(--m);font-size:11.5px}
+.tag{display:inline-block;font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;
+  padding:2px 7px;border-radius:4px}
+.t-interno{background:rgba(139,124,246,.16);color:var(--pu)}
+.t-cliente{background:rgba(96,165,250,.14);color:var(--bl)}
+.t-demo{background:rgba(251,191,36,.14);color:var(--yl)}
+.t-off{background:rgba(248,113,113,.13);color:var(--rd)}
+.cli{border:1px solid var(--line);border-radius:8px;margin-bottom:12px;overflow:hidden}
+.cli>summary{padding:13px 16px;cursor:pointer;background:var(--pn2);display:flex;gap:12px;
+  align-items:baseline;justify-content:space-between;flex-wrap:wrap;list-style:none}
+.cli>summary::-webkit-details-marker{display:none}
+.cli>summary:hover{background:#1b2430}
+.cli .nm{font-weight:600;font-size:14px;color:var(--tx)}
+.cli .met{font-family:var(--m);font-size:11px;color:var(--faint)}
+.cli .cuerpo{padding:16px}
+.bloque{padding:14px 0;border-top:1px solid var(--line2)}
+.bloque:first-child{border-top:0;padding-top:0}
+.copiar{background:transparent;border:1px solid var(--line);color:var(--mut);padding:4px 9px;font-size:11px}
+#login{max-width:380px;margin:14vh auto 0}
+.nada{color:var(--faint);font-size:12.5px;padding:14px 0;text-align:center}
+.nota{font-size:12px;color:var(--faint);line-height:1.5;margin-top:9px}
+.nota code{font-family:var(--m);font-size:11px;background:var(--pn2);padding:1px 4px;border-radius:3px}
+</style></head>
+<body>
+<div class="wrap">
+
+<div id="login" class="panel" style="display:none">
+  <h2>Panel de reportes</h2>
+  <p class="sub">Pega el token de administración. Se guarda solo en esta pestaña.</p>
+  <label for="tok">Token</label>
+  <input type="password" id="tok" autocomplete="off" placeholder="ADMIN_TOKEN">
+  <div style="margin-top:12px"><button id="entrar">Entrar</button></div>
+  <div class="msg" id="mlogin"></div>
+</div>
+
+<div id="app" style="display:none">
+  <header class="top">
+    <h1>SENTINEL<span>.</span> &nbsp;Panel de reportes</h1>
+    <div class="est" id="estado"></div>
+  </header>
+
+  <div class="panel">
+    <h2>Dashboard (el visor)</h2>
+    <p class="sub">Sube el <code>dashboard.html</code> de una pieza. El servicio lo parte en visor + datos y a partir de ese momento <b>todos</b> los clientes ven el dashboard nuevo. No hace falta volver a desplegar ni regenerar snapshots.</p>
+    <div class="fila">
+      <div><label for="fvisor">Archivo dashboard.html</label><input type="file" id="fvisor" accept=".html,text/html"></div>
+      <button id="bvisor">Subir visor</button>
+    </div>
+    <div class="msg" id="mvisor"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Alta de cliente</h2>
+    <p class="sub">El identificador se usa en las rutas y no se puede cambiar después. La zona horaria es obligatoria: sin ella las fechas no cuadran con el CRM.</p>
+    <div class="fila">
+      <div><label for="cnom">Nombre</label><input type="text" id="cnom" placeholder="Aesthetics by Cliff"></div>
+      <div><label for="cslug">Identificador</label><input type="text" id="cslug" placeholder="aesthetics-by-cliff"></div>
+      <div><label for="cloc">Location de GHL</label><input type="text" id="cloc" placeholder="4sSVbJbkgof1niHlBZyY"></div>
+      <div><label for="ctz">Zona horaria</label><input type="text" id="ctz" placeholder="America/Denver"></div>
+      <button id="bcli">Guardar</button>
+    </div>
+    <div class="msg" id="mcli"></div>
+  </div>
+
+  <h2 style="margin:26px 0 2px">Clientes</h2>
+  <p class="sub">Cada cliente tiene sus datos y sus enlaces.</p>
+  <div id="clientes"></div>
+</div>
+</div>
+
+<script>
+(function(){
+  var TOK='';
+  var $=function(id){return document.getElementById(id)};
+
+  function api(ruta,opciones){
+    opciones=opciones||{};
+    opciones.headers=Object.assign({'X-Admin-Token':TOK},opciones.headers||{});
+    return fetch(ruta,opciones).then(function(r){
+      return r.text().then(function(t){
+        var d={}; try{d=t?JSON.parse(t):{}}catch(e){d={detail:t}}
+        if(!r.ok){var e=new Error('http'); e.codigo=r.status; e.datos=d; throw e}
+        return d;
+      });
+    });
+  }
+
+  // Ojo: no se puede reescribir className, porque estos elementos se localizan por una clase
+  // propia (.msnap, .menlace…). Solo se cambia la clase de estado.
+  function pinta(el,tipo,html){
+    el.classList.remove('ok','err','cargando');
+    el.classList.add('msg');
+    if(tipo) el.classList.add(tipo);
+    el.innerHTML=html;
+  }
+
+  function problema(e){
+    // Los rechazos del validador vienen con una lista de problemas concretos.
+    var d=(e&&e.datos)||{}, det=d.detail!==undefined?d.detail:d;
+    if(det&&det.problemas&&det.problemas.length){
+      return '<b>'+(det.error||'No se pudo publicar')+'</b><ul>'+
+        det.problemas.map(function(p){return '<li>'+esc(p)+'</li>'}).join('')+'</ul>';
+    }
+    if(typeof det==='string') return esc(det);
+    if(e&&e.codigo===401) return 'Token de administración inválido.';
+    return esc(JSON.stringify(det));
+  }
+  function esc(s){return String(s).replace(/[<>&]/g,function(c){return{'<':'&lt;','>':'&gt;','&':'&amp;'}[c]})}
+  function fecha(s){ if(!s||s==='None')return '—';
+    var d=new Date(s); if(isNaN(d))return esc(s);
+    return d.toLocaleString('es-ES',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}) }
+
+  // ── arranque ────────────────────────────────────────────────────────
+  var guardado=sessionStorage.getItem('tok_reportes');
+  if(guardado){ TOK=guardado; entrar() } else { $('login').style.display='block'; $('tok').focus() }
+
+  $('entrar').onclick=function(){
+    TOK=$('tok').value.trim();
+    if(!TOK) return pinta($('mlogin'),'err','Escribe el token.');
+    pinta($('mlogin'),'cargando','Comprobando…');
+    api('/admin/estado').then(function(){
+      sessionStorage.setItem('tok_reportes',TOK);
+      $('login').style.display='none'; entrar();
+    }).catch(function(e){ pinta($('mlogin'),'err',problema(e)) });
+  };
+  $('tok').onkeydown=function(e){ if(e.key==='Enter') $('entrar').click() };
+
+  function entrar(){ $('app').style.display='block'; cargar() }
+
+  function cargar(){
+    return api('/admin/estado').then(function(d){
+      var v=d.visor||{};
+      $('estado').innerHTML='almacén <b>'+esc(d.almacen)+'</b> · versión <b>'+esc(d.version)+'</b>'+
+        ' · visor '+(v.hash?('<b>'+esc(v.hash)+'</b> ('+Math.round((v.bytes||0)/1024)+' KB, '+fecha(v.subido)+')')
+                            :'<b style="color:var(--rd)">sin cargar</b>');
+      pintaClientes(d.clientes||[]);
+    }).catch(function(e){
+      if(e.codigo===401){ sessionStorage.removeItem('tok_reportes'); location.reload(); return }
+      $('estado').innerHTML='<span style="color:var(--rd)">no se pudo leer el estado</span>';
+    });
+  }
+
+  // ── visor ───────────────────────────────────────────────────────────
+  $('bvisor').onclick=function(){
+    var f=$('fvisor').files[0];
+    if(!f) return pinta($('mvisor'),'err','Elige el archivo dashboard.html primero.');
+    pinta($('mvisor'),'cargando','Subiendo '+Math.round(f.size/1024)+' KB…');
+    $('bvisor').disabled=true;
+    api('/admin/visor',{method:'POST',body:f,headers:{'Content-Type':'text/html; charset=utf-8'}})
+      .then(function(d){
+        pinta($('mvisor'),'ok','Visor actualizado. Versión <b>'+esc(d.hash)+'</b> · visor '+
+          d.index_kb+' KB · app.js '+d.app_kb+' KB. Todos los clientes ya lo están usando.');
+        $('fvisor').value=''; cargar();
+      })
+      .catch(function(e){ pinta($('mvisor'),'err',problema(e)) })
+      .then(function(){ $('bvisor').disabled=false });
+  };
+
+  // ── alta de cliente ─────────────────────────────────────────────────
+  $('cnom').oninput=function(){
+    if($('cslug').dataset.tocado) return;
+    $('cslug').value=$('cnom').value.toLowerCase().normalize('NFD')
+      .replace(/[̀-ͯ]/g,'').replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'');
+  };
+  $('cslug').oninput=function(){ $('cslug').dataset.tocado='1' };
+
+  $('bcli').onclick=function(){
+    var cuerpo={nombre:$('cnom').value.trim(),slug:$('cslug').value.trim(),
+                ghl_location_id:$('cloc').value.trim()||null,tz:$('ctz').value.trim()||null,
+                fuentes:['crm','meta','google']};
+    if(!cuerpo.nombre||!cuerpo.slug) return pinta($('mcli'),'err','Hacen falta nombre e identificador.');
+    if(!cuerpo.tz) return pinta($('mcli'),'err','La zona horaria es obligatoria: es lo que hace que las fechas cuadren con el CRM.');
+    pinta($('mcli'),'cargando','Guardando…');
+    api('/admin/clientes',{method:'POST',body:JSON.stringify(cuerpo),
+                           headers:{'Content-Type':'application/json'}})
+      .then(function(d){
+        pinta($('mcli'),'ok','Cliente <b>'+esc(d.nombre)+'</b> guardado.');
+        ['cnom','cslug','cloc','ctz'].forEach(function(k){$(k).value=''});
+        delete $('cslug').dataset.tocado; cargar();
+      })
+      .catch(function(e){ pinta($('mcli'),'err',problema(e)) });
+  };
+
+  // ── clientes ────────────────────────────────────────────────────────
+  function resumen(c){
+    return esc(c.slug)+' · datos: '+fecha(c.ultimo_snapshot)+
+      ' · '+(c.enlaces||0)+' enlace'+(c.enlaces===1?'':'s');
+  }
+
+  // Se actualiza en el sitio: si se volviera a pintar la lista entera, la tarjeta abierta se
+  // cerraría y se perdería el mensaje que el usuario tiene que leer.
+  function pintaClientes(cs){
+    var cont=$('clientes');
+    if(!cs.length){
+      cont.innerHTML='<div class="panel nada">Todavía no hay clientes. Crea el primero arriba.</div>';
+      return;
+    }
+    var previos={};
+    Array.prototype.forEach.call(cont.querySelectorAll('.cli'),function(d){ previos[d.dataset.slug]=d });
+    var mismos = cs.length===Object.keys(previos).length &&
+                 cs.every(function(c){ return previos[c.slug] });
+
+    if(mismos){
+      cs.forEach(function(c){
+        var m=previos[c.slug].querySelector('.met');
+        if(m) m.innerHTML=resumen(c);
+      });
+      return;
+    }
+
+    cont.innerHTML=cs.map(function(c){
+      return '<details class="cli" data-slug="'+esc(c.slug)+'">'+
+        '<summary><span class="nm">'+esc(c.nombre)+'</span>'+
+        '<span class="met">'+resumen(c)+'</span></summary>'+
+        '<div class="cuerpo"><div class="nada">Abriendo…</div></div></details>';
+    }).join('');
+    Array.prototype.forEach.call(cont.querySelectorAll('.cli'),function(d){
+      d.addEventListener('toggle',function(){ if(d.open && !d.dataset.listo) cuerpoCliente(d) });
+    });
+  }
+
+  function cuerpoCliente(det){
+    var slug=det.dataset.slug, cuerpo=det.querySelector('.cuerpo');
+    det.dataset.listo='1';
+    cuerpo.innerHTML=
+      '<div class="bloque"><h2>Datos del reporte</h2>'+
+      '<p class="sub">Sube el <code>snapshot.json</code>. Si no cuadra, el servicio lo rechaza y te dice exactamente qué falla — así un reporte con números malos no llega al cliente.</p>'+
+      '<div class="fila"><div><label>Archivo snapshot.json</label>'+
+      '<input type="file" class="fsnap" accept=".json,application/json"></div>'+
+      '<button class="bsnap">Publicar datos</button></div>'+
+      '<div class="msg msnap"></div>'+
+      '<div class="tw"><table class="hist"><thead><tr><th>Publicado</th><th>Ventana</th>'+
+      '<th>Oportunidades</th><th>Tamaño</th></tr></thead><tbody></tbody></table></div></div>'+
+
+      '<div class="bloque"><h2>Enlaces</h2>'+
+      '<p class="sub"><b>interno</b>: para el equipo. <b>cliente</b>: para el cliente, ve sus datos completos. '+
+      '<b>demo</b>: nombres de pacientes enmascarados y negocio oculto, para casos de éxito.</p>'+
+      '<div class="fila"><div><label>Modo</label><select class="emodo">'+
+      '<option value="cliente">cliente</option><option value="interno">interno</option>'+
+      '<option value="demo">demo</option></select></div>'+
+      '<div><label>Nota (para acordarte a quién es)</label><input type="text" class="enota" placeholder="Cliff — reunión mensual"></div>'+
+      '<button class="benlace">Crear enlace</button></div>'+
+      '<div class="msg menlace"></div>'+
+      '<div class="tw"><table class="tenlaces"><thead><tr><th>Enlace</th><th>Modo</th><th>Nota</th>'+
+      '<th>Visitas</th><th>Creado</th><th></th></tr></thead><tbody></tbody></table></div></div>';
+
+    var msnap=cuerpo.querySelector('.msnap');
+    cuerpo.querySelector('.bsnap').onclick=function(){
+      var f=cuerpo.querySelector('.fsnap').files[0], b=this;
+      if(!f) return pinta(msnap,'err','Elige el archivo snapshot.json primero.');
+      pinta(msnap,'cargando','Subiendo y comprobando '+Math.round(f.size/1024)+' KB…');
+      b.disabled=true;
+      api('/admin/snapshots/'+encodeURIComponent(slug),
+          {method:'POST',body:f,headers:{'Content-Type':'application/json'}})
+        .then(function(d){
+          pinta(msnap,'ok','Datos publicados: <b>'+esc(d.n_leads)+' oportunidades</b>, '+
+            Math.round(Number(d.bytes)/1024)+' KB. Los enlaces ya muestran esto.');
+          cuerpo.querySelector('.fsnap').value=''; historial(); cargar();
+        })
+        .catch(function(e){ pinta(msnap,'err',problema(e)) })
+        .then(function(){ b.disabled=false });
+    };
+
+    var menlace=cuerpo.querySelector('.menlace');
+    cuerpo.querySelector('.benlace').onclick=function(){
+      var modo=cuerpo.querySelector('.emodo').value, nota=cuerpo.querySelector('.enota').value.trim();
+      pinta(menlace,'cargando','Creando…');
+      api('/admin/enlaces',{method:'POST',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({cliente:slug,modo:modo,nota:nota||null})})
+        .then(function(d){
+          pinta(menlace,'ok','Enlace creado.');
+          cuerpo.querySelector('.enota').value=''; enlaces(); cargar();
+        })
+        .catch(function(e){ pinta(menlace,'err',problema(e)) });
+    };
+
+    function historial(){
+      api('/admin/snapshots/'+encodeURIComponent(slug)).then(function(d){
+        var tb=cuerpo.querySelector('.hist tbody'), h=d.historial||[];
+        tb.innerHTML=h.length?h.map(function(r){
+          return '<tr><td>'+fecha(r.generado)+'</td><td class="mono">'+esc(r.desde)+' → '+esc(r.hasta)+
+            '</td><td>'+esc(r.n_leads)+'</td><td>'+Math.round(Number(r.bytes)/1024)+' KB</td></tr>';
+        }).join(''):'<tr><td colspan="4" class="nada">Todavía no hay datos publicados.</td></tr>';
+      });
+    }
+    function enlaces(){
+      api('/admin/enlaces?cliente='+encodeURIComponent(slug)).then(function(d){
+        var tb=cuerpo.querySelector('.tenlaces tbody'), es=d.enlaces||[];
+        tb.innerHTML=es.length?es.map(function(e){
+          var revocado=(e.revocado==='True'||e.revocado===true);
+          var url=location.origin+'/r/'+e.token+'/';
+          return '<tr><td>'+(revocado?'<span class="tag t-off">revocado</span>':
+              '<button class="copiar" data-url="'+esc(url)+'">copiar enlace</button>')+'</td>'+
+            '<td><span class="tag t-'+esc(e.modo)+'">'+esc(e.modo)+'</span></td>'+
+            '<td>'+esc(e.nota&&e.nota!=='None'?e.nota:'—')+'</td>'+
+            '<td>'+esc(e.accesos)+'</td><td>'+fecha(e.creado)+'</td>'+
+            '<td>'+(revocado?'':'<button class="dgr rev" data-token="'+esc(e.token)+'">revocar</button>')+'</td></tr>';
+        }).join(''):'<tr><td colspan="6" class="nada">Sin enlaces todavía.</td></tr>';
+
+        Array.prototype.forEach.call(tb.querySelectorAll('.copiar'),function(b){
+          b.onclick=function(){
+            navigator.clipboard.writeText(b.dataset.url).then(function(){
+              var t=b.textContent; b.textContent='copiado';
+              setTimeout(function(){b.textContent=t},1400);
+            },function(){ pinta(menlace,'ok','Enlace: '+esc(b.dataset.url)) });
+          };
+        });
+        Array.prototype.forEach.call(tb.querySelectorAll('.rev'),function(b){
+          b.onclick=function(){
+            b.disabled=true;
+            api('/admin/enlaces/'+encodeURIComponent(b.dataset.token)+'/revocar',{method:'POST'})
+              .then(function(){ enlaces(); cargar() })
+              .catch(function(e){ pinta(menlace,'err',problema(e)); b.disabled=false });
+          };
+        });
+      });
+    }
+    historial(); enlaces();
+  }
+})();
+</script>
+</body></html>
