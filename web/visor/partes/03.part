@@ -29,7 +29,7 @@ function tablaCamp(){
   // decide ahora ANTES de filtrar por texto; el filtrado se aplica después y, si deja 0 filas, se muestra
   // una fila de "sin resultados" dentro de la tabla — mismo patrón que ya usan el resto de tablas del
   // dashboard (Rendimiento por creativo, Contribución por source, las de Vendedores).
-  if(!rows.length)return `<div class="panel"><div class="empty">Ninguna campaña tuvo entrega en este rango.Amplía las fechas o cambia el filtro de red.</div></div>`;
+  if(!rows.length)return `<div class="panel"><div class="empty">Ninguna campaña tuvo entrega en este rango. Amplía las fechas o cambia el filtro de red.</div></div>`;
   rows=tFiltrar('camp',rows,CF);
   if(!S.ts['camp'])S.ts['camp']={k:'spend',d:-1};
   const k=S.ts['camp'].k,d=S.ts['camp'].d;
