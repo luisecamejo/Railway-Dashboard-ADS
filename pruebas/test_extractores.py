@@ -22,7 +22,7 @@ sys.path.insert(0, str(RAIZ))
 sys.path.insert(0, str(RAIZ / "extractores"))
 logging.disable(logging.INFO)
 
-from comun.fechas import dias_entre, ventana          # noqa: E402
+from comun.fechas import dia_de, dias_entre, ventana   # noqa: E402
 from comun.mcp import ClienteMCP, _leer_sse           # noqa: E402
 
 fallos = []
@@ -51,6 +51,17 @@ def prueba_ventana():
     # La zona horaria manda, no el reloj del contenedor (que va en UTC).
     dt_tokio = ventana("Asia/Tokyo", hoy=dt.date(2026, 8, 31))
     ok(dt_tokio == ("2026-05-03", "2026-08-30"), "la ventana se calcula en la zona dada")
+
+    # El borde de la ventana: el fallo que rechazó el primer snapshot de verdad.
+    # 2026-05-04 05:30 UTC son las 23:30 del día 3 en Denver. GoHighLevel lo dio por
+    # dentro de "desde 2026-05-04" y aquí es del día 3, así que el snapshot declaraba
+    # una ventana que no cubría lo que traía. Se decide aquí, no en el CRM.
+    borde = int(dt.datetime(2026, 5, 4, 5, 30, tzinfo=dt.timezone.utc).timestamp() * 1000)
+    ok(dia_de(borde, "America/Denver") == "2026-05-03",
+       "una marca de tiempo se sitúa en el día del NEGOCIO, no en el de UTC",
+       f"{dia_de(borde, 'UTC')} en UTC → {dia_de(borde, 'America/Denver')} en Denver")
+    ok(dia_de(borde, "UTC") == "2026-05-04",
+       "y en UTC sería el día siguiente: por eso el filtro del CRM no basta")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
