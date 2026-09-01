@@ -70,6 +70,14 @@ tr:last-child td{border-bottom:0}
 .bloque{padding:14px 0;border-top:1px solid var(--line2)}
 .bloque:first-child{border-top:0;padding-top:0}
 .copiar{background:transparent;border:1px solid var(--line);color:var(--mut);padding:4px 9px;font-size:11px}
+.mini{background:transparent;border:1px solid var(--line);color:var(--mut);padding:3px 8px;font-size:10.5px}
+.doms{font-family:var(--m);font-size:10.5px;color:var(--faint);line-height:1.5;word-break:break-all}
+.preset{display:flex;gap:6px;margin-top:6px;flex-wrap:wrap}
+.preset button{background:transparent;border:1px dashed var(--line);color:var(--mut);
+  padding:3px 9px;font-size:10.5px;font-weight:500}
+.snip{font-family:var(--m);font-size:11px;background:var(--bg);border:1px solid var(--line);
+  border-radius:6px;padding:11px 13px;margin-top:10px;white-space:pre-wrap;word-break:break-all;
+  color:var(--mut);max-height:150px;overflow:auto}
 #login{max-width:380px;margin:14vh auto 0}
 .nada{color:var(--faint);font-size:12.5px;padding:14px 0;text-align:center}
 .nota{font-size:12px;color:var(--faint);line-height:1.5;margin-top:9px}
@@ -107,10 +115,10 @@ tr:last-child td{border-bottom:0}
     <h2>Alta de cliente</h2>
     <p class="sub">El identificador se usa en las rutas y no se puede cambiar después. La zona horaria es obligatoria: sin ella las fechas no cuadran con el CRM.</p>
     <div class="fila">
-      <div><label for="cnom">Nombre</label><input type="text" id="cnom" placeholder="Aesthetics by Cliff"></div>
-      <div><label for="cslug">Identificador</label><input type="text" id="cslug" placeholder="aesthetics-by-cliff"></div>
-      <div><label for="cloc">Location de GHL</label><input type="text" id="cloc" placeholder="4sSVbJbkgof1niHlBZyY"></div>
-      <div><label for="ctz">Zona horaria</label><input type="text" id="ctz" placeholder="America/Denver"></div>
+      <div><label for="cnom">Nombre</label><input type="text" id="cnom" placeholder="Clínica Ejemplo"></div>
+      <div><label for="cslug">Identificador</label><input type="text" id="cslug" placeholder="clinica-ejemplo"></div>
+      <div><label for="cloc">Location de GHL</label><input type="text" id="cloc" placeholder="id de la sub-cuenta"></div>
+      <div><label for="ctz">Zona horaria</label><input type="text" id="ctz" placeholder="America/New_York"></div>
       <button id="bcli">Guardar</button>
     </div>
     <div class="msg" id="mcli"></div>
@@ -157,6 +165,7 @@ tr:last-child td{border-bottom:0}
     }
     if(typeof det==='string') return esc(det);
     if(e&&e.codigo===401) return 'Token de administración inválido.';
+    if(e&&e.codigo===429) return 'Demasiados intentos fallidos. Espera unos minutos.';
     return esc(JSON.stringify(det));
   }
   function esc(s){return String(s).replace(/[<>&]/g,function(c){return{'<':'&lt;','>':'&gt;','&':'&amp;'}[c]})}
@@ -292,11 +301,20 @@ tr:last-child td{border-bottom:0}
       '<div class="fila"><div><label>Modo</label><select class="emodo">'+
       '<option value="cliente">cliente</option><option value="interno">interno</option>'+
       '<option value="demo">demo</option></select></div>'+
-      '<div><label>Nota (para acordarte a quién es)</label><input type="text" class="enota" placeholder="Cliff — reunión mensual"></div>'+
+      '<div><label>Nota (para acordarte a quién es)</label><input type="text" class="enota" placeholder="para quién es este enlace"></div>'+
       '<button class="benlace">Crear enlace</button></div>'+
+      '<div style="margin-top:12px"><label>Dominios donde se puede empotrar en un iframe</label>'+
+      '<input type="text" class="edoms" placeholder="vacío = no se puede empotrar en ningún sitio">'+
+      '<div class="preset">'+
+      '<button class="pghl">+ dominios de GoHighLevel</button>'+
+      '<button class="pvacio">vaciar</button></div>'+
+      '<p class="nota">Solo esos dominios podrán mostrar el reporte dentro de un iframe; '+
+      'cualquier otra web lo verá bloqueado por el navegador. Si el cliente tiene dominio '+
+      'propio en GoHighLevel, añádelo también.</p></div>'+
       '<div class="msg menlace"></div>'+
       '<div class="tw"><table class="tenlaces"><thead><tr><th>Enlace</th><th>Modo</th><th>Nota</th>'+
-      '<th>Visitas</th><th>Creado</th><th></th></tr></thead><tbody></tbody></table></div></div>';
+      '<th>Empotrar</th><th>Visitas</th><th>Creado</th><th></th></tr></thead><tbody></tbody></table></div>'+
+      '<div class="snip" style="display:none"></div></div>';
 
     var msnap=cuerpo.querySelector('.msnap');
     cuerpo.querySelector('.bsnap').onclick=function(){
@@ -316,13 +334,25 @@ tr:last-child td{border-bottom:0}
     };
 
     var menlace=cuerpo.querySelector('.menlace');
+    var snip=cuerpo.querySelector('.snip');
+    var GHL='app.gohighlevel.com, *.gohighlevel.com, *.msgsndr.com, *.leadconnectorhq.com';
+    cuerpo.querySelector('.pghl').onclick=function(){
+      var i=cuerpo.querySelector('.edoms');
+      i.value=i.value.trim()?i.value.replace(/,\s*$/,'')+', '+GHL:GHL;
+    };
+    cuerpo.querySelector('.pvacio').onclick=function(){ cuerpo.querySelector('.edoms').value='' };
+
     cuerpo.querySelector('.benlace').onclick=function(){
-      var modo=cuerpo.querySelector('.emodo').value, nota=cuerpo.querySelector('.enota').value.trim();
+      var modo=cuerpo.querySelector('.emodo').value,
+          nota=cuerpo.querySelector('.enota').value.trim(),
+          doms=cuerpo.querySelector('.edoms').value.trim();
       pinta(menlace,'cargando','Creando…');
       api('/admin/enlaces',{method:'POST',headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({cliente:slug,modo:modo,nota:nota||null})})
+            body:JSON.stringify({cliente:slug,modo:modo,nota:nota||null,dominios:doms||null})})
         .then(function(d){
-          pinta(menlace,'ok','Enlace creado.');
+          pinta(menlace,'ok','Enlace creado'+(d.dominios&&d.dominios.length
+            ?' y autorizado para empotrarse en '+d.dominios.length+' dominio'+(d.dominios.length===1?'':'s')+'.'
+            :'. No es empotrable: sirve para compartir el enlace, no para meterlo en una web.'));
           cuerpo.querySelector('.enota').value=''; enlaces(); cargar();
         })
         .catch(function(e){ pinta(menlace,'err',problema(e)) });
@@ -337,19 +367,63 @@ tr:last-child td{border-bottom:0}
         }).join(''):'<tr><td colspan="4" class="nada">Todavía no hay datos publicados.</td></tr>';
       });
     }
+
+    function iframeSnippet(token){
+      return '<iframe src="'+location.origin+'/r/'+token+'/embed"\n'+
+             '        title="Reporte de adquisición"\n'+
+             '        style="width:100%;height:1400px;border:0;display:block"\n'+
+             '        loading="lazy" referrerpolicy="no-referrer"></iframe>';
+    }
+
     function enlaces(){
       api('/admin/enlaces?cliente='+encodeURIComponent(slug)).then(function(d){
         var tb=cuerpo.querySelector('.tenlaces tbody'), es=d.enlaces||[];
         tb.innerHTML=es.length?es.map(function(e){
           var revocado=(e.revocado==='True'||e.revocado===true);
           var url=location.origin+'/r/'+e.token+'/';
+          var doms=e.dominios||[];
+          var celdaEmbed = revocado ? '—'
+            : (doms.length
+                ? '<button class="mini ifr" data-token="'+esc(e.token)+'">copiar iframe</button>'+
+                  '<div class="doms">'+doms.map(esc).join('<br>')+'</div>'
+                : '<button class="mini abrir" data-token="'+esc(e.token)+'">permitir</button>');
           return '<tr><td>'+(revocado?'<span class="tag t-off">revocado</span>':
               '<button class="copiar" data-url="'+esc(url)+'">copiar enlace</button>')+'</td>'+
             '<td><span class="tag t-'+esc(e.modo)+'">'+esc(e.modo)+'</span></td>'+
             '<td>'+esc(e.nota&&e.nota!=='None'?e.nota:'—')+'</td>'+
+            '<td>'+celdaEmbed+'</td>'+
             '<td>'+esc(e.accesos)+'</td><td>'+fecha(e.creado)+'</td>'+
             '<td>'+(revocado?'':'<button class="dgr rev" data-token="'+esc(e.token)+'">revocar</button>')+'</td></tr>';
-        }).join(''):'<tr><td colspan="6" class="nada">Sin enlaces todavía.</td></tr>';
+        }).join(''):'<tr><td colspan="7" class="nada">Sin enlaces todavía.</td></tr>';
+
+        Array.prototype.forEach.call(tb.querySelectorAll('.ifr'),function(b){
+          b.onclick=function(){
+            var code=iframeSnippet(b.dataset.token);
+            snip.style.display='block';
+            snip.textContent=code;
+            navigator.clipboard.writeText(code).then(function(){
+              pinta(menlace,'ok','Iframe copiado. Pégalo en GoHighLevel como código personalizado. '+
+                'La altura (1400px) la puedes ajustar.');
+            },function(){ pinta(menlace,'ok','Copia el código de abajo a mano.') });
+          };
+        });
+        Array.prototype.forEach.call(tb.querySelectorAll('.abrir'),function(b){
+          b.onclick=function(){
+            var doms=cuerpo.querySelector('.edoms').value.trim();
+            if(!doms) return pinta(menlace,'err','Escribe arriba los dominios permitidos '+
+              '(el botón «+ dominios de GoHighLevel» los rellena) y vuelve a pulsar.');
+            b.disabled=true;
+            api('/admin/enlaces/'+encodeURIComponent(b.dataset.token)+'/dominios',
+                {method:'POST',headers:{'Content-Type':'application/json'},
+                 body:JSON.stringify({dominios:doms})})
+              .then(function(r){
+                pinta(menlace,'ok','Enlace autorizado en '+r.dominios.length+' dominio'+
+                  (r.dominios.length===1?'':'s')+'. Ya puedes copiar su iframe.');
+                enlaces();
+              })
+              .catch(function(e){ pinta(menlace,'err',problema(e)); b.disabled=false });
+          };
+        });
 
         Array.prototype.forEach.call(tb.querySelectorAll('.copiar'),function(b){
           b.onclick=function(){
