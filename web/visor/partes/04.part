@@ -1,0 +1,434 @@
+function funnel(){
+  const ps=(DATA.pipelines||[]);
+  if(!S.pipe && ps.length>1){
+    const a=leadsF();
+    const con=ps.filter(p=>a.some(x=>x.pipe===p.id));
+    const usar=con.length?con:ps;
+    return usar.map(p=>funBloque(p.id,a.filter(x=>x.pipe===p.id),usar.length>1)).join('');
+  }
+  return funBloque(S.pipe,leadsF(),false);
+}
+function funBloque(pipeId,a,multi){
+  const tot=a.length;
+  const st=etapasDe(pipeId);
+  if(!st.length) return `<div class="panel"><div class="empty">Este pipeline no tiene etapas.</div></div>`;
+
+  // conteo por ID de etapa (no por nombre) y mezcla de estados dentro de cada una
+  const porEt={}; st.forEach(sg=>{porEt[sg.id]=[]});
+  const huerf=[];
+  a.forEach(x=>{ if(porEt[x.ei]) porEt[x.ei].push(x); else huerf.push(x); });
+
+  const mx=Math.max(...st.map(sg=>porEt[sg.id].length))||1;
+  const cierre=etapaDesenlaceGanada(pipeId);
+  const A=agg(a);
+
+  const filas=st.map(sg=>{
+    const g=porEt[sg.id], v=g.length, m=mixEstado(g), dom=estadoDominante(g);
+    const w = v ? Math.max(v/mx*100, 2.5) : 0;
+    // la barra se parte por estado: así una oportunidad ganada aparcada en una etapa que no es la
+    // de cierre se ve como un trozo verde ahí mismo, en vez de esconderse o de necesitar una regla.
+    const segs=EST_ORDEN.filter(e=>m[e]).map(e=>
+      `<i style="width:${m[e]/v*100}%;background:${EST_COL[e]}" title="${m[e]} ${EST_LBL[e].toLowerCase()}${m[e]>1?'s':''}"></i>`).join('');
+    const desenlace = dom && dom.st!=='open';
+    const tip=`${num(v)} oportunidades están HOY en "${sg.n}"`
+      +(v?` · ${EST_ORDEN.filter(e=>m[e]).map(e=>`${m[e]} ${EST_LBL[e].toLowerCase()}`).join(' · ')}`:'')
+      +(desenlace?` · el ${dom.pct.toFixed(0)}% de lo que hay aquí ya está ${EST_LBL[dom.st].toLowerCase()}: en este CRM esta etapa funciona como desenlace`:'');
+    return `<div class="fr" title="${tip.replace(/"/g,'&quot;')}">
+      <div class="lb">${sg.n}${sg.id===cierre?' <span class="tag" style="background:rgba(52,211,153,.16);color:var(--gr)" title="Es la etapa donde se acumulan las oportunidades ganadas de esta cuenta. Se deduce de los datos, no del nombre de la etapa.">CIERRE</span>':''}</div>
+      <div class="fbar"><span class="fseg" style="width:${w}%">${segs}</span></div>
+      <div class="num"><b>${num(v)}</b> hoy${tot?` · <span class="mut">${pct(v/tot*100)}</span>`:''}</div></div>`;
+  }).join('');
+
+  const leyenda=EST_ORDEN.map(e=>`<span><i style="background:${EST_COL[e]}"></i>${EST_LBL[e]}</span>`).join('');
+
+  const pNom=(DATA.pipelines||[]).find(p=>p.id===pipeId)?.n||'el pipeline';
+  return `<div class="panel"><div class="ph"><div><h2>Overview del pipeline${multi?` · ${pNom}`:''}</h2>
+    ${multi?`<p><b>Cada pipeline se lee por separado.</b> Las etapas de dos embudos distintos no son la misma escalera, así que no se mezclan en un solo embudo. Para ver un pipeline solo, elígelo en el filtro <b>Pipeline</b>.</p>`:''}
+    <p>Una barra por cada etapa de <b>${pNom}</b>, en el orden que tiene en GoHighLevel. Cada oportunidad se cuenta <b>una sola vez</b>, en la etapa donde está hoy. El color de la barra parte esa etapa por <b>estado</b> de la oportunidad, que es el único dato de resultado que existe igual en todas las cuentas — el dashboard no asume qué etapa es "buena" ni cuál es "salida", porque eso lo decide el pipeline de cada cliente.</p></div></div>
+   <div class="pb">
+   <div class="lg" style="margin:0 0 14px">${leyenda}</div>
+   <div class="fn">${filas}</div>
+   ${huerf.length?`<div class="note" style="margin-top:12px"><b>${num(huerf.length)} oportunidades</b> están en una etapa que ya no existe en este pipeline (se borró o se movieron entre pipelines). Cuentan en los totales de abajo pero no tienen barra propia.</div>`:''}
+   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:11px;margin-top:20px">
+   ${[['En pipeline abierto',A.abierto,'var(--bl)','Estado Abierto en GoHighLevel: siguen en gestión, aún no cerraron ni se descartaron'],
+      ['Ganados',A.won,'var(--gr)','Estado Ganado'],
+      ['Perdidos',A.lost,'var(--rd)','Estado Perdido: se trabajaron y no compraron'],
+      ['Abandonados',A.aband,'var(--faint)','Estado Abandonado: dejaron de responder antes de una decisión']]
+     .map(k=>`<div class="kpi" title="${(k[3]||'').replace(/"/g,'&quot;')}"><div class="k">${k[0]}</div><div class="v" style="color:${k[2]}">${num(k[1])}</div><div class="s">${pct(tot?k[1]/tot*100:0)} del total</div></div>`).join('')}
+   </div>
+   <div style="margin-top:18px" class="note"><b>Velocidad.</b> Las oportunidades ganadas tardaron
+   <b>${(a.filter(x=>x.st==='won').reduce((s,x)=>s+x.d,0)/(A.won||1)).toFixed(1)} días</b> de media entre entrar al CRM y su último movimiento de etapa.
+   Las que siguen abiertas llevan <b>${(a.filter(x=>x.st==='open').reduce((s,x)=>s+x.d,0)/(A.abierto||1)).toFixed(1)} días</b>.
+   Lo que pasa DESPUÉS de ese último movimiento — cuánto lleva una oportunidad quieta sin avanzar — se ve por lead en la columna <b>"Días estancado"</b> del listado de abajo, comparada contra el límite de SOP de su etapa.</div>
+   </div></div>`;
+}
+
+const ESTADO={won:'Ganado',lost:'Perdido',open:'Abierto',abandoned:'Abandonado'};
+// ITERACIÓN 2 · req.2: 4º elemento de cada columna = descripción real para el tooltip del encabezado
+const COLS=[
+  ['n','Lead','txt','Nombre o teléfono del contacto en el CRM'],
+  [S.coh,'Fecha','txt','La fecha que define el cohorte activo — alta del contacto o creación de la oportunidad, según el interruptor "Cohorte" de arriba'],
+  ['src','Source','sel','Origen ya auditado del lead (Meta, Google, GBP, IG DM, etc.), después de la revisión de atribución'],
+  ['cn','Campaña','txt','Campaña que originó el lead según la atribución resuelta (por id, por nombre o por renombrada — ver etiquetas NOM/REN)'],
+  ['p','Producto','sel','Tratamiento asociado: dato duro cuando viene del nombre de campaña de Meta, etiqueta débil del contacto en el resto de canales'],
+  ['crit','Criterio de atribución','sel','Por qué este lead se atribuyó a este origen (M1/G1/G2/G3/O3…), ver el detalle en Notas y salvedades'],
+  ['rec','Tipo','sel','Recurrente: contacto dado de alta antes del rango que volvió a comprar dentro de él. Nuevo: todo lo demás'],
+  ['e','Etapa alcanzada','sel','Etapa actual del lead en el pipeline (SELS), sin contar las etapas anteriores por las que ya pasó'],
+  // PENDIENTE · req.3 "qué mide el campo de": el dato ya existía en cada lead y no se mostraba en ningún
+  // lado. Se comprobó contra las 1015 filas de DATA.leads que d + de ≈ (fecha de generación del reporte −
+  // fecha de oportunidad), en días — coincide dentro de 1 día en 967/1015 filas y dentro de 2 días en las
+  // 1015 (el resto es redondeo de hora). Como el propio código ya usa "x.d" como "días entre entrar al CRM
+  // y su último movimiento de etapa" (ver la nota de Velocidad en el Overview del pipeline), de es el
+  // complemento: días transcurridos DESDE ese último movimiento HASTA hoy — o sea, cuánto tiempo lleva
+  // "quieto" un lead sin avanzar ni retroceder de etapa. Se muestra junto al límite de días que marca el
+  // SOP de su etapa actual (DATA.sop) para que un lead estancado por encima de su propio SOP resalte solo.
+  ['de','Días estancado','num','Días desde el último movimiento de etapa de este lead hasta hoy (sin contar lo que ya tardó en llegar a su etapa actual, eso es la columna "Fecha" combinada con "Etapa alcanzada"). Se resalta en rojo cuando supera el límite de días que marca el SOP para esa etapa.'],
+  ['st','Estado','sel','Ganado, Perdido, Abierto o Abandonado'],
+  ['v','Valor','num','Monto de la venta, solo si el lead está en estado Ganado']];
+S.col={}; S.lsort={k:S.coh,d:-1};
+function leadRows(){
+  let a=leadsF();
+  for(const [k,,t] of COLS){
+    const q=S.col[k]; if(!q) continue;
+    if(t==='num'){ /* numéricas: solo se ordenan */ }
+    else if(t==='sel') a=a.filter(x=>(k==='st'?ESTADO[x.st]:k==='rec'?(x.rec?'Recurrente':'Nuevo'):String(x[k]||''))===q);
+    else {const l=q.toLowerCase(); a=a.filter(x=>String(x[k]||'').toLowerCase().includes(l));}
+  }
+  const k=S.lsort.k,dir=S.lsort.d;
+  return a.sort((x,y)=>{
+    const A=x[k],B=y[k];
+    if(typeof A==='number'||typeof B==='number') return ((A||0)-(B||0))*dir;
+    return String(A||'').localeCompare(String(B||''),'es')*dir;
+  });
+}
+function opciones(k){
+  const base=leadsF();
+  const v=[...new Set(base.map(x=>k==='st'?ESTADO[x.st]:k==='rec'?(x.rec?'Recurrente':'Nuevo'):(x[k]||'')))].filter(Boolean).sort();
+  return v;
+}
+function filtroFila(){
+  // ITERACIÓN 2 · req.2: cada input/select de esta fila de filtros lleva el mismo `d` de su columna en el tooltip
+  return `<tr id="cfrow">${COLS.map(([k,lb,t,d])=>{
+    if(t==='num') return `<td style="padding:6px 8px"></td>`;
+    if(t==='sel'){const o=opciones(k);
+      return `<td style="padding:6px 8px"><select class="cf" data-k="${k}" title="${(d||'').replace(/"/g,'&quot;')}" style="width:100%;font-size:10.5px;padding:3px 4px">
+        <option value="">Todos</option>${o.map(v=>`<option${S.col[k]===v?' selected':''}>${v}</option>`).join('')}</select></td>`;}
+    return `<td style="padding:6px 8px"><input class="cf" data-k="${k}" value="${(S.col[k]||'').replace(/"/g,'&quot;')}"
+      placeholder="filtrar…" title="${(d||'').replace(/"/g,'&quot;')}" style="width:100%;background:var(--pan2);color:var(--tx);border:1px solid var(--line);border-radius:5px;padding:3px 6px;font-family:var(--m);font-size:10.5px;outline:none"></td>`;
+  }).join('')}</tr>`;
+}
+function tablaLeads(){
+  const a=leadRows(),per=60;
+  const pg=Math.max(0,Math.min(S.page,Math.ceil(a.length/per)-1)),sl=a.slice(pg*per,pg*per+per);
+  const cuerpo = sl.length ? sl.map(x=>`<tr><td>${x.n||'—'}</td><td title="Alta del contacto ${x.f} · oportunidad creada ${x.fo}">${x[S.coh]}${x.f!==x.fo?' <span class="mut" style="font-size:9px">≠</span>':''}</td>
+     <td>${srcTag(x.src)}</td>
+     <td style="font-size:10.5px">${String(x.cn||'—').replace(/_/g,' ')}${x.m==='nombre'?' <span class="tag t-org" title="Emparejada por nombre de campaña: el lead entró por la web y su atribución no guarda el ID">NOM</span>':x.m==='renombrada'?' <span class="tag" style="background:rgba(251,191,36,.16);color:var(--am)" title="La campaña fue renombrada: se empareó por el sufijo del nombre">REN</span>':''}</td>
+     <td>${x.p}</td><td style="font-size:10.5px">${x.crit}</td>
+     <td>${x.rec?'<span class="tag" style="background:rgba(96,165,250,.16);color:var(--bl)">RECURRENTE</span>':'<span class="mut" style="font-size:10.5px">Nuevo</span>'}</td><td>${x.e}</td>
+     <td class="${(()=>{const lim=(sopDe(x)||{}).lim;return lim&&x.de>lim?'neg':lim&&x.de>lim*0.6?'warn':'mut'})()}" title="${(()=>{const lim=(sopDe(x)||{}).lim;return (lim&&lim<999?`SOP de ${x.e}: ${lim} días`:'Sin límite de SOP para esta etapa').replace(/"/g,'&quot;')})()}">${x.de.toFixed(1)}</td>
+     <td class="${x.st==='won'?'pos':x.st==='lost'?'neg':'mut'}">${ESTADO[x.st]||x.st}</td>
+     <td>${x.v?fmt2(x.v):'—'}</td></tr>`).join('')
+   : `<tr><td colspan="9" style="text-align:center;color:var(--faint);padding:28px">Ningún lead pasa estos filtros. Vacía alguna columna para ampliar.</td></tr>`;
+  const act=Object.values(S.col).filter(Boolean).length;
+  return `<div class="ph"><div><h2>Leads uno por uno</h2>
+   <p>Cada oportunidad creada en el rango, con la campaña que la originó y la etapa a la que llegó. Filtra columna por columna; los filtros se acumulan.</p></div>
+   <div style="display:flex;gap:8px;align-items:center">${act?`<span class="mut" style="font-family:var(--m);font-size:10.5px">${act} filtro${act>1?'s':''} activo${act>1?'s':''}</span><button class="ghost" id="clearcols" title="Vacía los filtros por columna de esta tabla (Lead, Source, Campaña, etc.) sin tocar los filtros de la barra superior">Limpiar columnas</button>`:''}</div></div>
+   <!-- ITERACIÓN 2 · req.2: tooltip del encabezado = qué significa la columna (c[3]) + acción de ordenar -->
+   <div class="tw" style="max-height:560px;overflow-y:auto"><table><thead>
+   <tr>${COLS.map(c=>{const tip=(c[3]?c[3]+' · ':'')+`clic para ordenar por ${c[1]}`;
+     return `<th data-lk="${c[0]}" class="${S.lsort.k===c[0]?'act':''}" title="${tip.replace(/"/g,'&quot;')}">${c[1]}${S.lsort.k===c[0]?(S.lsort.d<0?' ↓':' ↑'):''}</th>`;}).join('')}</tr>${filtroFila()}</thead>
+   <tbody>${cuerpo}</tbody></table></div>
+   <div class="pg"><button class="ghost" data-pg="${pg-1}" ${pg<=0?'disabled':''} title="60 leads por página, ordenados según la columna activa">← Anterior</button>
+   <span>${a.length?pg*per+1:0}–${Math.min(a.length,pg*per+per)} de ${num(a.length)}</span>
+   <button class="ghost" data-pg="${pg+1}" ${pg>=Math.ceil(a.length/per)-1?'disabled':''} title="60 leads por página, ordenados según la columna activa">Siguiente →</button></div>`;
+}
+function bindLeads(){
+  const box=document.getElementById('leadbox'); if(!box)return;
+  box.querySelectorAll('.cf').forEach(el=>{
+    const h=e=>{S.col[el.dataset.k]=e.target.value;S.page=0;
+      const pos=el.selectionStart, k=el.dataset.k, tag=el.tagName;
+      pintaLeads();
+      const n=document.querySelector(`#leadbox .cf[data-k="${k}"]`);
+      if(n){n.focus(); if(tag==='INPUT'&&pos!=null){try{n.setSelectionRange(pos,pos)}catch(_){}}}};
+    el.tagName==='SELECT'?el.onchange=h:el.oninput=h;
+  });
+  box.querySelectorAll('th[data-lk]').forEach(t=>t.onclick=()=>{
+    const k=t.dataset.lk;
+    S.lsort = S.lsort.k===k ? {k,d:-S.lsort.d} : {k,d:(k==='v'?-1:(k==='f'||k==='fo'?-1:1))};
+    S.page=0; pintaLeads();});
+  box.querySelectorAll('[data-pg]').forEach(b=>b.onclick=()=>{S.page=+b.dataset.pg;pintaLeads()});
+  const c=document.getElementById('clearcols'); if(c)c.onclick=()=>{S.col={}; S.lsort={k:S.coh,d:-1};S.page=0;pintaLeads()};
+}
+function pintaLeads(){const b=document.getElementById('leadbox'); if(b){b.innerHTML=tablaLeads();bindLeads()}}
+function listado(){return `<div class="panel" id="leadbox">${tablaLeads()}</div>`}
+function porProducto(){
+  const g={};leadsF().forEach(x=>{g[x.p]=g[x.p]||{n:0,won:0,rev:0,sp:0}; g[x.p].n++; if(x.st==='won'){g[x.p].won++;g[x.p].rev+=x.v}});
+  C.forEach(c=>{if(!campVisible(c))return;const s=spendOf(c);if(g[c.prod])g[c.prod].sp+=s.sp});
+  const rows=Object.entries(g).sort((a,b)=>b[1].rev-a[1].rev);
+  return `<div class="panel"><div class="ph"><div><h2>Rendimiento por producto</h2>
+   <p>Para Meta el producto sale del nombre de la campaña, que es dato duro. Para el resto sale de la etiqueta del contacto, que es más débil: lo que no tiene ninguna de las dos señales aparece como <b>Sin clasificar</b> en vez de repartirse a ojo.</p></div></div>
+   <div class="pb"><div class="tw"><table>${(()=>{const R2=rows.map(([p,v])=>({p,sp:v.sp,n:v.n,cpl:v.sp&&v.n?v.sp/v.n:0,won:v.won,rev:v.rev,tk:v.won?v.rev/v.won:0,roas:v.sp?v.rev/v.sp:0}));
+     // ITERACIÓN 2 · req.2: tooltips con el significado real de cada métrica de producto
+     const C2=[{k:'p',h:'Producto',t:'sel',d:'Tratamiento asociado al lead: dato duro cuando viene del nombre de campaña de Meta, etiqueta débil del contacto en el resto de canales'},
+       {k:'sp',h:'Inversión',t:'num',d:'Gasto de las campañas que promocionan este producto'},
+       {k:'n',h:'Leads',t:'num',d:'Oportunidades creadas para este producto en el rango'},
+       {k:'cpl',h:'CPL',t:'num',d:'Inversión entre leads de este producto: cuánto costó cada oportunidad'},
+       {k:'won',h:'Cerrados',t:'num',d:'Leads de este producto que terminaron en venta'},
+       {k:'rev',h:'Ingreso',t:'num',d:'Valor de las ventas ganadas de este producto'},
+       {k:'tk',h:'Ticket',t:'num',d:'Ticket promedio: ingreso entre cierres de este producto'},
+       {k:'roas',h:'ROAS',t:'num',d:'Ingreso generado por cada dólar invertido en este producto'}];
+     window.__prod={R:R2,C:C2}; return tHead('prod',R2,C2)})()}<tbody>
+   ${(()=>{const {R,C}=window.__prod; return tOrdenar('prod',tFiltrar('prod',R,C),C).map(({p,...v})=>`<tr><td>${p}</td><td>${v.sp?fmt2(v.sp):'—'}</td><td><b>${num(v.n)}</b></td>
+     <td>${v.cpl?fmt2(v.cpl):'—'}</td><td>${v.won||'—'}</td><td>${v.rev?fmt2(v.rev):'—'}</td>
+     <td>${v.tk?fmt2(v.tk):'—'}</td><td class="${v.roas>=2?'pos':v.sp?'warn':'mut'}">${v.sp?v.roas.toFixed(2)+'×':'—'}</td></tr>`).join('')})()}
+   </tbody></table></div></div></div>`;
+}
+
+
+function notas(){
+  // Las notas se generan de los propios datos. El dashboard detecta las anomalías;
+  // no lleva ningún texto escrito para un cliente concreto. Si la Etapa 1 dejó notas
+  // en DATA.notas, se muestran primero tal cual las escribió quien concilió.
+  const N=(t,s,c)=>`<h3>${t} <span class="sev s-${s}">${s.toUpperCase()}</span></h3>${c}`;
+  const inR=x=>x[S.coh]>=S.f1&&x[S.coh]<=S.f2;
+  const bloques=[];
+
+  // 0 · notas redactadas en la conciliación (Etapa 1), si las hay
+  (DATA.notas||[]).forEach(n=>bloques.push(N(n.titulo,n.severidad||'media',n.cuerpo)));
+
+  // 1 · cohorte
+  const porC=L.filter(x=>x.f>=WIN.min&&x.f<=WIN.max).length;
+  const porO=L.filter(x=>x.fo>=WIN.min&&x.fo<=WIN.max).length;
+  const desfase=L.filter(x=>x.fo>=WIN.min&&x.fo<=WIN.max&&x.f<WIN.min).length;
+  if(desfase) bloques.push(N('Dos cohortes, dos realidades','alta',`
+    <p>El reporte fecha cada lead por la <b>fecha de alta del contacto</b>. El interruptor <b>Cohorte</b> permite verlo por fecha de creación de la oportunidad.</p>
+    <ul><li>Por alta de contacto: <b>${num(porC)}</b> leads.</li>
+    <li>Por creación de oportunidad: <b>${num(porO)}</b> leads.</li>
+    <li><b>${num(desfase)} contactos son anteriores al inicio del rango</b> pero tienen una oportunidad creada dentro. No son adquisición nueva.</li></ul>`));
+
+
+  // 0b · RECONCILIACIÓN CRM ↔ DASHBOARD  ── la duda nº1: "el CRM me da X y aquí sale Y".
+  // Se calcula sobre el rango activo, con los mismos datos, en tres escalones. Es genérica:
+  // no depende de este cliente ni de esta ventana.
+  (()=>{
+    const enR=(k)=>L.filter(x=>x[k]>=S.f1&&x[k]<=S.f2);
+    const A=enR('fo');                                    // oportunidades CREADAS en el rango = criterio GHL
+    const B=A.filter(x=>x.f>=S.f1&&x.f<=S.f2);            // + contacto dado de alta también en el rango
+    const Cc=B.filter(x=>x.c);                            // + con campaña de pago identificada
+    const viejos=A.filter(x=>x.f<S.f1);
+    if(!A.length) return;
+    const antig={};viejos.forEach(x=>{const m=x.f.slice(0,7);antig[m]=(antig[m]||0)+1});
+    const listaAntig=Object.entries(antig).sort((a,b)=>a[0]<b[0]?1:-1).slice(0,6)
+      .map(([m,n])=>`${fmtD(m+'-01').replace(/^\d+ /,'')}: ${n}`).join(' · ');
+    bloques.push(N('Por qué el CRM te da un número y aquí sale otro',viejos.length?'alta':'baja',`
+      <p>No es un desvío: son <b>tres preguntas distintas</b> sobre los mismos datos. Para el rango <b>${fmtD(S.f1)} → ${fmtD(S.f2)}</b>:</p>
+      <ul>
+      <li><b>${num(A.length)}</b> — <b>oportunidades creadas</b> en el rango. Esto es lo que cuenta GoHighLevel cuando filtras por fecha en Oportunidades. Para ver este mismo número aquí, pon el interruptor <b>Cohorte → Oportunidad</b>.</li>
+      <li><b>${num(B.length)}</b> — de esas, las que además son <b>contactos nuevos</b> (el contacto entró al CRM dentro del rango). Es lo que muestra el dashboard por defecto (<b>Cohorte → Contacto</b>), porque mide <i>adquisición</i>: gente que no existía antes.${viejos.length?` Los <b>${num(viejos.length)}</b> que se caen son contactos que ya existían y a los que se les abrió una oportunidad nueva dentro del rango.`:''}</li>
+      <li><b>${num(Cc.length)}</b> — de esas, las que tienen una <b>campaña de pago identificada</b> por <code>utm_campaign_id</code>. Es el número de la pestaña <b>Paid Media</b>, porque es el único subconjunto contra el que se puede calcular CPL, CAC y ROAS sin inventar atribución.</li>
+      </ul>
+      ${viejos.length?`<p><b>De dónde vienen esos ${num(viejos.length)} contactos preexistentes.</b> Su alta en el CRM se reparte así: ${listaAntig}. Un bloque grande concentrado en pocos días suele ser una <b>importación o un movimiento masivo entre pipelines</b>: la oportunidad se crea hoy, pero el contacto es viejo. No es adquisición nueva y por eso el dashboard no la cuenta como lead del periodo — pero sigue estando en el CRM, y en cohorte Oportunidad la ves.</p>`:''}
+      <p><b>Ninguno de los tres está mal.</b> El de arriba mide actividad del pipeline, el de en medio adquisición real, el de abajo rendimiento de pago. Lo que no se puede hacer es comparar uno con otro y llamarlo descuadre.</p>
+      <p><b>Y ojo con una cuarta cifra:</b> en GoHighLevel, <b>Contactos</b> y <b>Oportunidades</b> son cosas distintas. Un contacto puede entrar al CRM y no llegar nunca a tener oportunidad en el pipeline (una consulta por DM que nadie movió, una importación que solo creó contactos). Este reporte se construye desde las <b>oportunidades</b>, así que esos contactos <b>no aparecen aquí</b>. Si filtras Contactos en el CRM siempre te va a dar un número mayor que los contactos que ves en este dashboard, y la diferencia son exactamente los que no tienen oportunidad.</p>`));
+  })();
+
+  // 0b2 · LOS TRES CRITERIOS DE ORIGEN — se mide sobre los datos reales, no en teoría, para que
+  // se vea qué se gana y qué se pierde al cambiar el selector "Origen por".
+  (()=>{
+    const g=L.filter(x=>x.pipe===S.pipe||!S.pipe);
+    const nSrc=new Set(g.map(x=>x._src||x.src)).size;
+    const nF=new Set(g.map(x=>x.sess||'—')).size;
+    const nL=new Set(g.map(x=>x.sl||'—')).size;
+    const sinL=g.filter(x=>!x.sl).length;
+    const cambia=g.filter(x=>x.sess&&x.sl&&x.sess!==x.sl).length;
+    if(!g.length)return;
+    bloques.push(N('Tres formas de leer el origen, y cuál conviene','baja',`
+      <p>El selector <b>Origen por</b> (en Más filtros) cambia con qué criterio se agrupa el origen de cada lead. No cambia ni el gasto ni el emparejamiento con campañas: solo la etiqueta de origen.</p>
+      <ul>
+      <li><b>Source de GoHighLevel</b> — <b>${nSrc} orígenes distintos</b>. Es el campo que ves en el CRM, tal cual. Granular y en el idioma del negocio (Meta, GBP, IG DM, Google…). <b>Es el recomendado y el que está por defecto.</b></li>
+      <li><b>Atribución · primer contacto</b> — <b>${nF} orígenes</b>. Es el canal técnico por el que el lead llegó la primera vez (Paid Social, Social media, Organic Search…). Sirve de <b>contraste</b>: no depende de lo que alguien haya escrito en el campo Source, así que delata si el Source del CRM está mal puesto.</li>
+      <li><b>Atribución · último contacto</b> — <b>${nL} orígenes</b>, y <b>${num(sinL)} de ${num(g.length)} oportunidades (${pct(sinL/g.length*100)}) no tienen último contacto registrado</b> en GoHighLevel, así que caen en un cajón "sin dato". Úsalo solo para preguntas concretas.</li>
+      </ul>
+      <p><b>Lo que se pierde al cambiar:</b> los dos modos de atribución colapsan orígenes que el negocio distingue. "Meta", "Meta CR8" e "IG DM" son tres cosas distintas para ti y las tres caen en el mismo cajón técnico. Por eso el modo de atribución es una <b>segunda lectura</b>, no un reemplazo.</p>
+      <p><b>Lo que sí cambia de verdad:</b> solo <b>${num(cambia)}</b> oportunidades tienen un canal de último contacto distinto del de primer contacto. El resto entra y convierte por el mismo canal.</p>`));
+  })();
+
+  // 0c · ZONA HORARIA — la otra mitad de "el CRM me da otro número". Es la causa más difícil de
+  // ver a ojo porque el desvío es de solo unas pocas unidades y solo en los bordes del rango.
+  (()=>{
+    const tz=(DATA.cliente&&DATA.cliente.tz)||''; if(!tz) return;
+    bloques.push(N('Las fechas de este reporte están en la hora del cliente, no en la tuya','media',`
+      <p>Todo lo que ves aquí está fechado en <b>${tz}</b>: la zona horaria del negocio, que es la misma que tienen configuradas las cuentas publicitarias. Es lo correcto, porque así <b>un lead y el gasto que lo trajo caen en el mismo día</b> y el CPL diario tiene sentido.</p>
+      <p><b>Pero GoHighLevel te muestra las fechas en la zona horaria del usuario con el que entras.</b> Si tú entras desde otro país, un lead que llegó a las 10 de la noche en la clínica aparece en tu pantalla como del día siguiente. El total del mes casi cuadra, pero baila unas pocas unidades en el primer y el último día del rango.</p>
+      <p><b>Cómo hacer que cuadre exacto:</b> pon la zona horaria de tu usuario de GoHighLevel igual a la del negocio (<b>${tz}</b>) antes de comparar. Es un ajuste de tu perfil, no del cliente: no le cambia nada a él.</p>`));
+  })();
+
+  // 1a · frescura del reporte  ── NUEVO (bloqueo de rango)
+  if(WIN.atraso>=3) bloques.push(N('El reporte no llega hasta hoy',WIN.atraso>=14?'alta':'media',`
+    <p>La extracción es del <b>${fmtD(WIN.max)}</b> y hoy es <b>${fmtD(WIN.hoy)}</b>: faltan <b>${WIN.atraso} días</b>.</p>
+    <p>El filtro de fechas está <b>bloqueado en ${fmtD(WIN.min)} → ${fmtD(WIN.max)}</b> justamente por esto. Si en GoHighLevel filtras "últimos 120 días" vas a estar mirando <b>${fmtD(iso(new Date(dd(WIN.hoy).getTime()-119*864e5)))} → ${fmtD(WIN.hoy)}</b>, que no es la misma ventana: los números no van a cuadrar aunque ambos digan "120 días".</p>
+    <p><b>Para comparar contra GHL:</b> pon en GHL exactamente <code>${WIN.min}</code> → <code>${WIN.max}</code>, no un preset de "últimos N días". Para tener el reporte al día hay que volver a correr la extracción; mover la ventana sola hacia hoy solo añadiría ${WIN.atraso} días vacíos.</p>`));
+
+  // 1b · cobertura real del dataset frente a la ventana declarada
+  (()=>{
+    const fo=L.map(x=>x.fo).filter(Boolean).sort();
+    if(!fo.length)return;
+    const ini=fo[0], fin=fo[fo.length-1];
+    const faltaIni=ini>WIN.min, faltaFin=fin<WIN.max;
+    if(!faltaIni&&!faltaFin)return;
+    const dias=Math.round((dd(ini)-dd(WIN.min))/864e5);
+    bloques.push(N('La ventana declarada es más ancha que los datos que hay','alta',`
+      <p>El reporte dice cubrir <b>${fmtD(WIN.min)} → ${fmtD(WIN.max)}</b>, pero la primera oportunidad del dataset es del <b>${fmtD(ini)}</b>${faltaFin?` y la última del <b>${fmtD(fin)}</b>`:''}.</p>
+      <p><b>Por eso el calendario bloquea esos días cuando la cohorte activa es "Oportunidad":</b> son elegibles con cohorte Contacto (ahí sí hay altas) y no elegibles con cohorte Oportunidad. El rango filtrable cambia al cambiar el interruptor de Cohorte — es intencional.</p>
+      ${faltaIni?`<p><b>Faltan ${dias} días al principio del rango.</b> Si comparas contra GoHighLevel filtrando por fecha de creación de la oportunidad en esos días, el CRM tendrá oportunidades que aquí no aparecen. No es que se hayan filtrado: nunca llegaron a la extracción.</p>
+      <p>La causa habitual es la paginación del export: al recorrer hacia atrás con cursor, el último tramo se corta antes de llegar al inicio del rango. Se arregla en la extracción, no aquí.</p>`:''}
+      <p>Con cohorte por <b>alta del contacto</b> el efecto es menor, porque muchos de esos contactos entraron antes y siguen contando. Con cohorte por <b>oportunidad</b> el hueco se ve entero.</p>`));
+  })();
+
+  // 1b2 · reparto del gasto en el ultimo tramo  ── NUEVO
+  // El gasto llega en cubos semanales y el reporte lo prorratea por dias. Si el ULTIMO cubo del
+  // dataset concentra un gasto que no es compatible con los dias que dice cubrir, entonces filtrar
+  // por dia en ese tramo da cifras infladas o en cero. Se detecta comparando el gasto/dia del ultimo
+  // cubo contra la media diaria de las 4 semanas anteriores.
+  (()=>{
+    // Con gasto DIARIO cada fecha trae exactamente lo gastado ese dia: no existe prorrateo que
+    // pueda mentir y esta salvedad deja de aplicar. Se conserva para exports semanales.
+    if((DATA.granularidadGasto||'')==='dia') return;
+    const wk={}; C.forEach(c=>c.w.forEach(w=>{wk[w.s]=(wk[w.s]||0)+w.sp}));
+    const ks=Object.keys(wk).filter(k=>k>=WIN.min&&k<=WIN.max).sort();
+    if(ks.length<5)return;
+    const ult=ks[ks.length-1];
+    const diasUlt=nDias(ult,WIN.max);
+    const prev=ks.slice(-5,-1);
+    const mediaDia=prev.reduce((a,k)=>a+wk[k],0)/(prev.length*7);
+    if(!mediaDia)return;
+    const diaUlt=wk[ult]/diasUlt;
+    const ratio=diaUlt/mediaDia;
+    if(ratio<2.5 && ratio>0.4) return;   // reparto plausible, no se avisa
+    const equiv=wk[ult]/mediaDia;
+    bloques.push(N('El gasto del último tramo no está repartido por día','alta',`
+      <p>El último bloque semanal de gasto empieza el <b>${fmtD(ult)}</b> y, según la ventana, cubre <b>${diasUlt} día${diasUlt>1?'s':''}</b>. Contiene <b>${fmt2(wk[ult])}</b>, que al ritmo de las 4 semanas anteriores (<b>${fmt2(mediaDia)}/día</b>) equivalen a <b>≈${equiv.toFixed(1)} días</b> de inversión, no a ${diasUlt}.</p>
+      <p>Traducción: el gasto de los últimos días del rango <b>está apilado en una sola fecha</b> en vez de repartido. Si filtras día a día ese tramo verás <b>${fmt2(diaUlt)}</b> en el ${fmtD(ult)} y <b>$0</b> en los días vecinos, cuando la realidad está entre medias.</p>
+      <p>Los <b>leads</b> del tramo sí están bien fechados (vienen del CRM uno a uno), así que la comparación contra GoHighLevel no se ve afectada. Lo que no se puede leer día a día en ese tramo es <b>inversión, CPL, CAC y ROAS</b>. En rangos de una semana o más el total vuelve a ser correcto.</p>
+      <p>Se arregla en la extracción (pedir el desglose de gasto por día en vez de por semana), no en el tablero.</p>`));
+  })();
+
+  // 1c · estados que un tablero kanban de GHL no suele mostrar
+  (()=>{
+    const g=L.filter(inR), ab=g.filter(x=>x.st==='abandoned');
+    if(!ab.length||ab.length/g.length<0.05)return;
+    bloques.push(N('Oportunidades abandonadas incluidas en el conteo','media',`
+      <p><b>${num(ab.length)} de ${num(g.length)}</b> oportunidades del rango tienen estado <i>abandoned</i>. Este reporte <b>las cuenta</b>, porque existen en el CRM y consumieron inversión.</p>
+      <p>El tablero kanban de GoHighLevel normalmente <b>no las muestra</b>. Si comparas ambos números y no cuadran, esta suele ser la mitad de la diferencia: aquí verías <b>${num(g.length)}</b> y allí <b>${num(g.length-ab.length)}</b>.</p>`));
+  })();
+
+  // 2 · campañas con leads pero sin gasto visible
+  const sinGasto=C.filter(c=>!c.spend||c.spend<0.5);
+  const lg=L.filter(x=>inR(x)&&sinGasto.some(c=>c.id===x.c));
+  if(lg.length){const w=lg.filter(x=>x.st==='won');
+    bloques.push(N('Campañas con leads pero sin gasto en el rango','alta',`
+    <p>Hay <b>${num(lg.length)} leads</b>${w.length?` y <b>${num(w.length)} cierres por ${fmt2(w.reduce((a,x)=>a+x.v,0))}</b>`:''} atribuidos a campañas que no registran gasto dentro de las fechas seleccionadas. Parece un error y no lo es: o gastaron fuera de la ventana, o su gasto vive en una cuenta publicitaria a la que este reporte no tiene acceso.</p>
+    <div class="tw"><table><thead><tr><th>Campaña</th><th>Leads</th><th>Cierres</th><th>Ingreso</th></tr></thead><tbody>
+    ${[...new Set(lg.map(x=>x.c))].map(id=>{const c=C.find(y=>y.id===id)||{nombre:id};
+      const ll=lg.filter(x=>x.c===id),ww=ll.filter(x=>x.st==='won');
+      return `<tr><td>${String(c.nombre||id).replace(/_/g,' ')}</td><td><b>${num(ll.length)}</b></td><td>${ww.length||'—'}</td><td>${ww.length?fmt2(ww.reduce((a,x)=>a+x.v,0)):'—'}</td></tr>`}).join('')}
+    </tbody></table></div>
+    <p style="margin-top:10px">Estas filas se marcan <b>SIN GASTO EN EL RANGO</b>: cuentan sus leads e ingreso, pero dejan CPL, CAC y ROAS en blanco. Calcular retorno contra cero gasto daría infinito.</p>`));}
+
+  // 3 · cobertura de emparejamiento por plataforma
+  PLATS.forEach(p=>{
+    const g=L.filter(x=>inR(x)&&platLead(x)===p), con=g.filter(x=>x.c);
+    if(!g.length)return;
+    const pc=con.length/g.length*100;
+    if(pc<95) bloques.push(N(`${p}: solo ${pct(pc)} de los leads se puede asignar a una campaña`,pc<50?'alta':'media',`
+      <p><b>${num(g.length)} leads</b> tienen origen ${p} pero solo <b>${num(con.length)}</b> traen identificador de campaña. El resto entra sin parámetros de seguimiento — típicamente llamadas o formularios sin <code>gclid</code> ni <code>utm_campaign_id</code>.</p>
+      <p>Consecuencia práctica: el <b>CPL por campaña está sobreestimado</b>, porque reparte todo el gasto entre los pocos leads emparejados. El CPL y el ROAS <b>agregados</b> de ${p} sí son fiables.</p>`));
+  });
+
+
+  // 3b · desfase entre lo que declara cada plataforma y lo que verifica el CRM
+  PLATS.forEach(p=>{
+    const cs=C.filter(c=>platCamp(c)===p);
+    if(!cs.length)return;
+    let sp=0,decl=0;
+    cs.forEach(c=>{const v=spendOf(c);sp+=v.sp;decl+=v.ld});
+    const crm=L.filter(x=>inR(x)&&platLead(x)===p);
+    if(!decl&&!crm.length)return;
+    const gap=decl?((decl-crm.length)/decl*100):0;
+    const sev=Math.abs(gap)>=40?'alta':Math.abs(gap)>=15?'media':'baja';
+    bloques.push(N(`${p} declara ${num(decl)} conversiones, el CRM verifica ${num(crm.length)} leads`,sev,`
+      <p>Diferencia de <b>${pct(Math.abs(gap))}</b> — ${gap>0?`${p} cuenta de más`:'el CRM cuenta de más'}. Los dos números son correctos y miden cosas distintas:</p>
+      <div class="tw"><table><thead><tr><th>Métrica</th><th>${p}</th><th>CRM</th></tr></thead><tbody>
+        <tr><td>Inversión</td><td>${fmt2(sp)}</td><td class="mut">—</td></tr>
+        <tr><td>Conversiones / leads</td><td>${num(decl)}</td><td><b>${num(crm.length)}</b></td></tr>
+        <tr><td>Con campaña identificable</td><td>${num(decl)}</td><td>${num(crm.filter(x=>x.c).length)}</td></tr>
+        <tr><td>Cierres</td><td class="mut">no lo sabe</td><td>${num(crm.filter(x=>x.st==='won').length)}</td></tr>
+        <tr><td>Ingreso</td><td class="mut">no lo sabe</td><td>${fmt2(crm.filter(x=>x.st==='won').reduce((a,x)=>a+x.v,0))}</td></tr>
+      </tbody></table></div>
+      <p style="margin-top:10px">Una plataforma cuenta cada evento que reconoce como conversión — un mismo lead puede generar dos si llama y además rellena el formulario. El CRM cuenta personas. Además, ninguna plataforma ve las entradas que no pasan por su propio seguimiento, ni recibe de vuelta el evento de venta.</p>
+      <p><b>Para decidir presupuesto usa la columna del CRM</b>: es la que sabe quién compró.</p>`));
+  });
+
+  // 4 · sources sin conciliar (variantes de capitalización o espacios)
+  const norm={};L.forEach(x=>{const r=String(x.src||'');const k=r.trim().toLowerCase();(norm[k]=norm[k]||new Set()).add(r)});
+  const dup=Object.entries(norm).filter(([k,v])=>v.size>1);
+  if(dup.length) bloques.push(N('Sources duplicados por capitalización','alta',`
+    <p>El CRM guarda el mismo origen escrito de formas distintas. <b>El dashboard los muestra por separado</b>, porque para él son sources distintos — unificarlos es trabajo de la conciliación, no de la visualización.</p>
+    <ul>${dup.map(([k,v])=>`<li>${[...v].map(x=>`<code>${x}</code>`).join(' · ')}</li>`).join('')}</ul>
+    <p>Corrígelos en GoHighLevel y desaparecerán de aquí solos.</p>`));
+
+  // 5 · leads de pago sin campaña
+  const sc=L.filter(x=>inR(x)&&platLead(x)!=='Otros'&&!x.c), scw=sc.filter(x=>x.st==='won');
+  if(sc.length) bloques.push(N('Leads de pago sin campaña identificada','media',`
+    <p><b>${num(sc.length)} leads</b> vienen de una plataforma de pago pero no traen campaña${scw.length?`, de ellos <b>${num(scw.length)} ganados por ${fmt2(scw.reduce((a,x)=>a+x.v,0))}</b>`:''}. Se cuentan a nivel de plataforma y nunca se reparten a una campaña concreta: adivinar sería peor que dejarlo en blanco.</p>`));
+
+  // 6 · estados incoherentes que vienen del CRM
+  // la etapa "de cierre" es la que acumula la mayoría de las ganadas de ESTA cuenta; nada de
+  // buscar la palabra "won" en el nombre, que solo funciona si el cliente escribe en inglés.
+  const _cierre=etapaDesenlaceGanada();
+  const inc=_cierre?L.filter(x=>x.st==='won'&&x.ei&&x.ei!==_cierre):[];
+  if(inc.length) bloques.push(N('Oportunidades ganadas en una etapa que no es de cierre','media',`
+    <p><b>${num(inc.length)} oportunidades</b> tienen estado <i>Ganada</i> pero están en una etapa distinta de <b>${(DATA.stages.find(s=>s.id===_cierre)||{}).n||'la de cierre'}</b>, que es donde se acumula el resto de las ganadas de esta cuenta. Es como está en GoHighLevel; el dashboard no lo corrige, solo lo señala.</p>
+    <div class="tw" style="max-height:220px;overflow-y:auto"><table><thead><tr><th>Lead</th><th>Etapa</th><th>Valor</th></tr></thead><tbody>
+    ${inc.slice(0,40).map(x=>`<tr><td>${x.n||'—'}</td><td>${x.e}</td><td>${x.v?fmt2(x.v):'—'}</td></tr>`).join('')}</tbody></table></div>`));
+
+  // 6b · CÓMO SE CUENTAN LAS LLAMADAS Y QUÉ NO SE PUEDE REPRODUCIR
+  // Ya no es "no cuadra": el Call Report se extrae llamada por llamada con el userId de quien marcó,
+  // igual que lo cuenta GoHighLevel. Lo único que no se puede reproducir es la duración media, y eso
+  // se dice en vez de rellenarlo con un número que parezca correcto.
+  (()=>{
+    const cs=DATA.calls||[]; if(!cs.length) return;
+    const out=cs.filter(c=>c.d===1);
+    const sinD=out.filter(c=>c.dur==null).length;
+    const w=DATA.callWin||{};
+    bloques.push(N('Cómo se cuentan las llamadas de este reporte','media',`
+      <p>El <b>Call Report</b> de la hoja de Vendedores cuenta <b>por quién marcó cada llamada</b> — el mismo criterio que el Call Report de GoHighLevel — y no por a quién está asignado el lead. Se extrae llamada por llamada con el <code>userId</code> de quien la hizo, así que los totales por agente coinciden con el CRM.</p>
+      <p><b>Salientes</b> es la columna comparable con el CRM: GoHighLevel cuenta ahí solo lo que marcó el equipo. Las entrantes se muestran aparte porque no las hizo nadie del equipo.</p>
+      <p><b>Lo único que no cuadra: la duración media.</b> De las <b>${num(out.length)}</b> llamadas salientes de la ventana, <b>${num(sinD)}</b> (${pct(out.length?sinD/out.length*100:0)}) llegan sin duración desde la API — el CRM la saca del registro completo del proveedor de telefonía, que esta vía no expone. La media que ves está calculada <b>solo sobre las llamadas que sí traen duración</b>, así que es una estimación y puede diferir unos segundos de la del CRM. Está marcada como tal en la tabla.</p>
+      <p><b>Ventana de llamadas:</b> ${w.desde?`${fmtD(w.desde)} – ${fmtD(w.hasta)}`:'la de los datos'}. Si filtras fuera de ese rango, el Call Report se queda vacío aunque el resto del reporte tenga datos.</p>
+      <p><b>Y una diferencia de horario.</b> Si comparas contra el Call Report del CRM y sale un puñado de llamadas de diferencia, casi siempre es esto: aquí las fechas están en la hora del negocio y el CRM las pinta en la hora de tu usuario. Las llamadas de la madrugada cambian de día.</p>`));
+  })();
+
+  // 7 · recurrentes
+  const rec=L.filter(x=>x.rec), recw=rec.filter(x=>x.st==='won');
+  if(rec.length) bloques.push(N('Clientes recurrentes','media',`
+    <p>El botón <b>+ Clientes recurrentes</b> añade los contactos dados de alta antes del rango que abrieron oportunidad o cerraron dentro de él. Apagado por defecto: no son adquisición del periodo y meterlos en el CPL o el ROAS de una campaña infla el resultado.</p>
+    <p>En este rango son <b>${num(rec.length)} contactos</b>${recw.length?`, de los que <b>${num(recw.length)} volvieron a comprar por ${fmt2(recw.reduce((a,x)=>a+x.v,0))}</b>`:''}.</p>
+    <p>Enciéndelo para responder <i>"¿cuánto facturó el negocio?"</i>. Apagado responde <i>"¿cuánto rindió la inversión publicitaria?"</i>.</p>`));
+
+  // 8 · producto sin clasificar
+  const sinP=L.filter(x=>inR(x)&&(!x.p||x.p==='Sin clasificar'));
+  if(sinP.length) bloques.push(N('Clasificación de producto incompleta','baja',`
+    <p><b>${num(sinP.length)}</b> de ${num(L.filter(inR).length)} leads aparecen como <b>Sin clasificar</b>. El producto se deduce del nombre de la campaña cuando existe; para el resto no hay señal fiable y se deja en blanco en vez de repartirlo a ojo.</p>`));
+
+  // 9 · método
+  bloques.push(N('Cómo lee este dashboard','baja',`
+    <p><b>No aplica ninguna regla de atribución.</b> Muestra el campo <b>Source</b> de cada oportunidad exactamente como está en GoHighLevel. Si un source está mal, se corrige en el CRM y el dashboard lo refleja en la siguiente generación.</p>
+    <p>Lo único que calcula son uniones y aritmética: el gasto se cruza con los leads por <code>utm_campaign_id</code>, los creativos por <code>utm_campaign_id + utm_content</code>, y el gasto llega desglosado por día desde cada plataforma.</p>
+    <p>El ingreso se atribuye a la fecha en que entró el lead, no a la del cierre — así se mide la campaña y no el mes de caja. Las semanas más recientes están incompletas por definición: sus leads siguen en el pipeline.</p>`));
+
+  return `<div class="panel"><div class="ph"><div><h2>Notas y salvedades</h2>
+   <p>Anomalías detectadas automáticamente en los datos de este cliente. Todo lo que aquí parece un error y no lo es, queda explicado.</p></div></div>
+   <div class="pb nt">${bloques.join('')}</div></div>`;
+}
+
