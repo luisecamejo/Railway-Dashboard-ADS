@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import re
 import secrets
 import threading
 from datetime import datetime, timezone
@@ -23,8 +24,20 @@ def ahora() -> datetime:
 
 
 def nuevo_token() -> str:
-    """32 caracteres seguros. Suficiente para que no se adivine por fuerza bruta."""
+    """32 caracteres (192 bits). Ni con un bot se adivina por fuerza bruta."""
     return secrets.token_urlsafe(24)
+
+
+_SLUG = re.compile(r"^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$")
+
+
+def slug_valido(v) -> bool:
+    """
+    El slug se usa como nombre de fichero en el almacén de ficheros. Se valida aquí
+    además de en la ruta: si alguna vez un camino nuevo llega sin validar, un slug tipo
+    '../../etc/passwd' no debe poder salirse de la carpeta.
+    """
+    return bool(_SLUG.match(str(v or "")))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -62,8 +75,13 @@ CREATE TABLE IF NOT EXISTS enlaces (
   revocado       BOOLEAN NOT NULL DEFAULT FALSE,
   creado         TIMESTAMPTZ NOT NULL DEFAULT now(),
   accesos        INTEGER NOT NULL DEFAULT 0,
-  ultimo_acceso  TIMESTAMPTZ
+  ultimo_acceso  TIMESTAMPTZ,
+  -- Orígenes que pueden meter este reporte en un iframe. Vacío = no se puede empotrar
+  -- en ningún sitio (frame-ancestors 'none'). Es por enlace, no global: así el enlace
+  -- que se manda por WhatsApp no queda empotrable y el de GoHighLevel sí.
+  dominios       JSONB NOT NULL DEFAULT '[]'::jsonb
 );
+ALTER TABLE enlaces ADD COLUMN IF NOT EXISTS dominios JSONB NOT NULL DEFAULT '[]'::jsonb;
 CREATE INDEX IF NOT EXISTS ix_enlaces_cliente ON enlaces (cliente);
 
 CREATE TABLE IF NOT EXISTS visor (
@@ -182,23 +200,33 @@ class AlmacenPostgres:
         return {"index": r[0], "app": r[1], "hash": r[2], "subido": r[3]}
 
     # ── enlaces ───────────────────────────────────────────────────────────
-    def crear_enlace(self, cliente, modo="cliente", nota=None, caduca=None) -> dict:
+    def crear_enlace(self, cliente, modo="cliente", nota=None, caduca=None,
+                     dominios=None) -> dict:
         tok = nuevo_token()
         with self.pool.connection() as c:
-            c.execute("INSERT INTO enlaces (token,cliente,modo,nota,caduca) VALUES (%s,%s,%s,%s,%s)",
-                      (tok, cliente, modo, nota, caduca))
-        return {"token": tok, "cliente": cliente, "modo": modo, "nota": nota, "caduca": caduca}
+            c.execute("INSERT INTO enlaces (token,cliente,modo,nota,caduca,dominios) "
+                      "VALUES (%s,%s,%s,%s,%s,%s)",
+                      (tok, cliente, modo, nota, caduca, json.dumps(dominios or [])))
+        return {"token": tok, "cliente": cliente, "modo": modo, "nota": nota,
+                "caduca": caduca, "dominios": dominios or []}
+
+    def dominios_enlace(self, token, dominios) -> bool:
+        with self.pool.connection() as c:
+            r = c.execute("UPDATE enlaces SET dominios=%s WHERE token=%s AND NOT revocado",
+                          (json.dumps(dominios or []), token))
+        return r.rowcount > 0
 
     def enlace(self, token) -> Optional[dict]:
         with self.pool.connection() as c:
-            r = c.execute("SELECT token,cliente,modo,nota,caduca,revocado,creado,accesos "
+            r = c.execute("SELECT token,cliente,modo,nota,caduca,revocado,creado,accesos,dominios "
                           "FROM enlaces WHERE token=%s", (token,)).fetchone()
         if not r:
             return None
-        return dict(zip(("token", "cliente", "modo", "nota", "caduca", "revocado", "creado", "accesos"), r))
+        return dict(zip(("token", "cliente", "modo", "nota", "caduca", "revocado",
+                         "creado", "accesos", "dominios"), r))
 
     def enlaces(self, cliente=None) -> list[dict]:
-        q = ("SELECT token,cliente,modo,nota,caduca,revocado,creado,accesos,ultimo_acceso "
+        q = ("SELECT token,cliente,modo,nota,caduca,revocado,creado,accesos,ultimo_acceso,dominios "
              "FROM enlaces")
         p: tuple = ()
         if cliente:
@@ -207,7 +235,8 @@ class AlmacenPostgres:
         q += " ORDER BY creado DESC"
         with self.pool.connection() as c:
             rs = c.execute(q, p).fetchall()
-        cols = ("token", "cliente", "modo", "nota", "caduca", "revocado", "creado", "accesos", "ultimo_acceso")
+        cols = ("token", "cliente", "modo", "nota", "caduca", "revocado", "creado",
+                "accesos", "ultimo_acceso", "dominios")
         return [dict(zip(cols, r)) for r in rs]
 
     def revocar_enlace(self, token) -> bool:
@@ -276,6 +305,8 @@ class AlmacenFicheros:
         return out
 
     def publicar_snapshot(self, cliente, datos):
+        if not slug_valido(cliente):
+            raise ValueError(f"Identificador de cliente no válido: {cliente!r}")
         crudo = json.dumps(datos, ensure_ascii=False, separators=(",", ":"))
         with self._lock:
             (self.raiz / "snapshots" / f"{cliente}.json").write_text(crudo, encoding="utf-8")
@@ -289,6 +320,8 @@ class AlmacenFicheros:
         return reg
 
     def snapshot(self, cliente):
+        if not slug_valido(cliente):
+            return None
         f = self.raiz / "snapshots" / f"{cliente}.json"
         if not f.exists():
             return None
@@ -319,16 +352,27 @@ class AlmacenFicheros:
                 "app": (d / "app.js").read_text(encoding="utf-8"),
                 "hash": m["hash"], "subido": m["subido"]}
 
-    def crear_enlace(self, cliente, modo="cliente", nota=None, caduca=None):
+    def crear_enlace(self, cliente, modo="cliente", nota=None, caduca=None, dominios=None):
         tok = nuevo_token()
         with self._lock:
             d = self._leer()
             d["enlaces"][tok] = {"token": tok, "cliente": cliente, "modo": modo, "nota": nota,
                                  "caduca": caduca.isoformat() if hasattr(caduca, "isoformat") else caduca,
                                  "revocado": False, "creado": ahora().isoformat(),
-                                 "accesos": 0, "ultimo_acceso": None}
+                                 "accesos": 0, "ultimo_acceso": None,
+                                 "dominios": dominios or []}
             self._escribir(d)
         return d["enlaces"][tok]
+
+    def dominios_enlace(self, token, dominios):
+        with self._lock:
+            d = self._leer()
+            e = d["enlaces"].get(token)
+            if not e or e.get("revocado"):
+                return False
+            e["dominios"] = dominios or []
+            self._escribir(d)
+        return True
 
     def enlace(self, token):
         e = self._leer()["enlaces"].get(token)
