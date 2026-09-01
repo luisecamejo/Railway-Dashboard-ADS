@@ -1,11 +1,10 @@
+# -*- coding: utf-8 -*-
 """
 Partir un dashboard de una pieza en visor + datos.
 
-El servicio guarda el visor como un dato más (igual que los snapshots): se sube el
-dashboard.html completo a POST /admin/visor y aquí se parte. Ventajas:
-  · el repositorio no lleva archivos generados
-  · actualizar el dashboard no necesita un despliegue nuevo
-  · el visor y los datos que lo alimentan viven en el mismo sitio
+El dashboard vive troceado en `web/visor/partes/*.part`: el servicio los concatena al
+arrancar y pasa el resultado por aquí. También se usa cuando se sube un dashboard a mano
+por POST /admin/visor.
 
 Cómo funciona: el HTML original define `const DATA = {...}` dentro de su <script>. Se
 sustituye por `const DATA = window.__SNAPSHOT__` y ese <script> pasa a app.js, que solo
@@ -95,7 +94,7 @@ CARGADOR = """
 </body></html>"""
 
 CABECERA_APP = """/* Dashboard de adquisición · Sentinel Marketing
-   GENERADO — no editar a mano. Sale de partir el dashboard.html subido a /admin/visor.
+   GENERADO — no editar a mano. Sale de partir el dashboard de web/visor/partes/.
    Espera que window.__SNAPSHOT__ ya esté poblado antes de evaluarse. */
 """
 
@@ -142,6 +141,9 @@ def partir_html(html: str) -> dict:
     return {
         "index": index,
         "app": app,
-        "hash": hashlib.sha256(app.encode()).hexdigest()[:12],
+        # El hash identifica el visor COMPLETO, no solo app.js: si solo cambia el markup
+        # o el CSS, la versión también tiene que cambiar, porque si no el panel diría que
+        # está sirviendo el del repositorio cuando en realidad no lo está.
+        "hash": hashlib.sha256((index + app).encode()).hexdigest()[:12],
         "datos": datos,
     }
