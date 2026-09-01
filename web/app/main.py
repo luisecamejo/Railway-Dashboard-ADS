@@ -7,9 +7,11 @@ de cada cliente por separado, detrás de un enlace con token.
 Rutas públicas
     GET  /r/{token}                  → redirige a /r/{token}/
     GET  /r/{token}/                 → el visor
+    GET  /r/{token}/embed            → el visor para meter en un iframe, solo si el enlace
+                                       declara dominios; si no, 403
     GET  /r/{token}/snapshot.json    → los datos de ese cliente, según el modo del enlace
     GET  /app.js                     → el dashboard (versionado por hash, cacheable)
-    GET  /salud                      → healthcheck
+    GET  /salud                      → healthcheck, sin contar nada del interior
     GET  /robots.txt                 → prohibido indexar
 
 Panel
@@ -23,6 +25,7 @@ Rutas de administración (cabecera X-Admin-Token)
     GET  /admin/snapshots/{slug}
     POST /admin/enlaces
     GET  /admin/enlaces
+    POST /admin/enlaces/{token}/dominios
     POST /admin/enlaces/{token}/revocar
 """
 from __future__ import annotations
@@ -42,6 +45,7 @@ from fastapi.responses import (HTMLResponse, JSONResponse, PlainTextResponse,
 from .almacen import abrir_almacen
 from .rutas_panel import router as router_panel
 from .privacidad import MODOS, aplicar
+from . import seguridad as seg
 from .visor import partir_html
 
 log = logging.getLogger("reportes")
@@ -49,6 +53,17 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 
 ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "")
 VERSION = os.environ.get("RAILWAY_GIT_COMMIT_SHA", "dev")[:7]
+
+# Topes de subida. El snapshot real de un cliente ronda 0,8 MB y el dashboard 1 MB;
+# el margen es amplio a propósito, pero acotado: un cuerpo sin límite tumba el contenedor.
+TOPE_VISOR_MB = float(os.environ.get("TOPE_VISOR_MB", 8))
+TOPE_SNAPSHOT_MB = float(os.environ.get("TOPE_SNAPSHOT_MB", 60))
+
+# Los tokens de enlace son de 192 bits y el de administración de 256: no se adivinan. El
+# límite no está para eso, sino para que un bot no pueda machacar el servicio ni llenar
+# los logs, y para que un intento quede registrado.
+LIM_ADMIN = seg.Limitador(intentos=10, ventana=300, castigo=600, etiqueta="admin")
+LIM_ENLACE = seg.Limitador(intentos=40, ventana=300, castigo=600, etiqueta="enlace")
 
 app = FastAPI(title="Reportes Sentinel", docs_url=None, redoc_url=None, openapi_url=None)
 app.add_middleware(GZipMiddleware, minimum_size=1024)
@@ -88,18 +103,47 @@ log.info("servicio arriba · almacén %s · visor %s",
 # ══════════════════════════════════════════════════════════════════════════════
 #  Utilidades
 # ══════════════════════════════════════════════════════════════════════════════
-def exige_admin(x_admin_token: str = Header(default="")) -> None:
+def exige_admin(peticion: Request, x_admin_token: str = Header(default="")) -> None:
+    """
+    El token CORRECTO pasa siempre, incluso si desde esa IP hubo muchos fallos antes.
+
+    Es deliberado. El token es de 256 bits y la comparación es de tiempo constante, así
+    que la fuerza bruta no es la amenaza; el límite está para que un bot no machaque el
+    servicio. Bloquear también al token bueno tendría dos efectos malos y ninguno bueno:
+    equivocarse tecleando dejaría al operador fuera de su propio panel, y una IP
+    compartida (una oficina detrás de un NAT) permitiría que un tercero se lo tirara.
+    """
     if not ADMIN_TOKEN:
         raise HTTPException(503, "El servicio no tiene ADMIN_TOKEN configurado.")
-    if not hmac.compare_digest(x_admin_token or "", ADMIN_TOKEN):
-        raise HTTPException(401, "Token de administración inválido.")
+    ip = seg.ip_cliente(peticion)
+    if hmac.compare_digest(x_admin_token or "", ADMIN_TOKEN):
+        LIM_ADMIN.acierto(ip)
+        return
+    bloqueado = LIM_ADMIN.fallo(ip, f"ruta {peticion.url.path}")
+    if bloqueado:
+        raise HTTPException(429, "Demasiados intentos fallidos desde esta conexión.",
+                            headers={"Retry-After": str(bloqueado)})
+    raise HTTPException(401, "Token de administración inválido.")
 
 
-def _resolver_enlace(token: str) -> dict:
+def _resolver_enlace(token: str, peticion: Request) -> dict:
+    """
+    Igual que en el panel: un enlace VÁLIDO se sirve siempre.
+
+    Si el bloqueo alcanzara también a los enlaces buenos, cualquiera que trastee desde
+    la misma IP que el cliente le tumbaría el reporte. Lo que se frena es el sondeo de
+    tokens que no existen.
+    """
+    ip = seg.ip_cliente(peticion)
     e = almacen.enlace(token)
     if not e:
+        bloqueado = LIM_ENLACE.fallo(ip, "token inexistente")
+        if bloqueado:
+            raise HTTPException(429, "Demasiadas peticiones a enlaces que no existen.",
+                                headers={"Retry-After": str(bloqueado)})
         raise HTTPException(404, "Este reporte no existe.")
     if e.get("revocado"):
+        LIM_ENLACE.fallo(ip, f"enlace revocado de {e.get('cliente')}")
         raise HTTPException(403, "Este enlace fue revocado.")
     cad = e.get("caduca")
     if cad:
@@ -108,8 +152,23 @@ def _resolver_enlace(token: str) -> dict:
         if cad.tzinfo is None:
             cad = cad.replace(tzinfo=timezone.utc)
         if cad < datetime.now(timezone.utc):
+            LIM_ENLACE.fallo(ip, f"enlace caducado de {e.get('cliente')}")
             raise HTTPException(403, "Este enlace ha caducado.")
+    LIM_ENLACE.acierto(ip)
+    LIM_ENLACE.limpia()
+    LIM_ADMIN.limpia()
     return e
+
+
+def _dominios(e: dict) -> list[str]:
+    """Orígenes donde ESTE enlace se puede empotrar. Vacío = en ninguno."""
+    d = e.get("dominios") or []
+    if isinstance(d, str):
+        try:
+            d = json.loads(d)
+        except Exception:
+            d = []
+    return [x for x in d if seg.origen_valido(x)]
 
 
 _PAGINA_SIN_VISOR = (
@@ -120,11 +179,15 @@ _PAGINA_SIN_VISOR = (
     "<div><p><b>El reporte todavía no está disponible.</b></p>"
     "<p>El visor no se ha cargado en el servicio. Avísale a tu contacto en Sentinel.</p></div>")
 
-CABECERAS_PRIVADAS = {
-    "X-Robots-Tag": "noindex, nofollow, noarchive, nosnippet",
-    "Referrer-Policy": "no-referrer",
-    "X-Content-Type-Options": "nosniff",
-}
+_PAGINA_SIN_EMBED = (
+    "<!doctype html><meta charset=utf-8><title>Empotrado no permitido</title>"
+    "<style>body{font:15px/1.6 system-ui;background:#0b0f14;color:#93a1b5;"
+    "display:grid;place-items:center;height:100vh;margin:0;text-align:center;padding:24px}"
+    "b{color:#e8edf4}</style>"
+    "<div><p><b>Este enlace no está autorizado para empotrarse.</b></p>"
+    "<p>Hay que declarar en qué dominios se puede mostrar antes de usarlo en un iframe.</p></div>")
+
+CABECERAS_PRIVADAS = seg.cabeceras()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -132,9 +195,9 @@ CABECERAS_PRIVADAS = {
 # ══════════════════════════════════════════════════════════════════════════════
 @app.get("/salud")
 def salud():
-    v = _cargar_visor()
-    return {"ok": True, "version": VERSION, "almacen": almacen.tipo,
-            "visor": (v or {}).get("hash"), "visor_subido": (v or {}).get("subido")}
+    # Público a propósito (lo usa el healthcheck de Railway), así que no cuenta nada más:
+    # el tipo de almacén, la versión del visor y su fecha viven en /admin/estado.
+    return {"ok": True}
 
 
 @app.get("/robots.txt", response_class=PlainTextResponse)
@@ -147,10 +210,10 @@ def raiz():
     return HTMLResponse(
         "<!doctype html><meta charset=utf-8><title>Reportes</title>"
         "<style>body{font:15px/1.6 system-ui;background:#0b0f14;color:#93a1b5;"
-        "display:grid;place-items:center;height:100vh;margin:0;text-align:center}"
-        "a{color:#8b7cf6}</style>"
-        "<p>Servicio de reportes. Se accede con un enlace directo.<br>"
-        "<a href=\"/admin\">Panel de administración</a></p>",
+        "display:grid;place-items:center;height:100vh;margin:0}</style>"
+        # Sin enlace al panel: quien tenga que entrar ya sabe la ruta, y no hace falta
+        # anunciarle la superficie de administración a quien llegue de rebote.
+        "<p>Servicio de reportes. Se accede con un enlace directo.</p>",
         headers=CABECERAS_PRIVADAS)
 
 
@@ -171,26 +234,59 @@ def visor_sin_barra(token: str):
     return RedirectResponse(f"/r/{token}/", status_code=308)
 
 
-@app.get("/r/{token}/", response_class=HTMLResponse)
-def visor(token: str):
-    _resolver_enlace(token)
+@app.get("/r/{token}/embed", response_class=HTMLResponse)
+def embed(token: str, peticion: Request):
+    """
+    Misma página del reporte, pensada para ir dentro de un iframe.
+
+    Existe como ruta aparte para dejar claro en los accesos qué visitas vienen empotradas,
+    y porque así el enlace que se pega en GoHighLevel no es el mismo texto que el que se
+    manda por WhatsApp. La regla de quién puede empotrar sigue siendo la del enlace:
+    si no tiene dominios declarados, no se empotra en ningún sitio.
+    """
+    e = _resolver_enlace(token, peticion)
+    doms = _dominios(e)
+    if not doms:
+        return HTMLResponse(_PAGINA_SIN_EMBED, status_code=403,
+                            headers=seg.cabeceras())
     vis = _cargar_visor()
     if not vis:
         return HTMLResponse(_PAGINA_SIN_VISOR, status_code=503,
-                            headers=CABECERAS_PRIVADAS)
+                            headers=seg.cabeceras(csp_reporte=True, empotrable_en=doms))
     almacen.marcar_acceso(token)
-    return HTMLResponse(vis["index"], headers={
-        "Cache-Control": "private, max-age=60", **CABECERAS_PRIVADAS})
+    # El visor pide 'snapshot.json' relativo a su URL: desde /r/{t}/embed eso resolvería
+    # a /r/{t}/snapshot.json igual, porque 'embed' no lleva barra final. Se deja explícito
+    # para que un cambio futuro en la ruta no rompa la carga de datos en silencio.
+    html = vis["index"].replace("'./snapshot.json'", f"'/r/{token}/snapshot.json'")
+    return HTMLResponse(html, headers=seg.cabeceras(
+        {"Cache-Control": "private, max-age=60"},
+        csp_reporte=True, empotrable_en=doms))
+
+
+@app.get("/r/{token}/", response_class=HTMLResponse)
+def visor(token: str, peticion: Request):
+    e = _resolver_enlace(token, peticion)
+    doms = _dominios(e)
+    vis = _cargar_visor()
+    if not vis:
+        return HTMLResponse(_PAGINA_SIN_VISOR, status_code=503,
+                            headers=seg.cabeceras(csp_reporte=True, empotrable_en=doms))
+    almacen.marcar_acceso(token)
+    return HTMLResponse(vis["index"], headers=seg.cabeceras(
+        {"Cache-Control": "private, max-age=60"},
+        csp_reporte=True, empotrable_en=doms))
 
 
 @app.get("/r/{token}/snapshot.json")
-def snapshot(token: str):
-    e = _resolver_enlace(token)
+def snapshot(token: str, peticion: Request):
+    e = _resolver_enlace(token, peticion)
     datos = almacen.snapshot(e["cliente"])
     if datos is None:
         raise HTTPException(404, "Todavía no hay datos publicados para este cliente.")
-    return JSONResponse(aplicar(datos, e.get("modo") or "cliente"), headers={
-        "Cache-Control": "private, no-store", **CABECERAS_PRIVADAS})
+    # El enmascarado del modo demo se hace AQUÍ, en el servidor: un enlace demo nunca
+    # transporta el nombre real de un paciente, así que da igual quién abra el inspector.
+    return JSONResponse(aplicar(datos, e.get("modo") or "cliente"),
+                        headers=seg.cabeceras({"Cache-Control": "private, no-store"}))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -212,7 +308,10 @@ async def admin_subir_visor(peticion: Request):
     Actualizar el dashboard de TODOS los clientes es esta única llamada: no hace falta
     volver a desplegar el servicio ni regenerar ningún snapshot.
     """
-    crudo = await peticion.body()
+    try:
+        crudo = await seg.leer_cuerpo(peticion, TOPE_VISOR_MB, "dashboard")
+    except ValueError as ex:
+        raise HTTPException(413, str(ex))
     if not crudo:
         raise HTTPException(400, "El cuerpo está vacío: manda el dashboard.html completo.")
     try:
@@ -251,7 +350,11 @@ async def admin_publicar(slug: str, peticion: Request):
     if not almacen.cliente(slug):
         raise HTTPException(404, f"El cliente '{slug}' no existe. Créalo primero.")
     try:
-        datos = json.loads(await peticion.body())
+        cuerpo = await seg.leer_cuerpo(peticion, TOPE_SNAPSHOT_MB, "snapshot")
+    except ValueError as ex:
+        raise HTTPException(413, str(ex))
+    try:
+        datos = json.loads(cuerpo)
     except Exception as ex:
         raise HTTPException(400, f"El cuerpo no es JSON válido: {ex}")
 
@@ -286,20 +389,61 @@ def admin_crear_enlace(cuerpo: dict = Body(...)):
             caduca = datetime.fromisoformat(str(caduca).replace("Z", "+00:00"))
         except Exception:
             raise HTTPException(400, "caduca debe ser una fecha ISO (2026-12-31T00:00:00Z).")
-    e = almacen.crear_enlace(slug, modo, cuerpo.get("nota"), caduca)
-    return {"ok": True, "ruta": f"/r/{e['token']}/", **{k: str(v) for k, v in e.items()}}
+
+    crudos = cuerpo.get("dominios")
+    doms = seg.normaliza_dominios(crudos)
+    if crudos and not doms:
+        raise HTTPException(400, "Ningún dominio válido. Se esperan orígenes https, "
+                                 "con comodín opcional: https://app.gohighlevel.com, "
+                                 "https://*.msgsndr.com")
+
+    e = almacen.crear_enlace(slug, modo, cuerpo.get("nota"), caduca, doms)
+    log.info("enlace creado · %s · modo %s · empotrable en %s",
+             slug, modo, doms or "ningún sitio")
+    return {"ok": True, "ruta": f"/r/{e['token']}/",
+            "rutaEmbed": f"/r/{e['token']}/embed" if doms else None,
+            "dominios": doms,
+            **{k: str(v) for k, v in e.items() if k != "dominios"}}
+
+
+@app.post("/admin/enlaces/{token}/dominios", dependencies=[Depends(exige_admin)])
+def admin_dominios(token: str, cuerpo: dict = Body(...)):
+    """
+    Cambia dónde se puede empotrar un enlace que ya existe, sin cambiar su URL.
+
+    Hace falta para GoHighLevel: si el cliente estrena dominio propio, se añade aquí y el
+    iframe que ya está pegado sigue funcionando. Lista vacía = deja de ser empotrable.
+    """
+    e = almacen.enlace(token)
+    if not e:
+        raise HTTPException(404, "Ese enlace no existe.")
+    if e.get("revocado"):
+        raise HTTPException(400, "Ese enlace está revocado.")
+    crudos = cuerpo.get("dominios")
+    doms = seg.normaliza_dominios(crudos)
+    if crudos and not doms:
+        raise HTTPException(400, "Ningún dominio válido.")
+    almacen.dominios_enlace(token, doms)
+    log.info("dominios del enlace de %s → %s", e.get("cliente"), doms or "ninguno")
+    return {"ok": True, "dominios": doms}
 
 
 @app.get("/admin/enlaces", dependencies=[Depends(exige_admin)])
 def admin_enlaces(cliente: Optional[str] = None):
-    return {"enlaces": [{k: str(v) for k, v in e.items()}
-                        for e in almacen.enlaces(cliente)]}
+    def fila(e):
+        f = {k: str(v) for k, v in e.items() if k != "dominios"}
+        f["dominios"] = _dominios(e)
+        return f
+    return {"enlaces": [fila(e) for e in almacen.enlaces(cliente)]}
 
 
 @app.post("/admin/enlaces/{token}/revocar", dependencies=[Depends(exige_admin)])
 def admin_revocar(token: str):
+    e = almacen.enlace(token)
     if not almacen.revocar_enlace(token):
         raise HTTPException(404, "Ese enlace no existe.")
+    log.info("enlace revocado · cliente %s · modo %s",
+             (e or {}).get("cliente"), (e or {}).get("modo"))
     return {"ok": True, "revocado": token}
 
 
@@ -327,7 +471,7 @@ def validar(d: Any) -> list[str]:
         p.append("El cliente no declara zona horaria ('cliente.tz'): sin ella las fechas "
                  "no son comparables con el CRM.")
 
-    # ── fechas coherentes ────────────────────────────────────────────────
+    # ── fechas coherentes ───────────────────────────────────────────────
     try:
         datetime.fromisoformat(d["desde"])
         datetime.fromisoformat(d["hasta"])
