@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<!--
+  ══════════════════════════════════════════════════════════════════════════════════════════
+  ITERACIÓN · BLOQUEO DE LA VENTANA DE FECHAS          (generado 31 ago 2026)
+
+  Pedido: «la fecha debe dejar filtrar solo hasta la fecha real que tiene datos, ni antes ni
+  después · el rango que no contemple debe quedar bloqueado · mostrar siempre los últimos
+  120 días · para que comparar el mismo rango aquí y en GHL dé lo mismo».
+
+  Qué cambió, todo colgando de un único objeto WIN (buscar "VENTANA DE DATOS" en el <script>):
+    · WIN.max = DATA.hasta · WIN.min = max(DATA.desde, hasta−119d) → nunca más de 120 días.
+    · lim() recorta esa ventana por la COBERTURA REAL de la cohorte activa (Contacto/Oportunidad).
+      Con "Oportunidad" el rango filtrable empieza más tarde porque antes no existe ni una sola
+      oportunidad en el dataset: elegir esos días daba 0 aquí y números reales en GHL.
+    · syncLimits() corre al principio de CADA render() y recorta S.f1/S.f2. Es el guardia único:
+      calendario, presets, inputs nativos, cambio de cohorte, cambio de pestaña y Reiniciar pasan
+      todos por ahí. Forzar el estado a mano desde la consola tampoco lo salta.
+    · Calendario: días fuera de la ventana no son clicables, la navegación de meses se bloquea en
+      los bordes, los días sin ningún lead se marcan con un punto ámbar (cero real, no hueco), y
+      hay una nota al pie que dice qué se puede elegir y por qué.
+    · Presets: anclados al último día CON DATOS, no al hoy del navegador. "Hoy"/"Ayer" se
+      renombraron a "Último día con datos"/"Día anterior" porque eso es lo que hacían. Los que no
+      tocan la ventana se deshabilitan en vez de devolver un rango recortado con nombre engañoso.
+    · Chip permanente en la barra con la ventana vigente y, si el export está viejo, cuántos días
+      faltan. La ventana NO se desplaza sola hacia hoy: eso solo añadiría días vacíos.
+    · Dos salvedades nuevas en "Notas y salvedades": frescura del reporte, y el gasto del último
+      tramo apilado en una sola fecha (los leads sí están bien fechados; el gasto no).
+
+  PARA REGENERARLO: basta con volver a exportar DATA con nuevas fechas. Todo lo de arriba se
+  recalcula solo a partir de DATA.desde / DATA.hasta / DATA.leads. No hay fechas escritas a mano.
+
+  ══════════════════════════════════════════════════════════════════════════════════════════
+  ITERACIÓN · RE-EXTRACCIÓN COMPLETA + GASTO DIARIO      (generado 1 sep 2026, datos al 30 ago)
+
+  Pedido: «vuelve a generar la extracción de la forma correcta · el gasto cámbialo a desglose
+  diario · el dashboard es solo para VER lo que pasa en el CRM, sin reglas ni condiciones de un
+  cliente concreto — debe poder usarse con cualquier cliente y cuadrar con su CRM».
+
+  Qué es este dataset:
+    · Ventana: 2026-05-03 → 2026-08-30 (120 días exactos, terminando en el último día COMPLETO;
+      el día en curso se excluye porque en GHL sigue acumulando y nunca cuadraría).
+    · Leads: las 1.085 oportunidades del pipeline con fecha de creación en la ventana, una a
+      una desde la API de GHL (verificado contra el conteo del servidor: 1.085 = 1.085; la
+      paginación por cursor saltó ~92 registros del 30 jun–6 jul y se recuperaron re-paginando).
+      Fechas en la zona horaria de la location (America/Denver), que es la que muestra GHL.
+    · Source: EL CAMPO SOURCE DE GHL, tal cual, sin reinterpretar. Campaña: SOLO por
+      utm_campaign_id (o nombre exacto de campaña si GHL no guardó el id) contra las campañas
+      reales de las cuentas conectadas. Producto: parseado del nombre de campaña; si no hay
+      campaña, del tag del contacto (etiqueta débil). NINGUNA regla manual por cliente:
+      ni mapeos por teléfono, ni listas de excepciones. Lo que GHL no atribuye, aquí sale
+      como "Sin atribución" — a propósito, para que el hueco se vea y se arregle en el CRM.
+    · Gasto: DIARIO por campaña (Meta y Google via Windsor.ai), verificado con una segunda
+      consulta independiente día a día (0 discrepancias) y, el nivel anuncio, cuadrado contra
+      el nivel campaña celda a celda (0 discrepancias). Cada bucket w trae {s,e} con s===e.
+    · Vendedores: export propio de conversaciones 1–30 ago (219/219), con vendedor y tiempos
+      de respuesta separando lo automático (workflow) de lo humano (app).
+
+  ════════════════════════════════════════════════════════════════════════════════════════
+  ITERACIÓN · MINIATURAS, EJE X LEGIBLE Y FIX DE ZONA HORARIA      (1 sep 2026)
+
+  1) MINIATURAS DE CREATIVOS — se recupera `pv` en DATA.ads: es el campo `thumbnail_url` de la
+     API de Meta, uno por ad_id (111/111 anuncios lo traen). Es una URL FIRMADA del CDN de Meta
+     que caduca a las pocas semanas; la tabla ya tiene fallback visible ("vencida"). No se
+     empotran como base64 porque la red de este entorno no alcanza fbcdn.net — para refrescarlas
+     basta regenerar el dashboard.
+
+  2) EJE X DE "Inversión contra ingreso" — decía "08-17" (ISO recortado). Ahora dice "17 ago",
+     con el año una sola vez abajo a la derecha, densidad adaptativa (todas las etiquetas que
+     caben sin solaparse, en vez de un "cada 2" fijo) y — lo importante — la etiqueta se RECORTA
+     al rango elegido arriba: la primera y la última barra rara vez son semanas completas, así
+     que muestran el primer día realmente cubierto, y el tooltip dice el tramo exacto y si es
+     semana parcial.
+
+  3) FIX DE ZONA HORARIA EN EL BORDE — bug propio de la extracción anterior. El filtro de fechas
+     del servidor de GHL interpreta startDate/endDate en UTC, pero las fechas se muestran (y se
+     derivan aquí) en la zona de la location (America/Denver, UTC-6). Resultado: faltaban las
+     últimas 6 horas del 30 ago y sobraban 4 oportunidades del 2 may. Se corrigió pidiendo un
+     día extra de cola y recortando después a fechas de Denver. Total: 1.083 oportunidades.
+     REGLA PARA LA PRÓXIMA VEZ: pedir endDate = último día + 1 y filtrar por fecha local.
+
+  4) NOTA NUEVA "Por qué el CRM te da un número y aquí sale otro" — calcula sobre el rango
+     activo la escalera oportunidades creadas → contactos nuevos → con campaña de pago, y
+     detecta importaciones o movimientos entre pipelines mirando la antigüedad de los contactos.
+  ════════════════════════════════════════════════════════════════════════════════════════
+  ITERACIÓN · PIPELINE, HORARIO VISIBLE, CRITERIO DE ORIGEN Y FIX DEL SOP   (1 sep 2026)
+
+  1) HORARIO EN LA FICHA DE ARRIBA — la descripción de la cabecera dice ahora "horario
+     America/Denver (UTC−6), la hora del negocio", con el huso calculado en vivo (respeta el
+     horario de verano). DATA.cliente.tzFuente registra DE DÓNDE sale ese dato: del campo
+     timezone_name de la cuenta de Meta, que coincide con la location de GoHighLevel. Las dos
+     cuentas publicitarias (Meta y Google) están en la misma zona, así que lead y gasto comparten
+     el mismo corte de día y el CPL diario es válido.
+
+  2) FILTRO DE PIPELINE — cada oportunidad lleva su `pipe`; DATA.pipelines trae la lista. Si la
+     cuenta tiene un solo pipeline el selector aparece igualmente (bloqueado) para que se vea de
+     dónde salen los datos; con varios, filtra de verdad y el funnel dibuja solo las etapas de ese
+     pipeline. Está en Más filtros → Pipeline, y también sale en la ficha de la cabecera.
+
+  3) NOMBRES DE ETAPA Y LÍMITES DEL SOP — dos bugs heredados. Los nombres se mostraban "limpios"
+     sin el emoji que sí tienen en el CRM ("Won Deals" vs "🟢Won Deals"): ahora se usa el nombre
+     literal del CRM. Y las claves de DATA.sop están escritas en corto ("Qualified Lead",
+     "Opportunity (estimate)"), así que con igualdad exacta DOS límites —los de las dos etapas
+     comercialmente más importantes— no se aplicaban NUNCA y la columna de días en etapa salía sin
+     límite. Ahora sopDe() normaliza (fuera emoji y puntuación, minúsculas) y acepta prefijo único.
+     Verificado: los 11 límites del SOP se aplican.
+
+  4) SELECTOR "ORIGEN POR" (Source de GHL / primer contacto / último contacto) — cambia con qué
+     criterio se agrupa el origen. Medido sobre estos datos: el Source de GHL da 21 orígenes, la
+     atribución de primer contacto 9, la de último 7 — y el 32% de las oportunidades no tiene
+     atribución de último contacto. Por eso el modo de atribución es una SEGUNDA LECTURA (sirve
+     para detectar Sources mal puestos), no un reemplazo, y el defecto sigue siendo el Source.
+     DECISIÓN DE DISEÑO IMPORTANTE: el selector cambia CÓMO se agrupa el origen, no QUÉ leads son
+     de pago. La plataforma de un lead sin campaña se hereda SIEMPRE del Source de GoHighLevel
+     (índice PLATSRC, estable). Sin esto, en modo atribución todo lo que cayera en "Paid Social"
+     pasaba a contar como pago aunque no tuviera campaña: los leads pagados subían de 604 a 968 y
+     el CPL se hundía a la mitad en silencio. Verificado: gasto, leads de pago y CPL idénticos en
+     los tres modos.
+  ════════════════════════════════════════════════════════════════════════════════════════
+  ITERACIÓN · CERO REGLAS POR NOMBRE DE ETAPA + DONUT INTERACTIVO      (1 sep 2026)
+
+  PROBLEMA DE FONDO (planteado por Luis): cada cliente diseña su pipeline como quiere —nombres
+  distintos, cantidad distinta, orden distinto, con emoji o sin él— así que NINGUNA regla del
+  dashboard puede depender de cómo se llama una etapa ni de en qué posición está.
+
+  Reglas eliminadas (todas existían y todas eran específicas de este cliente):
+    · funnel(): actual['Won Deals'] / actual['Lost'], x.e!=='Lost', x.e!=='Won Deals',
+      barColor por nombre, s.p<=9, reach con ep!==10 && ep!==8, KPI "No cualificados" con ep===10.
+    · agg(): ap = ep>=6 && ep!==10  ·  cal = ep>=3 && ep!==10 && ep!==8   (métricas "Agendados" y
+      "Calificados" definidas por posición; no se mostraban en ningún sitio, se han eliminado).
+    · porSource(): columna "Agendados" = ep>=6 && ep!==10  ->  ahora "Abiertos" = estado open.
+    · Nota de estados incoherentes: /won/i sobre el NOMBRE de la etapa (solo funcionaba en inglés).
+    · sopDe(): buscaba el límite del SOP por nombre de etapa normalizado.
+
+  Con qué se sustituyen. Solo hay dos cosas iguales en todos los GoHighLevel:
+    (a) el ESTADO de la oportunidad: open / won / lost / abandoned
+    (b) la LISTA de etapas del pipeline y su ORDEN, que viene de la API
+  De ahí salen los helpers etapasDe() / mixEstado() / estadoDominante() / etapaDesenlaceGanada().
+    · El funnel dibuja una barra por etapa del pipeline activo, en su orden, con el conteo de la
+      etapa (por ID, no por nombre) y la barra PARTIDA POR ESTADO. Así una oportunidad ganada
+      aparcada en una etapa que no es la de cierre se ve como un trozo verde ahí mismo, en vez de
+      necesitar una regla que la reubique.
+    · La etapa "de cierre" se deduce de DÓNDE están de verdad las ganadas (etapaDesenlaceGanada) y
+      se marca con la etiqueta CIERRE. Si una etapa tiene un estado dominante distinto de open, el
+      tooltip dice que en este CRM funciona como desenlace. Nada de eso mira el nombre.
+    · El SOP llega ya resuelto por ID en DATA.sopById (el mapeo nombre->id se hace en la
+      extracción, donde se puede verificar: 11 de 11 etapas casadas).
+    · Se eliminó la columna "% avanza": calcularla exige saber qué etapas son salidas, y eso
+      depende del pipeline de cada cliente. En su lugo va el % del total, que no asume nada.
+
+  DONUT "De dónde viene el volumen":
+    · Más grande y adaptativo: el diámetro sale de una variable CSS que fija la función según
+      cuántos orígenes hay (21%-30% del recuadro, con suelo y techo), y la leyenda pasa a 2
+      columnas a partir de 6 orígenes para que círculo y leyenda queden compensados en altura.
+    · Interactivo: al pasar el cursor por un trozo (o por su fila de la leyenda) se resalta, se
+      atenúan los demás y el CENTRO del donut muestra de qué origen se trata, su volumen y su %.
+    · Con 20 orígenes un donut es ilegible y obligaría a inventar colores indistinguibles: se
+      pintan los 7 primeros por volumen y el resto se suma en un trozo gris "Otros (n)" cuyo
+      tooltip los desglosa. La tabla de abajo sigue teniendo todas las filas.
+    · Paleta verificada con el validador de la skill de dataviz sobre el fondo real del panel:
+      separación para daltonismo 8.5 (deutan) / 7.7 (tritan), visión normal 19.7, contraste >=3:1.
+      Cada origen conserva SU color de siempre (el color identifica al origen, no su puesto en el
+      ranking) y se añade codificación secundaria —hueco de 2px entre trozos, barra de proporción
+      y etiqueta directa en cada fila— que es lo que exige la banda 6-8 de tritan.
+    · Alineación: la leyenda es una rejilla real (color · nombre · barra · valor · %) con los
+      números en monoespaciada y alineados a la derecha, y el card tiene su padding propio.
+  ════════════════════════════════════════════════════════════════════════════════════════
+  ════════════════════════════════════════════════════════════════════════════════════════
+  ════════════════════════════════════════════════════════════════════════════════════════
+  ══════════════════════════════════════════════════════════════════════════════════════════
+-->
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Rendimiento de adquisición</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#0A0A0F;--pan:#12121C;--pan2:#171724;--line:#26263A;--tx:#EDEDF5;--dim:#8A8AA3;--faint:#7A7A9B;/* FIX AUDITORÍA UX: era #5A5A72 (contraste 2.95:1 contra el fondo, bajo el mínimo de accesibilidad 4.5:1); se aclaró manteniendo el mismo tono morado-gris */
+--pu:#7C3AED;--pul:#A855F7;--gr:#34D399;--am:#FBBF24;--rd:#F87171;--bl:#60A5FA;--pk:#F472B6;
+--d:'Montserrat',system-ui,sans-serif;--m:'JetBrains Mono',ui-monospace,monospace}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--tx);font-family:var(--d);font-size:14px;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1560px;margin:0 auto;padding:0 24px 80px}
+/* FIX AUDITORÍA UX: header y .wrap principal compartían la misma clase ".wrap",
+   así que el padding-bottom:80px pensado para el final de la página también
+   caía dentro del header, dejando un hueco vacío entre el "Libro de
+   conciliación" y la barra de filtros en las 4 pestañas. Se anula solo dentro
+   del header, sin tocar el padding del wrap principal. */
+header .wrap{padding-bottom:0}
+a{color:inherit}
+::selection{background:rgba(124,58,237,.4)}
+/* header */
+header{border-bottom:1px solid var(--line);background:linear-gradient(180deg,rgba(124,58,237,.09),transparent);padding:26px 0 22px;margin-bottom:22px}
+.brand{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap}
+.logo{font-weight:800;font-size:19px;letter-spacing:-.4px}
+.logo span{color:var(--pul)}
+.sep{width:1px;height:15px;background:var(--line)}
+.cli{font-size:19px;font-weight:600;letter-spacing:-.4px}
+.meta{margin-top:7px;font-family:var(--m);font-size:11px;color:var(--faint);letter-spacing:.4px}
+/* ledger — elemento firma */
+.ledger{margin-top:20px;border:1px solid var(--line);border-radius:10px;background:var(--pan);overflow:hidden}
+.ledger-h{padding:9px 16px;border-bottom:1px solid var(--line);font-family:var(--m);font-size:10px;letter-spacing:1.4px;color:var(--faint);text-transform:uppercase;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+.ledger-b{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+.lc{padding:13px 16px;border-right:1px solid var(--line)}
+.lc:last-child{border-right:0}
+.lc .k{font-family:var(--m);font-size:9.5px;color:var(--faint);letter-spacing:.8px;text-transform:uppercase}
+.lc .v{font-family:var(--m);font-size:18px;font-weight:700;margin-top:5px;letter-spacing:-.5px}
+.lc .s{font-size:10.5px;color:var(--dim);margin-top:3px}
+.gap{color:var(--am)}
+/* filtros */
+.bar{position:sticky;top:0;z-index:30;background:rgba(10,10,15,.93);backdrop-filter:blur(14px);border-bottom:1px solid var(--line);padding:12px 0;margin-bottom:22px}
+.bar-in{max-width:1560px;margin:0 auto;padding:0 24px;display:flex;gap:9px;flex-wrap:wrap;align-items:center}
+.grp{display:flex;align-items:center;gap:6px;background:var(--pan);border:1px solid var(--line);border-radius:8px;padding:5px 9px;min-width:0}
+.grp>label{font-family:var(--m);font-size:9.5px;color:var(--faint);letter-spacing:.8px;text-transform:uppercase}
+input[type=date],select{background:var(--pan2);color:var(--tx);border:1px solid var(--line);border-radius:6px;padding:5px 7px;font-family:var(--m);font-size:11.5px;outline:none;max-width:100%;min-width:0}
+/* FIX AUDITORÍA UX: el <select id="camp"> (nombres de campaña largos) no se
+   achicaba en pantallas angostas — .grp y el select ahora sí pueden encogerse,
+   así que en mobile el texto se recorta en vez de arrastrar toda la página a
+   un scroll horizontal (eso era lo que también cortaba la pestaña "Notas y
+   salvedades" en el borde derecho). */
+input[type=date]:focus,select:focus,button:focus-visible{border-color:var(--pu);box-shadow:0 0 0 2px rgba(124,58,237,.3)}
+input[type=search]{background:var(--pan2);color:var(--tx);border:1px solid var(--line);border-radius:6px;padding:6px 9px;font-family:var(--d);font-size:12.5px;outline:none;min-width:190px}
+.seg{display:flex;background:var(--pan2);border-radius:7px;padding:2px;gap:2px}
+.seg button{background:transparent;border:0;color:var(--dim);font-family:var(--d);font-size:11.5px;font-weight:600;padding:5px 11px;border-radius:5px;cursor:pointer;white-space:nowrap}
+.seg button:hover{color:var(--tx)}
+.seg button.on{background:var(--pu);color:#fff}
+.chip{background:var(--pan);border:1px solid var(--line);color:var(--dim);font-size:11.5px;font-weight:600;padding:5px 11px;border-radius:20px;cursor:pointer;font-family:var(--d)}
+.chip:hover{color:var(--tx);border-color:var(--faint)}
+.chip.on{background:rgba(124,58,237,.2);border-color:var(--pu);color:var(--pul)}
+.ghost{background:transparent;border:1px solid var(--line);color:var(--dim);font-size:11px;padding:6px 10px;border-radius:6px;cursor:pointer;font-family:var(--m)}
+.ghost:hover{color:var(--tx);border-color:var(--faint)}
+
+/* REDISEÑO DE FILTROS — aplicado a partir del mockup "Rediseño de Filtros" (propuesta revisada y aprobada).
+   #f1/#f2/#presets no se tocan: se ocultan con .legacy-hidden y siguen existiendo en el DOM porque toda la
+   lógica de negocio ya auditada (render, reset, la pestaña Vendedores) lee y escribe esos mismos elementos. */
+.legacy-hidden{display:none}
+.pop-wrap{position:relative}
+.datebtn{display:flex;align-items:center;gap:7px;background:var(--pan);border:1px solid var(--line);border-radius:8px;padding:6px 11px;color:var(--tx);font-family:var(--m);font-size:11.5px;cursor:pointer}
+.datebtn:hover{border-color:var(--pu)}
+.datebtn .ic{font-size:11px;filter:grayscale(1) brightness(1.4) opacity(.8)}
+.masbtn{display:flex;align-items:center;gap:3px;background:var(--pan);border:1px solid var(--line);color:var(--dim);font-family:var(--d);font-size:11.5px;font-weight:600;padding:6px 11px;border-radius:8px;cursor:pointer}
+.masbtn:hover{color:var(--tx);border-color:var(--pu)}
+.masbtn.active{border-color:var(--pu);color:var(--pul)}
+.mascount{color:var(--pul);font-family:var(--m)}
+.factive{font-family:var(--m);font-size:10.5px;color:var(--pul);background:rgba(124,58,237,.14);border:1px solid rgba(124,58,237,.35);padding:5px 10px;border-radius:20px;align-items:center}
+.factive.notice{color:var(--am);background:rgba(251,191,36,.14);border-color:rgba(251,191,36,.35)}
+/* AUDITORÍA VENDEDORES · hallazgo 2: en la pestaña Vendedores ningún filtro de esta barra afecta la data
+   (usa su propio export DATA.sp con ventana fija de 30 días), pero el botón de fecha aparentaba ser
+   funcional igual que en las demás pestañas — confuso. Se atenúan visualmente y se bloquean con
+   pointer-events mientras S.t==='ventas'; #reset y el aviso quedan operables. Ver updateBarMode(). */
+.bar-in.bar-mute>.pop-wrap,.bar-in.bar-mute>.grp:not(.legacy-hidden),.bar-in.bar-mute>input#q{opacity:.4;pointer-events:none;filter:saturate(.5)}
+/* EXCEPCIÓN: en Vendedores todos los filtros se atenúan porque no aplican, PERO el botón de fecha
+   se queda legible — es el único sitio donde se lee qué días cubre esa hoja. Antes se atenuaba
+   junto al resto y el ojo se iba al chip amarillo de al lado, que habla de OTRA cosa (los límites
+   del filtro de fechas, 120 días), y de ahí venía la confusión de "¿1-30 ago o 3 may-30 ago?". */
+.bar-in.bar-mute>.pop-wrap:has(#dateBtn){opacity:1;filter:none}
+.bar-in.bar-mute #dateBtn{border-color:var(--pu);background:rgba(124,58,237,.12);cursor:default}
+.bar-in.bar-mute #dateBtn .ic{filter:none}
+/* Mismo bug que auditamos en el mockup: si esta regla trajera "display:flex" fijo,
+   pisaría al ".pop{display:none}" de abajo sin importar ".show" (misma especificidad,
+   gana la que aparece después en la hoja). Por eso el display solo se fija junto con .show. */
+.pop{position:absolute;top:calc(100% + 8px);left:0;z-index:50;background:var(--pan);border:1px solid var(--line);border-radius:10px;box-shadow:0 14px 34px rgba(0,0,0,.5);padding:14px;display:none;max-width:calc(100vw - 16px);box-sizing:border-box}
+.pop.show{display:block}
+.pop-date{width:300px}
+.pop-more{width:300px;flex-direction:column;gap:10px}
+.pop-more.show{display:flex}
+.pop-lbl{font-family:var(--m);font-size:9px;color:var(--faint);letter-spacing:.8px;text-transform:uppercase}
+.pop-lbl:not(:first-child){margin-top:2px}
+.calhead{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+.calhead b{font-size:12.5px;font-weight:700;text-transform:capitalize}
+.calnav{background:transparent;border:1px solid var(--line);color:var(--dim);border-radius:5px;width:22px;height:22px;cursor:pointer;font-size:13px;line-height:1}
+.calnav:hover{color:var(--tx);border-color:var(--pu)}
+.calgrid{display:grid;grid-template-columns:repeat(7,1fr);gap:2px;text-align:center}
+.calgrid .dow{font-family:var(--m);font-size:9px;color:var(--faint);padding:4px 0;text-transform:uppercase}
+.calgrid .day{font-family:var(--m);font-size:11px;padding:6px 0;cursor:pointer;color:var(--tx)}
+.calgrid .day.mut{color:var(--faint);opacity:.3;cursor:default}
+.calgrid .day:not(.mut):hover{background:rgba(124,58,237,.16);border-radius:5px}
+.calgrid .day.inrange{background:rgba(124,58,237,.16)}
+.calgrid .day.edge{background:var(--pu);color:#fff;border-radius:5px}
+.calgrid .day.edge.start{border-radius:5px 0 0 5px}
+.calgrid .day.edge.end{border-radius:0 5px 5px 0}
+.calgrid .day.edge.only{border-radius:5px}
+.pop-presets{display:flex;flex-direction:column;align-items:stretch;max-height:none;display:flex;gap:6px;margin:12px 0}
+.pop-presets{display:flex!important;flex-direction:column;gap:1px;max-height:none}
+.pop-presets button{flex:none;text-align:left;background:transparent;border:0;color:var(--dim);font-family:var(--d);font-size:12px;padding:6px 9px;border-radius:6px;cursor:pointer}
+.pop-presets button:hover{color:var(--tx);background:var(--pan2)}
+/* FIX AUDITORÍA UX: al elegir 30d/60d/90d/120d no había ninguna señal de cuál quedó elegido hasta
+   presionar "Aplicar" — quedaba "a ciegas". Ahora el botón elegido se resalta igual que el resto de los
+   controles tipo "seg" del dashboard (fondo morado sólido), y se sincroniza también si el rango ya
+   aplicado coincide con un preset al reabrir el calendario. */
+.pop-presets button.on{background:rgba(124,58,237,.2);color:var(--pul);font-weight:600}
+/* La lista pasó de 12 a 14 presets y el popover dejaba fuera de pantalla la nota del calendario y los
+   botones Aplicar/Cancelar en portátiles. Ahora scrollea la lista, no el popover entero. */
+.pop-presets{max-height:172px;overflow-y:auto;overscroll-behavior:contain}
+.pop-presets::-webkit-scrollbar{width:6px}
+.pop-presets::-webkit-scrollbar-thumb{background:var(--line);border-radius:3px}
+.pop-date{max-height:calc(100vh - 96px);overflow-y:auto}
+/* BLOQUEO DE RANGO (pedido: "el rango de fechas que no contemple debe quedar bloqueado").
+   Un preset cuyo rango caeria fuera de la ventana con datos no se oculta —se deshabilita— para que
+   se vea que existe pero no aplica, en vez de que la lista cambie de largo y desoriente. */
+.pop-presets button:disabled{opacity:.28;cursor:not-allowed;color:var(--faint)}
+.pop-presets button:disabled:hover{background:transparent;color:var(--faint)}
+.calnav:disabled{opacity:.22;cursor:not-allowed;border-color:var(--line);color:var(--faint)}
+.calnav:disabled:hover{color:var(--faint);border-color:var(--line)}
+/* dias fuera de la ventana: ya estaban atenuados, ahora ademas se marcan como no clicables */
+.calgrid .day.mut{cursor:not-allowed}
+.calgrid .day.nocov{position:relative}
+.calgrid .day.nocov::after{content:'';position:absolute;left:50%;bottom:1px;transform:translateX(-50%);width:3px;height:3px;border-radius:50%;background:var(--am)}
+.pop-note{font-family:var(--m);font-size:9.5px;color:var(--faint);line-height:1.6;margin-top:9px;border-top:1px solid var(--line);padding-top:8px}
+.pop-note b{color:var(--dim);font-weight:600}
+.factive.win{color:var(--bl);background:rgba(96,165,250,.12);border-color:rgba(96,165,250,.32)}
+.factive.win.stale{color:var(--am);background:rgba(251,191,36,.14);border-color:rgba(251,191,36,.35)}
+.pop-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:8px}
+#calApply{border-radius:6px}
+/* "Incluir sin campaña" / "+ Clientes recurrentes": eran botones tipo chip (elegir 1 de varias
+   opciones); en realidad son un sí/no, así que ahora se ven y actúan como un interruptor real. */
+.swbtn{display:flex;align-items:center;gap:8px;width:100%;background:var(--pan);border:1px solid var(--line);color:var(--dim);font-size:11.5px;font-weight:600;padding:7px 11px;border-radius:8px;cursor:pointer;font-family:var(--d);text-align:left}
+.swbtn:hover{border-color:var(--faint)}
+.swbtn .trk{width:26px;height:15px;border-radius:8px;background:var(--pan2);border:1px solid var(--line);position:relative;flex-shrink:0;transition:background .15s,border-color .15s}
+.swbtn .trk::after{content:'';position:absolute;top:1px;left:1px;width:11px;height:11px;border-radius:50%;background:var(--faint);transition:transform .15s,background .15s}
+.swbtn.on{color:var(--tx)}
+.swbtn.on .trk{background:var(--pu);border-color:var(--pu)}
+.swbtn.on .trk::after{transform:translateX(11px);background:#fff}
+/* tabs */
+.tabs{display:flex;gap:26px;border-bottom:1px solid var(--line);margin-bottom:24px;overflow-x:auto;-webkit-overflow-scrolling:touch;position:relative}
+/* AUDITORÍA DISEÑO · hallazgo 1.3: en mobile, al cambiar de pestaña la etiqueta activa se desplaza a la
+   vista pero las vecinas quedan cortadas a media palabra sin ninguna pista de que se puede deslizar más.
+   Se agrega un degradado en cada borde que solo aparece cuando de verdad queda contenido por ese lado
+   (clases .can-scroll-left/.can-scroll-right, ver updateFade() más abajo). */
+.tabs::before,.tabs::after{content:'';position:absolute;top:0;bottom:1px;width:28px;pointer-events:none;opacity:0;transition:opacity .15s;z-index:5}
+.tabs::before{left:0;background:linear-gradient(to right,var(--bg),transparent)}
+.tabs::after{right:0;background:linear-gradient(to left,var(--bg),transparent)}
+.tabs.can-scroll-left::before{opacity:1}
+.tabs.can-scroll-right::after{opacity:1}
+.tabs button{flex-shrink:0}
+/* FIX AUDITORÍA UX: en mobile las 4 pestañas ya no entraban en el ancho de la
+   pantalla y la última ("Notas y salvedades") se cortaba arrastrando toda la
+   página a scroll horizontal. Ahora la barra de pestañas se desliza sola
+   (patrón estándar de tabs en mobile) sin afectar el resto de la página. */
+.tabs button{background:0;border:0;border-bottom:2px solid transparent;color:var(--faint);font-family:var(--d);font-size:13.5px;font-weight:600;padding:0 0 11px;cursor:pointer;letter-spacing:-.2px}
+.tabs button:hover{color:var(--dim)}
+.tabs button.on{color:var(--tx);border-bottom-color:var(--pul)}
+.tabs .n{font-family:var(--m);font-size:10px;color:var(--faint);margin-left:6px}
+/* kpi */
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(158px,1fr));gap:11px;margin-bottom:22px}
+.kpi{background:var(--pan);border:1px solid var(--line);border-radius:10px;padding:14px 15px;position:relative;overflow:hidden}
+.kpi::after{content:'';position:absolute;left:0;top:0;bottom:0;width:2px;background:var(--pu);opacity:.7}
+.kpi .k{font-family:var(--m);font-size:9.5px;color:var(--faint);letter-spacing:.9px;text-transform:uppercase}
+.kpi .v{font-family:var(--m);font-size:22px;font-weight:700;margin-top:7px;letter-spacing:-.8px}
+.kpi .s{font-size:10.5px;color:var(--dim);margin-top:4px}
+/* AUDITORÍA DISEÑO · hallazgo 2.1: tendencia vs. periodo anterior en las tarjetas KPI */
+.kpi .trend{display:block;font-family:var(--m);font-size:10.5px;margin-top:6px;font-weight:600;letter-spacing:.2px}
+.kpi .trend.tr-up{color:var(--gr)}
+.kpi .trend.tr-down{color:var(--rd)}
+.kpi .trend.tr-flat{color:var(--dim);font-weight:400}
+.kpi .trend.tr-new{color:var(--am);font-weight:400}
+/* panels */
+.panel{background:var(--pan);border:1px solid var(--line);border-radius:12px;margin-bottom:20px;overflow:hidden}
+.ph{padding:14px 18px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+.ph h2{font-size:14px;font-weight:700;letter-spacing:-.3px}
+.ph p{font-size:11.5px;color:var(--faint);margin-top:2px;max-width:640px;line-height:1.45}
+.pb{padding:16px 18px}
+/* ITERACIÓN 2 · req.1: se eliminó el componente "Eficiencia por campaña" (scatter de burbujas) y su
+   wrapper de grid ".two" (que lo colocaba junto a "Rendimiento por producto"). Rendimiento por producto
+   ahora ocupa el ancho completo del panel, ver render() / porProducto(). */
+/* tabla */
+.tw{overflow-x:auto;position:relative}
+/* AUDITORÍA DISEÑO · hallazgo 1.2: las tablas de más de 6-7 columnas (Campañas, Rendimiento por creativo,
+   Leads uno por uno...) ya se desplazan horizontalmente, pero no había ninguna pista visual de que quedan
+   columnas fuera de pantalla — muy notorio en mobile. Mismo mecanismo de degradado que en .tabs. */
+.tw::before,.tw::after{content:'';position:absolute;top:0;bottom:0;width:28px;pointer-events:none;opacity:0;transition:opacity .15s;z-index:5}
+.tw::before{left:0;background:linear-gradient(to right,var(--pan),transparent)}
+.tw::after{right:0;background:linear-gradient(to left,var(--pan),transparent)}
+.tw.can-scroll-left::before{opacity:1}
+.tw.can-scroll-right::after{opacity:1}
+/* AUDITORÍA DISEÑO · hallazgo 2.3: la primera columna (identidad de la fila — campaña, lead, vendedor...)
+   se fija al desplazar horizontalmente, para no perder de vista a qué fila corresponden los números de la
+   derecha. Mismo fondo que la celda para que no se vea transparente sobre las filas de abajo. */
+.tw table td:first-child,.tw table th:first-child{position:sticky;left:0;z-index:3;background:var(--pan)}
+.tw table thead tr:first-child th:first-child{z-index:4}
+.tw table tbody tr:hover td:first-child{background:#19152B}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+thead tr:nth-child(2) th,thead tr:nth-child(2) td{position:sticky;top:31px;background:var(--pan);z-index:2}
+th{font-family:var(--m);font-size:9.5px;color:var(--faint);letter-spacing:.8px;text-transform:uppercase;text-align:right;padding:9px 11px;border-bottom:1px solid var(--line);white-space:nowrap;cursor:pointer;user-select:none;position:sticky;top:0;background:var(--pan)}
+th:first-child,td:first-child{text-align:left}
+th:hover{color:var(--dim)}
+th::after{content:' ⇅';opacity:.25;font-size:9px}
+th.act::after{content:''}
+th.act{color:var(--pul)}
+td{padding:9px 11px;border-bottom:1px solid rgba(38,38,58,.55);text-align:right;font-family:var(--m);font-size:11.5px;white-space:nowrap}
+td:first-child{font-family:var(--d);font-size:12.5px;white-space:normal;min-width:190px}
+tbody tr:hover{background:rgba(124,58,237,.07)}
+.tag{display:inline-block;font-family:var(--m);font-size:9px;padding:2px 6px;border-radius:4px;letter-spacing:.5px;vertical-align:middle}
+.t-sen{background:rgba(124,58,237,.2);color:var(--pul)}
+.t-cr8{background:rgba(244,114,182,.16);color:var(--pk)}
+.t-goo{background:rgba(96,165,250,.16);color:var(--bl)}
+.t-org{background:rgba(52,211,153,.14);color:var(--gr)}
+.pos{color:var(--gr)}.neg{color:var(--rd)}.warn{color:var(--am)}.mut{color:var(--faint)}
+/* funnel */
+.fn{display:flex;flex-direction:column;gap:5px}
+.fr{display:grid;grid-template-columns:190px 1fr 132px;gap:12px;align-items:center}
+.fr .lb{font-size:12px;color:var(--dim)}
+.fbar{height:24px;background:var(--pan2);border-radius:5px;overflow:hidden;position:relative}
+.fbar{display:flex}
+/* .fseg es el LARGO de la barra (proporcional al nº de oportunidades de la etapa); los <i> de
+   dentro reparten ese largo por estado. Antes los <i> colgaban directos de .fbar y cada barra
+   ocupaba el 100% del carril: todas se veían iguales y el largo no codificaba nada. */
+.fseg{display:flex;gap:2px;height:100%;min-width:0}
+/* la barra del funnel se parte por estado: cada trozo es un <i> con su color. El hueco de 2px
+   entre trozos es del fondo del panel, no una línea pintada — así se distinguen sin depender
+   solo del color (requisito para paletas en la banda 6-8 de separación para daltonismo). */
+.fbar i{display:block;height:100%;background:linear-gradient(90deg,var(--pu),var(--pul));border-radius:3px;min-width:0}
+.fr .lb .tag{margin-left:6px;vertical-align:1px}
+@media(max-width:820px){.fr{grid-template-columns:1fr;gap:4px}.fr .num{text-align:left}}
