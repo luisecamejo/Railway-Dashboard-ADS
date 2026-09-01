@@ -1,6 +1,6 @@
 """
 Servicio de reportes · Sentinel Marketing
-────────────────────────────────────────
+════════════════════════════════════════
 Sirve un único visor (cacheable, igual para todos los clientes) y el snapshot de datos
 de cada cliente por separado, detrás de un enlace con token.
 
@@ -19,7 +19,7 @@ Panel
 
 Rutas de administración (cabecera X-Admin-Token)
     GET  /admin/estado
-    POST /admin/visor                → el dashboard.html de una pieza
+    POST /admin/visor                → atajo de emergencia; el despliegue vuelve al del repo
     POST /admin/clientes
     POST /admin/snapshots/{slug}
     GET  /admin/snapshots/{slug}
@@ -34,6 +34,7 @@ import hmac
 import json
 import logging
 import os
+import pathlib
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -60,9 +61,8 @@ VERSION = os.environ.get("RAILWAY_GIT_COMMIT_SHA", "dev")[:7]
 TOPE_VISOR_MB = float(os.environ.get("TOPE_VISOR_MB", 8))
 TOPE_SNAPSHOT_MB = float(os.environ.get("TOPE_SNAPSHOT_MB", 60))
 
-# Los tokens de enlace son de 192 bits y el de administración de 256: no se adivinan. El
-# límite no está para eso, sino para que un bot no pueda machacar el servicio ni llenar
-# los logs, y para que un intento quede registrado.
+# Los tokens son de 192 bits: no se adivinan. Esto no está para eso, sino para que un bot
+# no pueda machacar el servicio ni llenar los logs, y para que un intento quede registrado.
 LIM_ADMIN = seg.Limitador(intentos=10, ventana=300, castigo=600, etiqueta="admin")
 LIM_ENLACE = seg.Limitador(intentos=40, ventana=300, castigo=600, etiqueta="enlace")
 
@@ -72,11 +72,59 @@ app.include_router(router_panel)
 
 almacen = abrir_almacen()
 
-# ── el visor vive en el almacén, no en el repositorio ─────────────────────────
-# Se sube con POST /admin/visor y se cachea en memoria. El hash de app.js versiona la
-# URL, así que el navegador puede cachearlo para siempre y aun así recibir el nuevo
-# cuando se sube un dashboard actualizado.
+# ── el dashboard se versiona en el repositorio ───────────────────────────────
+# `web/visor/dashboard.html` es la FUENTE DE VERDAD del dashboard: el código, sin datos.
+# Cada despliegue lo parte y lo guarda, así que mejorar el dashboard es un commit y nada
+# más. POST /admin/visor sigue existiendo como atajo de emergencia (cambiar el dashboard
+# sin desplegar), pero el siguiente despliegue vuelve a poner el del repositorio.
+#
+# El visor servido se cachea en memoria. El hash de app.js versiona su URL, así que el
+# navegador puede cachearlo para siempre y aun así recibir el nuevo cuando cambia.
+# El dashboard va troceado en `web/visor/partes/*.part` (ver scripts/partir_en_partes.py).
+# Se concatenan por orden de nombre y el resultado es el dashboard completo, byte a byte.
+# Está partido para que mejorar una parte toque un archivo pequeño en vez de mover 220 KB.
+RUTA_PARTES = pathlib.Path(__file__).resolve().parent.parent / "visor" / "partes"
+RUTA_VISOR_UNICO = pathlib.Path(__file__).resolve().parent.parent / "visor" / "dashboard.html"
+
+
+def _dashboard_del_repo() -> Optional[str]:
+    partes = sorted(RUTA_PARTES.glob("*.part")) if RUTA_PARTES.exists() else []
+    if partes:
+        return "".join(p.read_text(encoding="utf-8") for p in partes)
+    if RUTA_VISOR_UNICO.exists():   # respaldo: el dashboard en un solo archivo
+        return RUTA_VISOR_UNICO.read_text(encoding="utf-8")
+    return None
+
 _cache: dict = {"hash": None, "index": None, "app": b"", "subido": None}
+
+
+def _visor_del_repo() -> Optional[dict]:
+    html = _dashboard_del_repo()
+    if not html:
+        return None
+    try:
+        return partir_html(html)
+    except ValueError as ex:
+        # Un dashboard mal formado en el repositorio no debe tumbar el servicio: se
+        # registra y se sigue sirviendo el que hubiera guardado.
+        log.error("el dashboard del repositorio no se puede partir: %s", ex)
+        return None
+
+
+def _sembrar_visor() -> None:
+    """En cada despliegue, el dashboard del repositorio manda."""
+    r = _visor_del_repo()
+    if not r:
+        log.warning("no hay dashboard en %s: el visor solo puede llegar por /admin/visor",
+                    RUTA_PARTES)
+        return
+    actual = almacen.visor()
+    if actual and actual.get("hash") == r["hash"]:
+        log.info("visor del repositorio ya guardado · hash %s", r["hash"])
+        return
+    almacen.guardar_visor(r["index"], r["app"], r["hash"])
+    log.info("visor sembrado desde el repositorio · hash %s%s", r["hash"],
+             f" (sustituye a {actual['hash']})" if actual else "")
 
 
 def _cargar_visor(forzar: bool = False) -> Optional[dict]:
@@ -96,14 +144,15 @@ def _cargar_visor(forzar: bool = False) -> Optional[dict]:
     return _cache
 
 
+_sembrar_visor()
 _cargar_visor()
 log.info("servicio arriba · almacén %s · visor %s",
          almacen.tipo, _cache["hash"] or "SIN CARGAR")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════════
 #  Utilidades
-# ══════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════════
 def exige_admin(peticion: Request, x_admin_token: str = Header(default="")) -> None:
     """
     El token CORRECTO pasa siempre, incluso si desde esa IP hubo muchos fallos antes.
@@ -238,9 +287,9 @@ async def errores(peticion: Request, exc: ErrorHTTP):
                         headers=getattr(exc, "headers", None) or CABECERAS_PRIVADAS)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════════
 #  Público
-# ══════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════════
 @app.get("/salud")
 def salud():
     # Público a propósito (lo usa el healthcheck de Railway), así que no cuenta nada más:
@@ -337,24 +386,30 @@ def snapshot(token: str, peticion: Request):
                         headers=seg.cabeceras({"Cache-Control": "private, no-store"}))
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════════
 #  Administración
-# ══════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════════
 @app.get("/admin/estado", dependencies=[Depends(exige_admin)])
 def admin_estado():
     v = _cargar_visor()
+    repo = _visor_del_repo()
     return {"version": VERSION, "almacen": almacen.tipo,
             "visor": {"hash": (v or {}).get("hash"), "subido": (v or {}).get("subido"),
-                      "bytes": len((v or {}).get("app") or b"")},
+                      "bytes": len((v or {}).get("app") or b""),
+                      # Si lo que se sirve no es el del repositorio, es una subida a mano
+                      # que el siguiente despliegue va a sustituir. Conviene verlo.
+                      "origen": ("repositorio" if repo and v and repo["hash"] == v["hash"]
+                                 else "subida temporal" if v else None)},
             "clientes": almacen.clientes()}
 
 
 @app.post("/admin/visor", dependencies=[Depends(exige_admin)])
 async def admin_subir_visor(peticion: Request):
-    """Recibe el dashboard.html de una pieza, lo parte y guarda el visor.
+    """Atajo para cambiar el dashboard sin desplegar.
 
-    Actualizar el dashboard de TODOS los clientes es esta única llamada: no hace falta
-    volver a desplegar el servicio ni regenerar ningún snapshot.
+    El camino normal es un commit en `web/visor/partes/*.part`: Railway despliega y el
+    servicio lo siembra solo. Esto sirve para probar algo en caliente o para salir de un
+    apuro — y el siguiente despliegue vuelve a poner el del repositorio.
     """
     try:
         crudo = await seg.leer_cuerpo(peticion, TOPE_VISOR_MB, "dashboard")
@@ -375,10 +430,12 @@ async def admin_subir_visor(peticion: Request):
     _cargar_visor(forzar=True)
     log.info("visor actualizado · hash %s · app.js %.0f KB",
              partes["hash"], len(partes["app"]) / 1024)
+    repo = _visor_del_repo()
     return {"ok": True, "hash": partes["hash"],
             "index_kb": round(len(partes["index"]) / 1024, 1),
             "app_kb": round(len(partes["app"]) / 1024, 1),
-            "leads_en_el_archivo_subido": len(partes["datos"].get("leads") or [])}
+            "leads_en_el_archivo_subido": len(partes["datos"].get("leads") or []),
+            "temporal": bool(repo and repo["hash"] != partes["hash"])}
 
 
 @app.post("/admin/clientes", dependencies=[Depends(exige_admin)])
@@ -495,11 +552,11 @@ def admin_revocar(token: str):
     return {"ok": True, "revocado": token}
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════════
 #  Comprobaciones de cuadre — un snapshot que no las pasa NO se publica.
 #  Es la respuesta al hallazgo H-9 de la auditoría: la verificación deja de depender
 #  de que alguien se acuerde de correrla a mano.
-# ══════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════════
 def validar(d: Any) -> list[str]:
     p: list[str] = []
     if not isinstance(d, dict):
@@ -519,7 +576,7 @@ def validar(d: Any) -> list[str]:
         p.append("El cliente no declara zona horaria ('cliente.tz'): sin ella las fechas "
                  "no son comparables con el CRM.")
 
-    # ── fechas coherentes ───────────────────────────────────────────────
+    # ── fechas coherentes ──────────────────────────────────────────────
     try:
         datetime.fromisoformat(d["desde"])
         datetime.fromisoformat(d["hasta"])
@@ -529,7 +586,7 @@ def validar(d: Any) -> list[str]:
         p.append("'desde' y 'hasta' tienen que ser fechas ISO (2026-05-03).")
         return p
 
-    # ── los leads caen dentro de la ventana ──────────────────────────────
+    # ── los leads caen dentro de la ventana ────────────────────────────────
     # El criterio de extracción es la CREACIÓN DE LA OPORTUNIDAD ('fo'): eso sí tiene que
     # caer siempre dentro. El alta del contacto ('f') puede ser anterior — son los clientes
     # recurrentes — y en ese caso el lead tiene que venir marcado con rec=1. Si un lead
@@ -553,7 +610,7 @@ def validar(d: Any) -> list[str]:
         p.append(f"Hay oportunidades duplicadas: {len(ids)} filas y {len(set(ids))} ids "
                  f"únicos. Suele ser el cursor de paginación saltándose registros.")
 
-    # ── cada lead apunta a una etapa que existe ──────────────────────────
+    # ── cada lead apunta a una etapa que existe ─────────────────────────
     etapas = {s.get("id") for s in (d.get("stages") or [])}
     if etapas:
         huerf = sum(1 for l in leads if l.get("ei") and l["ei"] not in etapas)
@@ -561,7 +618,7 @@ def validar(d: Any) -> list[str]:
             p.append(f"{huerf} de {len(leads)} leads apuntan a una etapa que no está en "
                      f"'stages'. Parece que las etapas se extrajeron de otro pipeline.")
 
-    # ── el gasto diario suma lo que dice sumar ───────────────────────────
+    # ── el gasto diario suma lo que dice sumar ──────────────────────────
     if d.get("granularidadGasto") == "dia":
         for c in (d.get("camps") or []):
             roto = next((w for w in (c.get("w") or [])
@@ -571,7 +628,7 @@ def validar(d: Any) -> list[str]:
                          f"diaria pero tiene un bloque de {roto['s']} a {roto['e']}.")
                 break
 
-    # ── números que no deben ser NaN/Infinity al serializar ──────────────
+    # ── números que no deben ser NaN/Infinity al serializar ──────────────────
     crudo = json.dumps(d, ensure_ascii=False, default=str)
     for token in ("NaN", "Infinity", "-Infinity"):
         if f":{token}" in crudo or f"[{token}" in crudo or f",{token}" in crudo:
