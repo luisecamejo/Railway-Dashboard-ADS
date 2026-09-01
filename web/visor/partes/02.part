@@ -1,0 +1,460 @@
+const lim=()=>{const c=(WIN.cov[S.coh]||{ini:WIN.min,fin:WIN.max});
+  return {min:c.ini>WIN.min?c.ini:WIN.min, max:c.fin<WIN.max?c.fin:WIN.max}};
+const clampF=(v,L)=>v<L.min?L.min:(v>L.max?L.max:v);
+const nDias=(a,b)=>Math.round((dd(b)-dd(a))/864e5)+1;
+
+const S={recur:false,plat:'all',coh:'f',t:'overview',f1:WIN.min,f2:WIN.max,src:'',prod:'',q:'',noattr:true,sort:{k:'spend',d:-1},page:0,
+  camp:'',
+  pipe:'',      // '' = todos los pipelines · o el id de uno concreto
+  orig:'src'};  // criterio de la dimensión "origen": 'src' = Source de GHL · 'f' = primer contacto · 'l' = último contacto // NUEVO · FASE 1 req.1: '' = todas las campañas, '__sin__' = solo leads sin campaña identificada, o el id exacto de una campaña
+
+/* ── gasto prorrateado por solapamiento de días ──────── */
+function spendOf(c){
+  const a=dd(S.f1),b=dd(S.f2);let sp=0,im=0,cl=0,ld=0;
+  for(const w of c.w){
+    const ws=dd(w.s);
+    // GASTO DIARIO (pedido: "el gasto cámbialo a desglose diario"): cada bucket ahora declara su
+    // propio fin en w.e. En este export cada bucket es UN día (w.e===w.s), así que el prorrateo
+    // se vuelve una suma exacta de los días elegidos y filtrar por día ya no reparte nada a ojo.
+    // Si un export futuro volviera a traer buckets semanales sin w.e, se conserva el
+    // comportamiento anterior (7 días capados en DATA.hasta) para no romper compatibilidad.
+    const we=w.e?dd(w.e):new Date(Math.min(ws.getTime()+6*864e5, dd(DATA.hasta).getTime()));
+    const s=Math.max(a,ws),e=Math.min(b,we);
+    if(e<s)continue;
+    const days=(e-s)/864e5+1, tot=(we-ws)/864e5+1, r=Math.min(1,days/tot);
+    sp+=w.sp*r; im+=w.im*r; cl+=w.cl*r; ld+=w.ld*r;
+  }
+  return {sp,im:Math.round(im),cl:Math.round(cl),ld:Math.round(ld)};
+}
+// FASE 1 · req.1: campVisible ahora acepta un segundo argumento opcional {ignoreCampFilter:true}.
+// Se usa para poder calcular las OPCIONES del propio filtro de campaña (campOptions) sin que el
+// filtro de campaña ya aplicado se filtre a sí mismo — así el <select> de Campaña queda dependiente
+// de Red / Source / Producto, pero no de su propio valor actual.
+function campVisible(c, opts){
+  opts = opts || {};
+  if(S.plat!=='all'&&platCamp(c)!==S.plat)return false;
+  // filtro por source: una campaña es visible si algún lead de ese source le pertenece
+  if(S.src){ const alg=L.some(x=>x.c===c.id&&(x.src||'').trim()===S.src); if(!alg)return false; }
+  if(S.prod&&c.prod!==S.prod)return false;
+  if(S.q&&!c.nombre.toLowerCase().includes(S.q))return false;
+  // NUEVO · filtro general por campaña: afecta tablaCamp, scatter, serie, porProducto, ledger y auditGoogle
+  // (todas consumen campVisible), sin tocar los filtros de arriba.
+  if(!opts.ignoreCampFilter){
+    if(S.camp==='__sin__') return false; // se está viendo solo "Sin campaña": ninguna campaña real debe listarse
+    if(S.camp && c.id!==S.camp) return false;
+  }
+  return true;
+}
+// FASE 1 · req.1: opciones del filtro de Campaña — dependientes de los filtros ya activos (Red, Meta/CR8, Producto, búsqueda)
+function campOptions(){
+  return C.filter(c=>campVisible(c,{ignoreCampFilter:true})).slice().sort((a,b)=>a.nombre.localeCompare(b.nombre,'es'));
+}
+function leadsF(){
+  return L.filter(x=>{
+    // FILTRO DE PIPELINE: una location puede tener varios pipelines y la misma oportunidad solo
+    // vive en uno. Con '' se ven todos; con un id, solo ese.
+    if(S.pipe && x.pipe!==S.pipe) return false;
+    const fx=x[S.coh];
+    if(fx<S.f1||fx>S.f2){
+      // recurrentes: contacto antiguo pero con oportunidad o cierre dentro del rango
+      if(!(S.recur && ((x.fo>=S.f1&&x.fo<=S.f2)||(x.cl&&x.cl>=S.f1&&x.cl<=S.f2)))) return false;
+    }
+    if(S.prod&&x.p!==S.prod)return false;
+    if(S.plat!=='all'&&platLead(x)!==S.plat&&S.t==='paid')return false;
+    if(S.src&&(x.src||'').trim()!==S.src)return false;
+    if(!S.noattr&&platLead(x)!=='Otros'&&!x.c)return false;
+    // Paid Media solo trabaja con leads que vinieron de una plataforma con gasto.
+    // Antes esto se aplicaba en las tarjetas KPI pero no en el listado, y por eso
+    // la cabecera y la tabla de abajo daban cifras distintas.
+    if(S.t==='paid'&&platLead(x)==='Otros')return false;
+    // NUEVO · filtro general por campaña (req.1): mismo id de campaña que ya trae resuelta la atribución
+    // del lead (x.c), sea cual sea el método de emparejamiento (id / nombre / renombrada — ver x.m).
+    if(S.camp==='__sin__'){ if(x.c) return false; }
+    else if(S.camp && x.c!==S.camp) return false;
+    if(S.q&&!(x.n.toLowerCase().includes(S.q)||(x.cn||'').toLowerCase().includes(S.q)||x.src.toLowerCase().includes(S.q)))return false;
+    return true;
+  });
+}
+// Los agregados usan SOLO el estado de la oportunidad (open/won/lost/abandoned), que es
+// estructural de GoHighLevel e igual en todos los clientes. Antes había aquí dos métricas
+// ("Agendados", "Calificados") definidas por la POSICIÓN de la etapa (ep>=6, ep>=3): eso solo
+// era válido para el pipeline de un cliente concreto y se ha eliminado.
+const agg=a=>({n:a.length,won:a.filter(x=>x.st==='won').length,lost:a.filter(x=>x.st==='lost').length,
+  rev:a.filter(x=>x.st==='won').reduce((s,x)=>s+x.v,0),
+  abierto:a.filter(x=>x.st==='open').length, aband:a.filter(x=>x.st==='abandoned').length});
+
+
+
+/* ===== DESCUBRIMIENTO · el dashboard no conoce a ningún cliente =====
+   Todo lo que sigue se deduce de los datos que vienen de GHL y de las cuentas
+   publicitarias. No hay listas de sources, ni de plataformas, ni de segmentos
+   escritas en el código: si un cliente tiene 3 sources se pintan 3, si tiene 9
+   se pintan 9. Conciliar los sources en GHL es lo que decide qué se ve aquí. */
+const PAL=['#A855F7','#60A5FA','#34D399','#FBBF24','#F472B6','#22D3EE','#FB923C','#A3E635','#E879F9','#94A3B8','#F87171','#818CF8','#2DD4BF','#C084FC','#FACC15','#4ADE80','#38BDF8','#FDA4AF','#D8B4FE','#86EFAC'];
+const platCamp=c=>c.plataforma||c.red||'—';
+
+/* ════════
+   ETAPAS SIN REGLAS POR NOMBRE
+   Cada cliente diseña su pipeline como quiere: nombres distintos, cantidad distinta, orden
+   distinto, y con emoji o sin él. Así que el dashboard NO puede tener escrito en el código
+   "Won Deals", "Lost" ni "la etapa 6 es la de agendar". Lo único que es igual en todos los
+   GoHighLevel es:
+     · el ESTADO de la oportunidad: open / won / lost / abandoned
+     · la LISTA de etapas del pipeline y su ORDEN (posición), que viene de la API
+   Con esas dos cosas se deduce todo lo demás:
+     etapasDe(pipe)   -> las etapas del pipeline activo, en su orden
+     mixEstado(leads) -> cuántas open/won/lost/abandoned hay en un conjunto
+     etapaDesenlace() -> qué etapa es "de cierre" según DÓNDE están de verdad las ganadas,
+                         no según cómo se llame
+   ════════ */
+const EST_ORDEN=['open','won','lost','abandoned'];
+const EST_LBL={open:'Abierta',won:'Ganada',lost:'Perdida',abandoned:'Abandonada'};
+const EST_COL={open:'var(--bl)',won:'var(--gr)',lost:'var(--rd)',abandoned:'var(--faint)'};
+const etapasDe=pipe=>(DATA.stages||[])
+  .filter(s=>!pipe||!s.pipe||s.pipe===pipe)
+  .slice().sort((a,b)=>a.p-b.p);
+function mixEstado(arr){
+  const m={open:0,won:0,lost:0,abandoned:0};
+  arr.forEach(x=>{if(m[x.st]!==undefined)m[x.st]++});
+  return m;
+}
+// estado dominante de un conjunto (el que más pesa). Si el dominante NO es 'open', esa etapa se
+// comporta como un DESENLACE en este CRM — y eso se sabe por los datos, no por su nombre.
+function estadoDominante(arr){
+  if(!arr.length) return null;
+  const m=mixEstado(arr);
+  const e=Object.entries(m).sort((a,b)=>b[1]-a[1])[0];
+  return e[1] ? {st:e[0], n:e[1], pct:e[1]/arr.length*100} : null;
+}
+// la etapa donde de verdad se acumulan las ganadas = la "de cierre" de este cliente
+function etapaDesenlaceGanada(pipeId){
+  const m={}; L.forEach(x=>{if(x.st==='won'&&x.ei&&(!pipeId||x.pipe===pipeId))m[x.ei]=(m[x.ei]||0)+1});
+  const e=Object.entries(m).sort((a,b)=>b[1]-a[1])[0];
+  return e?e[0]:null;
+}
+const CIDX=Object.fromEntries(C.map(c=>[c.id,c]));
+
+// Plataformas publicitarias presentes: salen del gasto, no de una lista
+const PLATS=[...new Set(C.map(platCamp))].filter(p=>p&&p!=='ninguna').sort();
+
+/* Sources presentes en el CRM, ordenados por volumen.
+   La plataforma de un source se deduce de las campañas con las que casaron sus leads:
+   es un hecho observable, no una regla. */
+/* ═══ CRITERIO DE ORIGEN ═══
+   El reporte enseña por defecto el campo Source de GoHighLevel, tal cual. Este selector permite
+   verlo en cambio por la ATRIBUCIÓN de sesión que guarda GHL, de primer o de último contacto.
+   Truco de implementación: en vez de tocar las ~40 sitios que leen x.src, se guarda el valor
+   original una vez en x._src y se sobreescribe x.src con el del criterio activo. Todo lo demás
+   (agrupaciones, filtro de Source, colores, gráfico de contribución) sigue funcionando igual.
+   Los índices que se derivan de x.src o de x.p se recalculan en reindexOrigen(). */
+function aplicaOrigen(){
+  L.forEach(x=>{
+    if(x._src===undefined) x._src=x.src;
+    x.src = S.orig==='f' ? (x.sess||'Sin sesión registrada')
+          : S.orig==='l' ? (x.sl  ||'Sin último contacto registrado')
+          : x._src;
+  });
+}
+function reindexOrigen(){ SRCS=calcSRCS(); SRCMAP=Object.fromEntries(SRCS.map(s=>[s.id,s])); }
+const ORIGLBL={src:'Source de GoHighLevel',f:'Atribución · primer contacto',l:'Atribución · último contacto'};
+
+function calcSRCS(){
+  const m={};
+  L.forEach(x=>{const k=(x.src||'Sin atribución').trim();
+    m[k]=m[k]||{id:k,n:0,pagado:false,plat:null,cae:{}};
+    m[k].n++;
+    const c=x.c?CIDX[x.c]:null;
+    if(c){m[k].pagado=true; const p=platCamp(c); m[k].cae[p]=(m[k].cae[p]||0)+1;}
+  });
+  Object.values(m).forEach(v=>{
+    const e=Object.entries(v.cae).sort((a,b)=>b[1]-a[1]);
+    v.plat = e.length ? e[0][0] : null;   // la plataforma dominante de sus campañas
+    delete v.cae;
+  });
+  return Object.values(m).sort((a,b)=>b.n-a.n).map((s,i)=>({...s,color:PAL[i%PAL.length]}));
+}
+let SRCS=calcSRCS();
+let SRCMAP=Object.fromEntries(SRCS.map(s=>[s.id,s]));
+const srcInfo=k=>SRCMAP[(k||'Sin atribución').trim()]||{id:k,color:'#8A8AA3',pagado:false,plat:null};
+const srcColor=k=>srcInfo(k).color;
+
+/* La plataforma de un lead es la de la campaña de la que vino. Si no casó con ninguna,
+   se hereda la de su source (deducida arriba). Antes se leía de un campo precalculado en
+   el build, y eso hacía que un lead con source "Meta CR8" apareciera como plataforma
+   "Meta" mientras su campaña estaba marcada como "Meta CR8": al filtrar por esa red
+   salían cero leads aunque los hubiera. */
+/* ═══ SOP por ID DE ETAPA — cero reglas por nombre ═══
+   El SOP es configuración del cliente. El emparejamiento "clave del SOP → etapa" se resuelve en la
+   EXTRACCIÓN (donde se puede verificar que casan todas) y llega ya resuelto en DATA.sopById, con el
+   id de la etapa como clave. El dashboard no vuelve a mirar el nombre: si un cliente llama a su
+   etapa "🟢Won Deals", "Cerrado" o "Vendido", da exactamente igual. */
+function sopDe(lead){ return (DATA.sopById||{})[lead&&lead.ei]; }
+
+/* ═══ Qué leads son "de pago": estable, NO depende del selector de origen ═══
+   Un lead sin utm_campaign_id hereda la plataforma dominante de su origen. Ese "origen" tiene que
+   ser SIEMPRE el Source de GoHighLevel, nunca el que esté activo en el selector.
+   Por qué: en modo atribución los buckets se llaman "Paid Social"/"Paid Search", así que TODO lo
+   que cae ahí pasaría a contar como pago aunque no tenga campaña — el conteo de leads pagados
+   subía de 604 a 968 y el CPL se hundía a la mitad sin que nada lo avisara. El selector cambia
+   CÓMO se agrupa el origen, no QUÉ leads son de pago. */
+aplicaOrigen();   // fija x._src antes de construir el índice estable de plataforma por origen
+const PLATSRC=(()=>{
+  const m={};
+  L.forEach(x=>{
+    const k=((x._src!==undefined?x._src:x.src)||'').trim();
+    m[k]=m[k]||{};
+    const c=x.c?CIDX[x.c]:null;
+    if(c){const p=platCamp(c); m[k][p]=(m[k][p]||0)+1;}
+  });
+  const o={};
+  Object.entries(m).forEach(([k,v])=>{
+    const e=Object.entries(v).sort((a,b)=>b[1]-a[1]);
+    if(e.length) o[k]=e[0][0];
+  });
+  return o;
+})();
+const platLead=x=>{
+  const c=x.c?CIDX[x.c]:null;
+  if(c) return platCamp(c);
+  const k=((x._src!==undefined?x._src:x.src)||'').trim();
+  return PLATSRC[k] || x.plataforma || x.plat || 'Otros';
+};
+
+/* ===== motor genérico: toda tabla con filtros en la 2ª fila del header ===== */
+S.tf = S.tf || {};            // {tablaId: {col: valor}}
+S.ts = S.ts || {};            // {tablaId: {k, d}}
+function tOpts(rows, key, get){
+  return [...new Set(rows.map(r=>{
+    try{ return get?get(r):r[key]; }catch(_){ return r&&r[key]; }
+  }))].filter(v=>v!==''&&v!=null).sort((a,b)=>String(a).localeCompare(String(b),'es'));
+}
+function tFiltrar(id, rows, cols){
+  const f=S.tf[id]||{};
+  return rows.filter(r=>cols.every(c=>{
+    const q=f[c.k]; if(!q) return true;
+    let v; try{ v=c.get?c.get(r):r[c.k]; }catch(_){ v=r[c.k]; }
+    if(c.t==='num') return true;
+    if(c.t==='sel') return String(v)===q;
+    return String(v??'').toLowerCase().includes(q.toLowerCase());
+  }));
+}
+function tOrdenar(id, rows, cols){
+  const st=S.ts[id]; if(!st) return rows;
+  const c=cols.find(x=>x.k===st.k); if(!c) return rows;
+  return [...rows].sort((a,b)=>{
+    let A,B; try{A=c.get?c.get(a):a[c.k]}catch(_){A=a[c.k]} try{B=c.get?c.get(b):b[c.k]}catch(_){B=b[c.k]}
+    if(c.t==='txt'||c.t==='sel') return String(A??'').localeCompare(String(B??''),'es')*st.d;
+    return ((+A||0)-(+B||0))*st.d;
+  });
+}
+// ITERACIÓN 2 · req.2 (sistema global de tooltips): cada columna puede traer ahora una propiedad `d`
+// (qué mide esa métrica, en español de negocio). El tooltip del encabezado combina esa explicación con
+// la acción de ordenar, en vez del genérico "Ordenar por X" que no explicaba nada. Si una columna no
+// trae `d` (p. ej. "Preview"), se conserva el tooltip mínimo de acción.
+function tHead(id, rows, cols){
+  const st=S.ts[id]||{};
+  const activos=Object.values(S.tf[id]||{}).filter(Boolean).length;
+  return `<thead>
+   <tr>${cols.map(c=>{
+     const tip=(c.d?c.d+' · ':'')+`clic para ordenar por ${c.h}`;
+     return `<th data-tid="${id}" data-tk="${c.k}" class="${st.k===c.k?'act':''}" title="${tip.replace(/"/g,'&quot;')}">${c.h}${st.k===c.k?(st.d<0?' ↓':' ↑'):''}</th>`;
+   }).join('')}</tr>
+   <tr class="frow">${cols.map(c=>{
+     const val=(S.tf[id]||{})[c.k]||'';
+     if(c.t==='sel'){const o=tOpts(rows,c.k,c.get);
+       return `<td><select class="tfin" data-tid="${id}" data-tk="${c.k}" title="Muestra solo las filas cuyo ${c.h.toLowerCase()} sea este valor"><option value="">Todos</option>${o.map(v=>`<option${val===String(v)?' selected':''}>${v}</option>`).join('')}</select></td>`;}
+     if(c.t==='none'||c.t==='num') return `<td></td>`;
+     return `<td><input class="tfin" data-tid="${id}" data-tk="${c.k}" value="${String(val).replace(/"/g,'&quot;')}" placeholder="filtrar…" title="Escribe para dejar solo las filas cuyo ${c.h.toLowerCase()} contenga este texto"></td>`;
+   }).join('')}</tr></thead>`;
+}
+function tBind(root){
+  (root||document).querySelectorAll('th[data-tk]').forEach(th=>th.onclick=()=>{
+    const id=th.dataset.tid,k=th.dataset.tk,cur=S.ts[id];
+    S.ts[id] = (cur&&cur.k===k) ? {k,d:-cur.d} : {k,d:-1};
+    render();});
+  (root||document).querySelectorAll('.tfin').forEach(el=>{
+    const h=e=>{const id=el.dataset.tid,k=el.dataset.tk;
+      S.tf[id]=S.tf[id]||{}; S.tf[id][k]=e.target.value;
+      const pos=el.selectionStart,tag=el.tagName;
+      render();
+      const n=document.querySelector(`.tfin[data-tid="${id}"][data-tk="${k}"]`);
+      if(n){n.focus(); if(tag==='INPUT'&&pos!=null){try{n.setSelectionRange(pos,pos)}catch(_){}}}};
+    el.tagName==='SELECT'?el.onchange=h:el.oninput=h;});
+}
+
+/* ════════
+   syncLimits() — el unico punto por donde puede quedar fijado un rango de fechas.
+
+   Corre al principio de CADA render(), venga el cambio de donde venga (calendario, presets,
+   inputs nativos, cambio de cohorte, cambio de pestaña, Reiniciar, o codigo futuro). Hace 3 cosas:
+     1. recorta S.f1/S.f2 a los limites vigentes → es imposible que el resto del reporte calcule
+        sobre un dia sin datos, aunque alguien fuerce el estado a mano desde la consola;
+     2. pone min/max en los <input type="date"> ocultos, para que tampoco por ahi entre basura;
+     3. actualiza la etiqueta del boton de fecha y el chip de ventana de datos.
+   Devuelve true si tuvo que corregir algo (lo usa el aviso de cohorte). ════════ */
+function syncLimits(){
+  const LM=lim(); const a0=S.f1,b0=S.f2;
+  S.f1=clampF(S.f1,LM); S.f2=clampF(S.f2,LM);
+  if(S.f2<S.f1)S.f2=S.f1;
+  const f1e=document.getElementById('f1'), f2e=document.getElementById('f2');
+  if(f1e){f1e.min=LM.min;f1e.max=LM.max;f1e.value=S.f1}
+  if(f2e){f2e.min=LM.min;f2e.max=LM.max;f2e.value=S.f2}
+  updateDateLabel(); updateWinChip(LM);
+  return (a0!==S.f1)||(b0!==S.f2);
+}
+function updateWinChip(LM){
+  const c=document.getElementById('winChip'); if(!c)return;
+  LM=LM||lim();
+  const recortada=(LM.min!==WIN.min)||(LM.max!==WIN.max);
+  const cohLbl=S.coh==='f'?'alta de contacto':'creación de oportunidad';
+  if(S.t==='ventas'){c.style.display='none';return}
+  c.textContent=`Datos: ${fmtD(LM.min)} – ${fmtD(LM.max)} · ${nDias(LM.min,LM.max)} d`
+    +(WIN.atraso?` · +${WIN.atraso} d sin actualizar`:'');
+  c.classList.toggle('stale',WIN.atraso>0);
+  c.style.display='inline-flex';
+  c.title=`Fuera de este rango no se puede filtrar: el reporte no tiene datos ahi y el resultado no cuadraria con GoHighLevel.`
+    +`\nVentana del export: ${fmtD(WIN.desde||WIN.min)} – ${fmtD(WIN.max)} (${WIN.dias} días).`
+    +(recortada?`\nRecortada a ${fmtD(LM.min)} – ${fmtD(LM.max)} porque la cohorte activa (${cohLbl}) no tiene registros en los días que quedan fuera.`:'')
+    +(WIN.atraso?`\nDatos extraídos el ${fmtD(WIN.max)}; hoy es ${fmtD(WIN.hoy)}: faltan ${WIN.atraso} días por volver a extraer. La ventana NO se mueve sola hacia hoy, porque eso solo añadiría días vacíos.`:`\nDatos al día.`);
+}
+
+/* ── render ──────── */
+// Desplazamiento actual del huso frente a UTC, en texto corto ("UTC−6"). Se calcula con el propio
+// motor de fechas del navegador, así que respeta el horario de verano sin tablas escritas a mano.
+function husoTxt(tz){
+  try{
+    const d=new Date();
+    const f=new Intl.DateTimeFormat('es',{timeZone:tz,timeZoneName:'shortOffset'}).formatToParts(d);
+    const p=f.find(x=>x.type==='timeZoneName');
+    return p?p.value.replace('GMT','UTC').replace('-','−'):tz;
+  }catch(_){return tz}
+}
+// oportunidades del pipeline activo (sin filtrar por fecha): es el "de cuántas estamos hablando"
+function leadsPipe(){ return S.pipe? L.filter(x=>x.pipe===S.pipe) : L; }
+
+function ledger(){
+  // La cabecera solo describe el dataset. La conciliación plataforma ↔ CRM vive en Notas y salvedades,
+  // que es donde tiene sentido: es una salvedad de los datos, no una métrica de rendimiento.
+  const c=DATA.cliente||{};
+  // La descripción de arriba es la ficha técnica del reporte: qué ventana, de qué pipeline, con qué
+  // cohorte, con qué criterio de origen y — sobre todo — EN QUÉ HORARIO están fechados los datos,
+  // que es la causa nº1 de que un total no cuadre contra el CRM visto desde otro país.
+  const pipeAct=(DATA.pipelines||[]).find(p=>p.id===S.pipe);
+  const tz=(DATA.cliente&&DATA.cliente.tz)||'';
+  document.getElementById('hmeta').textContent=
+    `Reporte de adquisición · ventana de ${WIN.dias} días: ${fmtD(WIN.min)} – ${fmtD(WIN.max)}`
+    + ` · ${num(leadsPipe().length)} oportunidades`
+    + (pipeAct?` · pipeline ${pipeAct.n}`:((DATA.pipelines||[]).length>1?' · todos los pipelines':''))
+    + ` · cohorte por ${S.coh==='f'?'alta del contacto':'creación de la oportunidad'}`
+    + ` · origen por ${ORIGLBL[S.orig]}`
+    + (tz?` · horario ${tz} (${husoTxt(tz)}), la hora del negocio`:'')
+    + ` · generado ${DATA.generado}`
+    + (WIN.atraso?` · ⚠ ${WIN.atraso} días sin actualizar (hoy: ${fmtD(WIN.hoy)})`:'');
+  const he=document.getElementById('hmeta');
+  he.title = (tz? `Todas las fechas de este reporte están en ${tz} — la zona horaria del negocio, la misma que tienen configuradas las cuentas publicitarias`
+                 +(DATA.cliente&&DATA.cliente.tzFuente?`.\nOrigen del dato: ${DATA.cliente.tzFuente}`:'')
+                 +`.\nGoHighLevel, en cambio, te muestra las fechas en la zona horaria del usuario con el que entras: si entras desde otro país los totales bailan unas unidades en los bordes del rango.`
+               :'');
+}
+
+// AUDITORÍA DISEÑO · hallazgo 2.1 (aplicado): tendencia vs. periodo anterior en las tarjetas KPI.
+// Definición elegida: "periodo anterior" = un rango de la misma duración (en días), inmediatamente
+// anterior al rango activo, sin solaparse con él (si el rango activo es 20 jun → 19 jul, el anterior
+// es 21 may → 19 jun). Se calcula reutilizando leadsF()/spendOf() tal cual existen, cambiando S.f1/S.f2
+// solo momentáneamente (el motor es síncrono, no hay render() de por medio) y restaurándolos después.
+
+/* ===== Rangos rápidos · se calculan sobre el último día con datos ===== */
+function rangoPreset(p){
+  // BLOQUEO DE RANGO: HOY ya no es DATA.hasta a secas ni el hoy del navegador, es el ultimo dia
+  // filtrable de la cohorte activa; MIN, el primero. Asi ningun preset puede devolver un dia vacio.
+  const LM=lim(); const HOY=dd(LM.max), MIN=dd(LM.min);
+  const d=n=>new Date(HOY.getTime()-n*864e5);
+  const lunes=f=>{const x=new Date(f);const w=(x.getUTCDay()+6)%7;return new Date(x.getTime()-w*864e5)};
+  const mes1=f=>new Date(Date.UTC(f.getUTCFullYear(),f.getUTCMonth(),1));
+  const mesFin=f=>new Date(Date.UTC(f.getUTCFullYear(),f.getUTCMonth()+1,0));
+  let a,b;
+  switch(p){
+    case 'hoy':      a=HOY; b=HOY; break;
+    case 'ayer':     a=d(1); b=d(1); break;
+    case 'hoyayer':  a=d(1); b=HOY; break;
+    case 'd7':       a=d(6);  b=HOY; break;
+    case 'd14':      a=d(13); b=HOY; break;
+    case 'd28':      a=d(27); b=HOY; break;
+    case 'd30':      a=d(29); b=HOY; break;
+    case 'd60':      a=d(59); b=HOY; break;
+    case 'd90':      a=d(89); b=HOY; break;
+    case 'semana':   a=lunes(HOY); b=HOY; break;
+    case 'semanaAnt':{const l=lunes(HOY); a=new Date(l.getTime()-7*864e5); b=new Date(l.getTime()-864e5); break;}
+    case 'mes':      a=mes1(HOY); b=HOY; break;
+    case 'mesAnt':  {const m=mes1(HOY); const p2=new Date(m.getTime()-864e5); a=mes1(p2); b=mesFin(p2); break;}
+    default:         a=MIN; b=HOY;
+  }
+  // recorte duro por los dos lados (antes solo se recortaba por abajo: un preset de mes podia
+  // devolver un "fin de mes" posterior al ultimo dia con datos)
+  const a0=a,b0=b;
+  if(a<MIN)a=MIN; if(a>HOY)a=HOY; if(b<MIN)b=MIN; if(b>HOY)b=HOY;
+  return {f1:iso(a), f2:iso(b), vacio:iso(b)<iso(a),
+    // fuera = el rango natural del preset no toca la ventana con datos → se deshabilita el boton
+    fuera:(iso(b0)<iso(MIN))||(iso(a0)>iso(HOY)),
+    // rec = si tocaba pero hubo que recortarlo; el boton sigue activo pero el tooltip lo dice
+    rec:(iso(a0)<iso(MIN))||(iso(b0)>iso(HOY))};
+}
+
+function rangoAnterior(f1,f2){
+  const a=dd(f1),b=dd(f2),dias=Math.round((b-a)/864e5)+1;
+  const pf2d=new Date(a.getTime()-864e5), pf1d=new Date(pf2d.getTime()-(dias-1)*864e5);
+  return {pf1:iso(pf1d),pf2:iso(pf2d)};
+}
+function kpisPrev(){
+  const {pf1,pf2}=rangoAnterior(S.f1,S.f2);
+  const of1=S.f1,of2=S.f2; S.f1=pf1;S.f2=pf2;
+  const a=leadsF(); let sp=0; C.forEach(c=>{if(campVisible(c))sp+=spendOf(c).sp});
+  S.f1=of1;S.f2=of2;
+  const A=agg(a);
+  // Disponibilidad real de datos en el periodo anterior: si cae antes de que exista cualquier lead o
+  // cualquier semana de gasto en el dataset, comparar contra eso sería comparar contra un hueco vacío,
+  // no contra "cero de verdad" — se suprime la tendencia para esas tarjetas en vez de mostrar un
+  // porcentaje falso (p. ej. "+∞%" cuando antes no había ni dato, no cuando antes había 0 real).
+  let minLead=null; L.forEach(x=>{const v=x[S.coh]; if(!minLead||v<minLead)minLead=v;});
+  let minWeek=null; C.forEach(c=>(c.w||[]).forEach(w=>{if(!minWeek||w.s<minWeek)minWeek=w.s;}));
+  // BLOQUEO DE RANGO: además de que exista ALGÚN dato, el periodo anterior debe caer ENTERO dentro
+  // de la ventana con datos (pf1 >= WIN.min). Si asoma fuera, la comparación sería contra un periodo
+  // a medio llenar (p. ej. el rango completo de 120 días comparado contra 120 días vacíos daba
+  // "×16 vs. anterior", un numero real sobre datos que no existen). En ese caso no se muestra flecha.
+  const prevCompleto = pf1>=WIN.min && pf2<=WIN.max;
+  return {n:A.n,won:A.won,rev:A.rev,sp,cpl:A.n?sp/A.n:0,cac:A.won?sp/A.won:0,roas:sp?A.rev/sp:0,tk:A.won?A.rev/A.won:0,
+    hasLeadData:!!(minLead&&pf2>=minLead)&&prevCompleto, hasSpendData:!!(minWeek&&pf2>=minWeek)&&prevCompleto, pf1,pf2};
+}
+function kpis(a,sp){
+  const A=agg(a),cpl=A.n?sp/A.n:0,cac=A.won?sp/A.won:0,roas=sp?A.rev/sp:0,tk=A.won?A.rev/A.won:0;
+  const rec=a.filter(x=>x.rec), recw=rec.filter(x=>x.st==='won');
+  const P=kpisPrev();
+  // invert=true en métricas de costo (subir es malo): Inversión, CPL, CAC. En el resto, subir es bueno.
+  const trend=(cur,prev,avail,invert)=>{
+    if(!avail) return '';
+    if(!prev) return cur?`<span class="trend tr-new" title="Periodo anterior (${P.pf1} → ${P.pf2}): sin dato para comparar">nuevo</span>`:'';
+    const chg=(cur-prev)/prev*100, flat=Math.abs(chg)<0.5, up=chg>=0, good=invert?!up:up;
+    const cls=flat?'tr-flat':(good?'tr-up':'tr-down'), arrow=flat?'→':(up?'↑':'↓');
+    // Cuando el periodo anterior parte de una base casi nula (ej. antes de que arrancara la inversión en
+    // campañas), el % se dispara a miles y deja de leerse — se muestra como múltiplo ("×48") en vez de
+    // porcentaje ("+4790%") a partir de un salto de 4x, que es más legible sin dejar de ser exacto.
+    const label=(!flat&&up&&chg>300)?`×${(cur/prev).toFixed(1)}`:`${Math.abs(chg).toFixed(0)}%`;
+    return `<span class="trend ${cls}" title="Periodo anterior (${P.pf1} → ${P.pf2})">${arrow} ${label} vs. anterior</span>`;
+  };
+  // ITERACIÓN 2 · req.2: 4º elemento = tooltip con la fórmula/definición real de cada KPI; 5º = tendencia
+  const K=[['Inversión',fmt2(sp),'gasto en el rango','Gasto pagado real de las campañas visibles con los filtros activos',trend(sp,P.sp,P.hasSpendData,true)],
+   ['Leads',num(A.n),'oportunidades creadas','Oportunidades creadas en el CRM bajo el cohorte y rango activos',trend(A.n,P.n,P.hasLeadData,false)],
+   ['CPL',fmt2(cpl),'costo por lead','Inversión ÷ Leads: cuánto cuesta cada oportunidad, sin importar si cierra',trend(cpl,P.cpl,P.hasSpendData&&P.hasLeadData,true)],
+   ['Cerrados',num(A.won),pct(A.n?A.won/A.n*100:0)+' de cierre','Leads que terminaron en estado Ganado',trend(A.won,P.won,P.hasLeadData,false)],
+   ['Ingreso',fmt2(A.rev),'valor de negocios ganados','Suma del valor de venta de los negocios Ganados',trend(A.rev,P.rev,P.hasLeadData,false)],
+   ['ROAS',roas.toFixed(2)+'×',roas>=2?'rentable':'por debajo de 2×','Ingreso ÷ Inversión; 2× es el punto de equilibrio usado en todo el reporte',trend(roas,P.roas,P.hasSpendData&&P.hasLeadData,false)],
+   ['CAC',fmt2(cac),'costo por cliente','Inversión ÷ Cerrados: cuánto cuesta cada cliente que sí compró',trend(cac,P.cac,P.hasSpendData&&P.hasLeadData,true)],
+   ['Ticket medio',fmt2(tk),'por negocio ganado','Ingreso ÷ Cerrados: valor promedio de una venta',trend(tk,P.tk,P.hasLeadData,false)]];
+  if(S.recur&&rec.length)K.push(['Recurrentes',num(recw.length)+' / '+num(rec.length),fmt2(recw.reduce((s,x)=>s+x.v,0))+' de recompra','Contactos dados de alta ANTES del rango que volvieron a comprar DENTRO de él; van sumados porque activaste "+ Clientes recurrentes"','']);
+  // FASE 1 · req.4 "resaltar clientes recurrentes": esta nota se muestra SIEMPRE (no solo con el toggle
+  // "+ Clientes recurrentes" activo) para que la existencia de recompra sea visible de un vistazo aunque
+  // el usuario no haya encendido el filtro. No cambia ningún cálculo existente, es solo informativa.
+  const recNote = (!S.recur && rec.length) ? `<div class="note" style="margin-top:8px" title="Contactos dados de alta antes del rango que volvieron a comprar dentro de él">
+     <b>Clientes recurrentes detectados:</b> ${num(rec.length)} contacto${rec.length>1?'s':''} previo${rec.length>1?'s':''} al rango volvió${rec.length>1?'n':''} a comprar dentro de él (${num(recw.length)} ganados por ${fmt2(recw.reduce((s,x)=>s+x.v,0))}). No están incluidos en las métricas de arriba — activa <b>"+ Clientes recurrentes"</b> para sumarlos.</div>` : '';
+  return `<div class="kpis">${K.map(k=>`<div class="kpi" title="${(k[3]||'').replace(/"/g,'&quot;')}"><div class="k">${k[0]}</div><div class="v">${k[1]}</div><div class="s">${k[2]}</div>${k[4]||''}</div>`).join('')}</div>${recNote}`;
+}
