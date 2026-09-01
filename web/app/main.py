@@ -1,6 +1,6 @@
 """
 Servicio de reportes · Sentinel Marketing
-─────────────────────────────────────────
+────────────────────────────────────────
 Sirve un único visor (cacheable, igual para todos los clientes) y el snapshot de datos
 de cada cliente por separado, detrás de un enlace con token.
 
@@ -11,6 +11,9 @@ Rutas públicas
     GET  /app.js                     → el dashboard (versionado por hash, cacheable)
     GET  /salud                      → healthcheck
     GET  /robots.txt                 → prohibido indexar
+
+Panel
+    GET  /admin                      → la página (en rutas_panel.py); pide el token dentro
 
 Rutas de administración (cabecera X-Admin-Token)
     GET  /admin/estado
@@ -37,6 +40,7 @@ from fastapi.responses import (HTMLResponse, JSONResponse, PlainTextResponse,
                               RedirectResponse, Response)
 
 from .almacen import abrir_almacen
+from .rutas_panel import router as router_panel
 from .privacidad import MODOS, aplicar
 from .visor import partir_html
 
@@ -48,6 +52,7 @@ VERSION = os.environ.get("RAILWAY_GIT_COMMIT_SHA", "dev")[:7]
 
 app = FastAPI(title="Reportes Sentinel", docs_url=None, redoc_url=None, openapi_url=None)
 app.add_middleware(GZipMiddleware, minimum_size=1024)
+app.include_router(router_panel)
 
 almacen = abrir_almacen()
 
@@ -142,8 +147,10 @@ def raiz():
     return HTMLResponse(
         "<!doctype html><meta charset=utf-8><title>Reportes</title>"
         "<style>body{font:15px/1.6 system-ui;background:#0b0f14;color:#93a1b5;"
-        "display:grid;place-items:center;height:100vh;margin:0}</style>"
-        "<p>Servicio de reportes. Se accede con un enlace directo.</p>",
+        "display:grid;place-items:center;height:100vh;margin:0;text-align:center}"
+        "a{color:#8b7cf6}</style>"
+        "<p>Servicio de reportes. Se accede con un enlace directo.<br>"
+        "<a href=\"/admin\">Panel de administración</a></p>",
         headers=CABECERAS_PRIVADAS)
 
 
