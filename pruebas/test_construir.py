@@ -10,13 +10,11 @@ Lo que comprueba: que el constructor GENÉRICO, alimentado solo con configuraci�
 crudos, produce exactamente el mismo snapshot que el script hecho a mano para el primer
 cliente. Es lo que impide que "hacerlo genérico" cambie los números en silencio.
 """
-import argparse
-import copy
-import json
-import pathlib
-import sys
+import argparse, copy, json, pathlib, sys
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "extractor"))
+# construir.py vive dentro del servicio (web/app/): el que construye el snapshot
+# es el servicio, no un script suelto, y el despliegue solo lleva web/.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "web" / "app"))
 from construir import construir, resumen  # noqa: E402
 
 
