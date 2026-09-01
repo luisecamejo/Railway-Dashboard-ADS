@@ -1,0 +1,328 @@
+/* ═══ DONUT "De dónde viene el volumen" ═══ */
+.dnt{border-left-color:var(--pu)!important;padding:16px 18px 18px!important}
+.dnt-h{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-bottom:2px}
+.dnt-h b{font-size:13.5px}
+.dnt-h span{color:var(--dim);font-size:12px}
+.dnt-body{display:flex;gap:30px;align-items:center;flex-wrap:wrap;margin-top:16px}
+/* El donut se dimensiona con el recuadro Y con cuántos orígenes hay: la variable --dnt la fija
+   donutComposicion() según el número de filas de leyenda, para que el círculo y la leyenda queden
+   compensados en altura en vez de dejar medio panel vacío. El clamp mantiene el suelo de móvil. */
+.dnt-viz{position:relative;flex:0 0 auto;width:clamp(190px,var(--dnt,26%),340px);aspect-ratio:1}
+.dnt-viz svg{width:100%;height:100%;cursor:pointer}
+.dnt-c{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  pointer-events:none;text-align:center;padding:0 22%}
+.dnt-c .v{font-family:var(--m);font-size:26px;font-weight:700;color:var(--tx);line-height:1.05;letter-spacing:-.5px}
+.dnt-c .k{font-family:var(--m);font-size:9.5px;color:var(--dim);letter-spacing:.8px;text-transform:uppercase;margin-top:3px;
+  overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;word-break:break-word}
+.dnt-seg{transition:opacity .12s linear,stroke-width .12s linear}
+.dnt-viz.hov .dnt-seg{opacity:.28}
+.dnt-viz.hov .dnt-seg.on{opacity:1}
+/* la leyenda se reparte en columnas según el ancho disponible: con pocos sources llena a lo
+   ancho, con muchos hace 2-3 columnas en vez de una lista larguísima. */
+.dnt-lg{flex:1 1 320px;min-width:0;display:grid;gap:5px 26px;align-content:center;
+  grid-template-columns:repeat(var(--cols,1),minmax(0,1fr))}
+/* fila de leyenda: color · nombre · barra de proporción · valor · %. La barra es la codificación
+   secundaria que exige la paleta (no depender solo del tono) y a la vez llena el ancho del panel. */
+.dnt-r{display:grid;grid-template-columns:11px minmax(64px,1fr) minmax(48px,104px) auto auto;align-items:center;gap:10px;
+  font-size:12.5px;padding:6px 8px;border-radius:6px;cursor:default;transition:background .12s linear}
+.dnt-r .bb{height:6px;background:var(--pan);border-radius:3px;overflow:hidden}
+.dnt-r .bb i{display:block;height:100%;border-radius:3px}
+/* en móvil la leyenda vuelve a una sola columna: con 390px de ancho, dos columnas dejan los
+   nombres de origen recortados a tres letras. */
+@media(max-width:700px){.dnt-lg{grid-template-columns:1fr!important}.dnt-body{gap:18px}}
+.dnt-r:hover,.dnt-r.on{background:var(--pan2)}
+.dnt-r i{width:11px;height:11px;border-radius:3px;display:block}
+.dnt-r .nm{color:var(--tx);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dnt-r b{font-family:var(--m);font-size:12px;text-align:right;min-width:44px}
+.dnt-r .pc{font-family:var(--m);font-size:11px;color:var(--dim);text-align:right;min-width:46px}
+.fr .num{font-family:var(--m);font-size:11.5px;text-align:right;color:var(--dim)}
+.fr .num b{color:var(--tx);font-weight:700}
+/* misc */
+.note{font-size:11.5px;color:var(--faint);line-height:1.6;border-left:2px solid var(--line);padding-left:12px}
+.note b{color:var(--dim);font-weight:600}
+.empty{padding:40px 18px;text-align:center;color:var(--faint);font-size:13px}
+.thumb{width:56px;height:56px;object-fit:cover;border-radius:6px;border:1px solid var(--line);cursor:zoom-in;display:block;background:var(--pan2)}
+.thumb:hover{border-color:var(--pul)}
+#lb{position:fixed;inset:0;background:rgba(5,5,10,.92);z-index:200;display:none;align-items:center;justify-content:center;flex-direction:column;gap:14px;padding:24px;cursor:zoom-out;backdrop-filter:blur(4px)}
+#lb img{max-width:min(92vw,520px);max-height:78vh;border-radius:10px;border:1px solid var(--line)}
+#lb .cap{font-family:var(--m);font-size:12px;color:var(--dim);text-align:center;max-width:520px}
+/* FIX AUDITORÍA UX: antes, si el enlace de Meta ya había expirado, el lightbox
+   abría igual y quedaba en negro sin ningún mensaje. #lberr sustituye a la
+   imagen cuando falla la carga. */
+#lberr{max-width:420px;padding:32px 24px;border:1px dashed var(--line);border-radius:10px;color:var(--dim);font-size:13px;text-align:center;background:var(--pan)}
+.thumb-wrap{display:inline-block}
+.thumb-fallback{width:56px;height:56px;border-radius:6px;border:1px dashed var(--line);display:flex;align-items:center;justify-content:center;font-size:9px;color:var(--faint);text-align:center;background:var(--pan2);cursor:default;line-height:1.2;padding:4px}
+.frow td{padding:6px 8px;position:sticky;top:31px;background:var(--pan);z-index:2}
+.frow input,.frow select{width:100%;background:var(--pan2);color:var(--tx);border:1px solid var(--line);border-radius:5px;padding:3px 6px;font-family:var(--m);font-size:10.5px;outline:none}
+.frow input:focus,.frow select:focus{border-color:var(--pu)}
+.nt{max-width:900px}
+.nt h3{font-size:14px;font-weight:700;margin:26px 0 8px;letter-spacing:-.2px;display:flex;align-items:center;gap:9px}
+.nt h3:first-child{margin-top:0}
+/* FIX AUDITORÍA UX: "Notas y salvedades" era un muro de texto continuo (16 notas).
+   Cada nota ahora es un <details> plegable — las de severidad ALTA empiezan
+   abiertas (son las que de verdad hay que leer antes de mirar presupuesto),
+   media/baja quedan cerradas hasta que el usuario las abre. */
+.note-item{border-bottom:1px solid var(--line)}
+.note-item:last-child{border-bottom:0}
+.note-item summary{cursor:pointer;padding:14px 0}
+.note-item summary::-webkit-details-marker{color:var(--faint)}
+.note-item summary h3{margin:0;display:inline-flex;vertical-align:middle}
+.note-item .note-body{padding:0 0 16px 2px}
+.nt p{font-size:13px;line-height:1.72;color:var(--dim);margin-bottom:10px}
+.nt p b,.nt li b{color:var(--tx);font-weight:600}
+.nt ul{margin:0 0 12px 18px}
+.nt li{font-size:13px;line-height:1.7;color:var(--dim);margin-bottom:6px}
+.nt code{font-family:var(--m);font-size:11.5px;background:var(--pan2);padding:1px 5px;border-radius:4px;color:var(--pul)}
+.sev{font-family:var(--m);font-size:9px;padding:2px 7px;border-radius:4px;letter-spacing:.7px}
+.s-alta{background:rgba(248,113,113,.16);color:var(--rd)}
+.s-media{background:rgba(251,191,36,.16);color:var(--am)}
+.s-baja{background:rgba(52,211,153,.14);color:var(--gr)}
+.card{background:var(--pan2);border:1px solid var(--line);border-left:2px solid var(--pu);border-radius:8px;padding:14px 16px;margin-bottom:12px}
+.pg{display:flex;gap:7px;align-items:center;justify-content:flex-end;padding:12px 18px;font-family:var(--m);font-size:11px;color:var(--faint)}
+.bars{display:flex;flex-direction:column;gap:9px}
+.brow{display:grid;grid-template-columns:150px 1fr 108px;gap:11px;align-items:center;font-size:12px}
+.brow .bb{height:19px;background:var(--pan2);border-radius:4px;overflow:hidden;display:flex}
+.brow .bb i{height:100%}
+.brow .vv{font-family:var(--m);font-size:11px;text-align:right;color:var(--dim)}
+svg{display:block;width:100%;overflow:visible}
+/* ═══ CROSSHAIR INTERACTIVO de la gráfica semanal ═══
+   El lector apunta a una FECHA, no a una línea de 2px: la guía vertical se engancha al punto de
+   datos más cercano y el tooltip lista las TRES series a la vez, así nunca hay que acertarle
+   encima de una línea para leer su valor. El área sensible es toda la caja del gráfico, no los
+   píxeles pintados. Funciona con mouse, con dedo (touch) y con teclado (flechas ← →). */
+.chart-wrap{position:relative}
+.chart-wrap svg{cursor:crosshair}
+.chart-wrap svg:focus{outline:none}
+.chart-wrap svg:focus-visible{outline:1px solid var(--pu);outline-offset:2px;border-radius:4px}
+.cguide{stroke:#8A8AA3;stroke-width:1;stroke-dasharray:3,3;opacity:0;pointer-events:none}
+.cband{fill:rgba(124,58,237,.10);opacity:0;pointer-events:none}
+.chl{opacity:0;pointer-events:none;stroke:var(--pan);stroke-width:2}
+.chart-wrap.act .cguide,.chart-wrap.act .cband,.chart-wrap.act .chl{opacity:1}
+.chart-wrap.act .cguide{opacity:.75}
+.ctip{position:absolute;top:0;left:0;pointer-events:none;opacity:0;transition:opacity .09s linear;
+  background:var(--pan2);border:1px solid var(--line);border-radius:9px;padding:9px 11px;
+  box-shadow:0 12px 30px rgba(0,0,0,.6);white-space:nowrap;z-index:6;min-width:172px}
+.chart-wrap.act .ctip{opacity:1}
+.ctip .ct-h{font-family:var(--m);font-size:10.5px;color:var(--tx);font-weight:700;letter-spacing:.2px;
+  padding-bottom:6px;margin-bottom:5px;border-bottom:1px solid var(--line)}
+.ctip .ct-h small{display:block;font-weight:400;color:var(--faint);font-size:9px;margin-top:2px;letter-spacing:.4px}
+/* valor primero (alto contraste), nombre de serie después (secundario): en el tooltip el lector
+   ya sabe qué serie es y lo que quiere es el número — jerarquía inversa a la de la leyenda. */
+.ctip .r{display:flex;align-items:center;justify-content:space-between;gap:14px;font-size:11px;line-height:1.85}
+.ctip .r .lb{color:var(--dim);display:flex;align-items:center;gap:7px;flex:1 1 auto;min-width:0}
+.ctip .r b{flex:0 0 auto;text-align:right}
+/* clave de serie = trazo corto, no cuadrado: a la densidad del tooltip un bloque relleno es
+   tinta de peso "dato" haciendo el trabajo de una etiqueta. */
+.ctip .r .lb em{display:inline-block;width:11px;height:2px;border-radius:1px;flex:none}
+.ctip .r b{font-family:var(--m);color:var(--tx);font-size:11.5px}
+/* OJO: no usar la clase ".sep" aquí — ya existe en la cabecera con width:1px (el separador
+   vertical junto al logo) y colapsaba la fila a 1px de ancho, descuadrando la alineación
+   del valor. Se usa un nombre propio del tooltip. */
+.ctip .ct-sep{border-top:1px solid var(--line);margin-top:5px;padding-top:4px}
+.ctip .r.der .lb{color:var(--faint)}
+.lg{display:flex;gap:14px;flex-wrap:wrap;font-family:var(--m);font-size:10px;color:var(--faint);margin-top:10px}
+.lg i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+footer{margin-top:34px;border-top:1px solid var(--line);padding-top:18px;font-size:11.5px;color:var(--faint);line-height:1.7}
+footer b{color:var(--dim)}
+@media(prefers-reduced-motion:no-preference){.kpi,.panel{animation:up .45s cubic-bezier(.2,.7,.3,1) both}@keyframes up{from{opacity:0;transform:translateY(7px)}}}
+</style></head><body>
+<header><div class="wrap">
+ <div class="brand"><div class="logo" id="agName">SENTINEL<span>.</span></div><div class="sep"></div>
+ <div class="cli" id="cliName">—</div></div>
+ <div class="meta" id="hmeta"></div>
+
+</div></header>
+
+<div class="bar"><div class="bar-in">
+ <!-- ITERACIÓN 2 · req.2 (sistema global de tooltips): se reescriben todos los title de esta barra para que
+      expliquen la definición real de negocio en vez de repetir la etiqueta visible del control (restricción
+      estricta del pedido: "Contacto" no puede decir "muestra los de contacto"). -->
+ <!-- REDISEÑO DE FILTROS (mockup "Rediseño de Filtros", aprobado para aplicar):
+      · #f1/#f2/#presets siguen en el DOM exactamente como antes, solo ocultos (.legacy-hidden). TODA la
+        lógica ya auditada (render, reset, cambio a la pestaña Vendedores) sigue leyendo/escribiendo esos
+        mismos elementos sin modificarse; el botón #dateBtn + calendario #datePop es una interfaz nueva por
+        fuera que sincroniza f1.value/f2.value/S.f1/S.f2 igual que hacían los controles visibles de antes.
+      · Source (#srcgrp), Campaña (#camp), Producto (#prod) y los dos interruptores (#noattr/#recur) se
+        REUBICAN dentro de "Más filtros" — mismos elementos, mismos ids, mismo onclick; solo cambia dónde
+        viven visualmente porque son los filtros que menos se tocan día a día.
+      · Red (#plat) y Cohorte (#coh) se quedan siempre visibles: son los que sí se cambian seguido. -->
+ <div class="grp legacy-hidden"><label>Desde</label><input type="date" id="f1"><label>Hasta</label><input type="date" id="f2"></div>
+ <div class="grp legacy-hidden"><label>Rango</label><div class="seg" id="presets">
+   <button data-d="30">30 d</button>
+   <button data-d="60">60 d</button>
+   <button data-d="90">90 d</button>
+   <button data-d="120" class="on">120 d</button>
+ </div></div>
+
+ <div class="pop-wrap">
+  <button class="datebtn" id="dateBtn" type="button" title="Este rango se compara contra la fecha de COHORTE activa (Contacto u Oportunidad), nunca contra la fecha en que cerró la venta — así se mide la campaña, no el mes de caja."><span class="ic">&#128197;&#xFE0E;</span><span id="dateLbl"></span></button>
+  <div class="pop pop-date" id="datePop">
+   <div class="calhead"><button class="calnav" id="calPrev" type="button" aria-label="Mes anterior">&#8249;</button><b id="calTitle"></b><button class="calnav" id="calNext" type="button" aria-label="Mes siguiente">&#8250;</button></div>
+   <div class="calgrid" id="calgrid"></div>
+   <!-- BLOQUEO DE RANGO: los presets ya NO cuelgan del dia de hoy del navegador, sino del ultimo dia
+        con datos del dataset. "Hoy" decia hoy pero devolvia el ultimo dia del export: dos cosas distintas
+        con el mismo nombre. Se renombran para que digan lo que de verdad hacen. -->
+   <div class="pop-presets" id="popPresets">
+    <button data-p="hoy" type="button" title="El ultimo dia que tiene datos en este reporte — no el dia de hoy del calendario">Último día con datos</button>
+    <button data-p="ayer" type="button" title="El dia anterior al ultimo con datos">Día anterior</button>
+    <button data-p="hoyayer" type="button">Últimos 2 días</button>
+    <button data-p="d7" type="button">Últimos 7 días</button>
+    <button data-p="d14" type="button">Últimos 14 días</button>
+    <button data-p="d28" type="button">Últimos 28 días</button>
+    <button data-p="d30" type="button">Últimos 30 días</button>
+    <button data-p="d60" type="button">Últimos 60 días</button>
+    <button data-p="d90" type="button">Últimos 90 días</button>
+    <button data-p="semana" type="button" title="Del lunes de la semana del ultimo dia con datos, hasta ese dia">Semana en curso</button>
+    <button data-p="semanaAnt" type="button">Semana anterior</button>
+    <button data-p="mes" type="button" title="Del dia 1 del mes del ultimo dia con datos, hasta ese dia">Mes en curso</button>
+    <button data-p="mesAnt" type="button">Mes anterior</button>
+    <button data-p="max" type="button" class="on">Máximo (ventana completa)</button>
+   </div>
+   <div class="pop-note" id="calNote"></div>
+   <div class="pop-actions"><button class="ghost" id="calCancel" type="button">Cancelar</button><button class="chip on" id="calApply" type="button">Aplicar</button></div>
+  </div>
+ </div>
+
+ <!-- BLOQUEO DE RANGO: indicador siempre visible de hasta donde llegan los datos. Si el reporte se
+      queda viejo (la extraccion es de una fecha y hoy es otra) se pone ambar y dice cuantos dias faltan,
+      para que nunca se compare contra GoHighLevel creyendo que el dashboard llega hasta hoy. -->
+ <span class="factive win" id="winChip" style="display:none"></span>
+ <!-- aviso: en modo atribución los orígenes son más genéricos; nada silencioso -->
+ <span class="factive" id="origChip" style="display:none;color:var(--am);background:rgba(251,191,36,.14);border-color:rgba(251,191,36,.35)"></span>
+
+ <div class="grp" id="platgrp"><label>Red</label><div class="seg" id="plat"></div></div>
+ <div class="grp" id="cohgrp" title="Cambia qué fecha decide si un lead cae dentro del rango: la misma oportunidad puede 'existir' en dos momentos distintos según qué evento se mire"><label>Cohorte</label><div class="seg" id="coh">
+   <button data-c="f" class="on" title="Cuenta el lead el día en que esa persona entró por primera vez al CRM, sin importar cuándo se le abrió una oportunidad de venta — mide adquisición real, el criterio que usa la agencia">Contacto</button>
+   <button data-c="fo" title="Cuenta el lead el día en que se creó su oportunidad de venta, aunque ese contacto exista en el CRM desde meses o años antes — puede mostrar picos que en realidad son limpieza de pipeline, no adquisición nueva">Oportunidad</button>
+ </div></div>
+
+ <input type="search" id="q" placeholder="Buscar lead, campaña…" title="Busca coincidencias de texto en el nombre del lead, el nombre de campaña y el source, a la vez">
+
+ <div class="pop-wrap">
+  <button class="masbtn" id="masBtn" type="button">Más filtros<span class="mascount" id="masCount"></span> &#9662;</button>
+  <div class="pop pop-more" id="masPop">
+   <!-- FIX: esta cabecera decía "Sub-cuenta Meta", heredado de una versión anterior. El panel no
+        contiene nada de sub-cuentas: se separa en dos bloques con lo que de verdad hay. -->
+   <div class="pop-lbl">De dónde salen los datos</div>
+   <!-- FASE 1 · req.1: filtro GENERAL por campaña — afecta a TODAS las tablas (campañas, creativos, leads, funnel, contribución por source, series).
+        Es un filtro "padre": sus opciones dependen de los filtros ya elegidos arriba (Red / Source / Producto), por eso se recalculan en cada render().
+        ITERACIÓN 2 · req.2: el title del propio <select> ahora se actualiza en cada render() según lo elegido
+        (ver render()), porque el atributo title de un <option> no se muestra de forma confiable en todos los navegadores. -->
+   <!-- NUEVO · Pipeline: una location puede tener varios; este selector dice cuál se está viendo.
+        Si solo hay uno, se muestra igualmente (deshabilitado) para que quede claro de dónde salen
+        los datos, que es justo lo que se pedía: "visualizar de cuál pipeline estoy viendo". -->
+   <div class="grp" id="pipegrp" style="width:100%" title="Los datos de este reporte salen de las oportunidades de este pipeline de GoHighLevel">
+   <label>Pipeline</label><select id="pipesel" style="width:100%"></select></div>
+   <!-- NUEVO · Criterio de origen -->
+   <div class="grp" id="origrp" style="width:100%" title="Con qué criterio se agrupa el origen de cada lead. Ver la salvedad 'Tres formas de leer el origen' en Notas y salvedades antes de usar los modos de atribución.">
+   <label>Origen por</label><select id="origsel" style="width:100%">
+    <option value="src" title="El campo Source de GoHighLevel, tal cual. Granular y en el idioma del negocio. Recomendado.">Source de GHL</option>
+    <option value="f" title="El canal técnico por el que el lead llegó la primera vez. Más genérico, sirve de contraste.">Atribución · 1er contacto</option>
+    <option value="l" title="El canal técnico del último contacto registrado. Ojo: muchas oportunidades no tienen este dato.">Atribución · último</option>
+   </select></div>
+   <div class="pop-lbl" style="margin-top:10px">Segmentación</div>
+   <div class="grp" id="srcgrp" title="Origen del lead. Qué significa exactamente depende del selector 'Origen por' de arriba." style="width:100%">
+   <label>Source</label><select id="srcsel" style="width:100%"></select></div>
+   <div class="grp" id="campgrp" style="width:100%"><label>Campaña</label><select id="camp" style="flex:1"></select></div>
+   <div class="grp" id="prodgrp" style="width:100%"><label>Producto</label><select id="prod" style="flex:1" title="Tratamiento asociado al lead: dato duro cuando viene del nombre de campaña de Meta, etiqueta débil del contacto en el resto de canales. También acota las opciones del filtro de Campaña"></select></div>
+   <button class="swbtn on" id="noattr" type="button" role="switch" aria-checked="true" title="Activo: los leads pagados sin utm_campaign_id ni nombre de campaña resoluble SÍ suman en el gasto, leads e ingreso de las tablas de arriba"><span class="trk"></span><span class="lbl">Incluir sin campaña</span></button>
+   <button class="swbtn" id="recur" type="button" role="switch" aria-checked="false" title="Un cliente recurrente es un contacto dado de alta ANTES del rango que abrió oportunidad o compró DENTRO de él; por defecto no cuenta como adquisición nueva del periodo"><span class="trk"></span><span class="lbl">+ Clientes recurrentes</span></button>
+   <div class="pop-actions" style="margin-top:2px"><button class="chip on" id="masClose" type="button" style="width:100%;text-align:center;border-radius:6px">Cerrar</button></div>
+  </div>
+ </div>
+
+ <span class="factive" id="activeBadge" style="display:none"></span>
+ <span class="factive notice" id="vendNotice" style="display:none"></span>
+ <button class="ghost" id="reset" title="Vuelve todos los filtros (fechas, red, cohorte, campaña, producto, búsqueda) al estado con el que abre el reporte">Reiniciar</button>
+</div></div>
+
+<div class="wrap">
+ <div class="tabs">
+   <button data-t="overview" class="on" title="Visión general: todos los sources, embudo del pipeline y leads uno por uno">Overview<span class="n" id="n2"></span></button>
+   <button data-t="paid" title="Campañas, creativos, ROAS y CPL de las plataformas con gasto">Paid Media<span class="n" id="n1"></span></button>
+   <button data-t="ventas" title="Auditoría de tiempos de respuesta, llamadas y cumplimiento del SOP por vendedor">Vendedores</button>
+   <button data-t="notas" title="Salvedades y límites conocidos de los datos de este reporte">Notas y salvedades</button>
+ </div>
+ <div id="view"></div>
+ <div id="lb"><img id="lbimg" alt=""><div id="lberr" style="display:none">Vista previa no disponible: el enlace de Meta para este creativo ya expiró (son URLs firmadas con fecha de vencimiento). No es un error del dashboard — para volver a verla hay que regenerar el snapshot de datos.</div><div class="cap" id="lbcap"></div></div>
+ <footer id="foot"></footer>
+</div>
+
+<script>
+const DATA = {};
+/* ════════════════════════════════════════════════════════════════════════════════════
+   SANEADO DE LOS DATOS DEL CRM  (bug encontrado en la auditoría del 1 sep 2026)
+
+   Todo el reporte se dibuja con plantillas de texto (`${...}`) que acaban en innerHTML. Los
+   nombres de lead, campaña, source, etapa o vendedor vienen del CRM y del Ads Manager, o sea
+   los escribe una PERSONA. Un lead llamado `Ana <ana@x.com>` o una campaña con comillas metía
+   HTML de verdad en la página: se comprobó inyectando `<img src=x onerror=...>` en el nombre de
+   un lead y el <img> aparecía en el DOM. Con el reporte como archivo local es un fallo de
+   pintado; como LINK COMPARTIBLE (que es a donde va esto) es un agujero de seguridad.
+
+   Se sanea UNA vez, aquí, en lugar de en las ~60 interpolaciones repartidas por el archivo:
+   así no depende de que nadie se acuerde de escapar en el próximo cambio.
+
+   Se escapan `<`, `>` y `"` — con eso no se puede ni abrir una etiqueta ni salirse de un
+   atributo. NO se toca `&`: es habitual en nombres reales ("Botox & Fillers") y escaparlo se
+   vería como `&amp;` en los sitios que usan textContent.
+   ════════════════════════════════════════════════════════════════════════════════════ */
+(function sanearDATA(){
+  const esc=v=>v.replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  const salta=new Set(['notas']); // si la extracción trae notas ya redactadas en HTML, se respetan
+  (function walk(o){
+    if(!o||typeof o!=='object') return;
+    for(const k in o){
+      if(salta.has(k)) continue;
+      const v=o[k];
+      if(typeof v==='string'){ if(/[<>"]/.test(v)) o[k]=esc(v); }
+      else if(v&&typeof v==='object') walk(v);
+    }
+  })(DATA);
+})();
+
+const L = DATA.leads, C = DATA.camps;
+const fmt=n=>'$'+(n||0).toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0});
+const fmt2=n=>'$'+(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+const num=n=>(n||0).toLocaleString('es-ES');
+const pct=n=>(isFinite(n)?n.toFixed(1):'0.0')+'%';
+const dd=s=>new Date(s+'T00:00:00Z');
+const iso=d=>d.toISOString().slice(0,10);
+const MESES_C=['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+const fmtD=s=>{const d=dd(s);return `${d.getUTCDate()} ${MESES_C[d.getUTCMonth()]} ${d.getUTCFullYear()}`};
+
+/* ════════════════════════════════════════════════════════════════════════════════════
+   VENTANA DE DATOS — fuente unica de verdad de TODO filtro de fecha del reporte.
+
+   Pedido literal: "la fecha debe dejar filtrar solo hasta la fecha real que tiene datos, ni
+   antes ni despues", "el rango que no contemple debe quedar bloqueado", "mostrar los ultimos
+   120 dias siempre". Objetivo de fondo: que filtrar el mismo rango aqui y en GoHighLevel de
+   exactamente el mismo numero.
+
+   Como se calcula, en este orden:
+     max  = DATA.hasta  → ultimo dia que el export declara. Nunca se pasa de ahi.
+     min  = el mayor entre DATA.desde y (max - 119 dias) → siempre 120 dias como maximo,
+            y nunca antes del inicio real de la extraccion aunque el export traiga historico.
+     cov  = cobertura REAL por cohorte: primer y ultimo dia que de verdad existe en los datos
+            para 'f' (alta de contacto) y para 'fo' (creacion de oportunidad). No son iguales:
+            un contacto puede existir desde antes de que se le abriera oportunidad, asi que la
+            cohorte "Oportunidad" suele arrancar mas tarde que la ventana declarada. Filtrar
+            esos dias huerfanos daria 0 aqui y no-0 en GHL. Por eso los limites del calendario
+            dependen de la cohorte activa (ver lim()), no de la ventana declarada.
+     atraso = dias entre el ultimo dia con datos y el dia real de hoy. Si es > 0 el reporte
+            esta viejo y se avisa en la barra; NO se mueve la ventana hacia hoy, porque mover
+            la ventana sin volver a extraer solo produciria dias vacios.
+   ════════════════════════════════════════════════════════════════════════════════════ */
+const WIN=(()=>{
+  const max=DATA.hasta, desde=DATA.desde;
+  const ini120=iso(new Date(dd(max).getTime()-119*864e5));
+  const min=(DATA.desde>ini120)?DATA.desde:ini120;
+  const cov=k=>{const v=DATA.leads.map(x=>x[k]).filter(x=>x&&x>=min&&x<=max).sort();
+    return v.length?{ini:v[0],fin:v[v.length-1],dias:new Set(v).size}:{ini:min,fin:max,dias:0}};
+  const h=new Date(), hoy=iso(new Date(Date.UTC(h.getFullYear(),h.getMonth(),h.getDate())));
+  const atraso=Math.round((dd(hoy)-dd(max))/864e5);
+  return {min,max,desde,dias:Math.round((dd(max)-dd(min))/864e5)+1,
+          cov:{f:cov('f'),fo:cov('fo')},hoy,atraso:atraso>0?atraso:0};
+})();
+// Limites vigentes = ventana de 120 dias recortada por la cobertura real de la cohorte activa.
+// Se recalcula en cada uso porque cambiar Contacto/Oportunidad cambia los dias filtrables.
