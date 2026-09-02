@@ -155,7 +155,7 @@ tr:last-child td{border-bottom:0}
   }
 
   // Ojo: no se puede reescribir className, porque estos elementos se localizan por una clase
-  // propia (.msnap, .menlace…). Solo se cambia la clase de estado.
+  // propia (.mconf, .menlace…). Solo se cambia la clase de estado.
   function pinta(el,tipo,html){
     el.classList.remove('ok','err','cargando');
     el.classList.add('msg');
@@ -361,12 +361,16 @@ tr:last-child td{border-bottom:0}
       '<div class="msg mconf"></div>'+
       '<p class="nota kcrudos"></p></div>'+
 
+      // Aquí había un formulario para subir el snapshot.json a mano. Se quitó a
+      // propósito: los datos los traen los extractores y el snapshot lo construye el
+      // servicio con la configuración de ESTE cliente. Una subida manual competía con
+      // eso — el cron de la madrugada la sobrescribía — y hacía creer que publicar un
+      // reporte era un paso manual. Este bloque ahora solo INFORMA de lo publicado.
       '<div class="bloque"><h2>Datos del reporte</h2>'+
-      '<p class="sub">Sube el <code>snapshot.json</code>. Si no cuadra, el servicio lo rechaza y te dice exactamente qué falla — así un reporte con números malos no llega al cliente.</p>'+
-      '<div class="fila"><div><label>Archivo snapshot.json</label>'+
-      '<input type="file" class="fsnap" accept=".json,application/json"></div>'+
-      '<button class="bsnap">Publicar datos</button></div>'+
-      '<div class="msg msnap"></div>'+
+      '<p class="sub">Los datos <b>ya no se suben desde aquí</b>: los traen los extractores '+
+      '(Meta, Google y el CRM) y el snapshot lo construye el servicio con la configuración de '+
+      'arriba. Para rehacerlo ahora mismo usa <b>Construir y publicar</b>, o <b>Actualizar ahora</b> '+
+      'en el propio dashboard si además quieres volver a extraer.</p>'+
       '<div class="tw"><table class="hist"><thead><tr><th>Publicado</th><th>Ventana</th>'+
       '<th>Oportunidades</th><th>Tamaño</th></tr></thead><tbody></tbody></table></div></div>'+
 
@@ -517,23 +521,6 @@ tr:last-child td{border-bottom:0}
         cuerpo.querySelector('.kcrudos').innerHTML=out;
       }).catch(function(){});
     }
-
-    var msnap=cuerpo.querySelector('.msnap');
-    cuerpo.querySelector('.bsnap').onclick=function(){
-      var f=cuerpo.querySelector('.fsnap').files[0], b=this;
-      if(!f) return pinta(msnap,'err','Elige el archivo snapshot.json primero.');
-      pinta(msnap,'cargando','Subiendo y comprobando '+Math.round(f.size/1024)+' KB…');
-      b.disabled=true;
-      api('/admin/snapshots/'+encodeURIComponent(slug),
-          {method:'POST',body:f,headers:{'Content-Type':'application/json'}})
-        .then(function(d){
-          pinta(msnap,'ok','Datos publicados: <b>'+esc(d.n_leads)+' oportunidades</b>, '+
-            Math.round(Number(d.bytes)/1024)+' KB. Los enlaces ya muestran esto.');
-          cuerpo.querySelector('.fsnap').value=''; historial(); cargar();
-        })
-        .catch(function(e){ pinta(msnap,'err',problema(e)) })
-        .then(function(){ b.disabled=false });
-    };
 
     var menlace=cuerpo.querySelector('.menlace');
     var snip=cuerpo.querySelector('.snip');
