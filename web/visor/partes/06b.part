@@ -1,19 +1,19 @@
 /* ════════════════════════════════════════════════════════════════════════════════════
-   06b · TIRA DE ESTADO DEL REPORTE
+   06b · TIRA DE ESTADO Y ACCIONES DEL REPORTE
    ────────────────────────────────────────────────────────────────────────────────────
-   Todo lo que responde a "¿de cuándo son estos datos y están completos?" vive aquí, en su
-   propia parte, y no repartido por 00/01/07: es una sola función del producto y así se toca
-   en un solo archivo.
+   Todo lo que responde a "¿de cuándo son estos datos, están completos y cómo me los
+   llevo?" vive aquí, en su propia parte, y no repartido por 00/01/07: es una sola
+   función del producto y así se toca en un solo archivo.
 
-   Dos elementos, ambos creados desde JS e insertados justo encima de #view (o sea, visibles
-   en TODAS las pestañas):
+   Tres elementos, todos creados desde JS e insertados justo encima de #view (o sea,
+   visibles en TODAS las pestañas):
 
      #actualizado   · cuándo se extrajeron estos datos, siempre, sin tener que buscarlo.
      #fuenteAviso   · aviso cuando el snapshot se construyó sin una fuente, o con una vieja.
+     #acciones      · descargar el reporte completo en PDF o en HTML.
 
-   Se crean desde JS a propósito: son elementos que dependen del contenido del snapshot, no
-   del marcado, y así el HTML de arriba no crece con nodos que la mayoría de las veces están
-   vacíos.
+   Se crean desde JS a propósito: dependen del contenido del snapshot, no del marcado, y
+   así el HTML de arriba no crece con nodos que la mayoría de las veces están vacíos.
    ════════════════════════════════════════════════════════════════════════════════════ */
 (function montaTiraEstado(){
   const v=document.getElementById('view');
@@ -143,7 +143,203 @@ function updateFuenteAviso(){
     +`border-left:3px solid ${col};border-radius:8px;background:${fondo};font-size:12.5px`;
 }
 
-// Ninguno de los dos depende de los filtros: describen el snapshot, no la selección. Se
-// pintan una vez, aquí, y no en render().
+/* ════════════════════════════════════════════════════════════════════════════════════
+   DESCARGAR EL REPORTE — en PDF y en HTML.
+
+   Los dos botones sacan el reporte COMPLETO, con las cuatro pestañas una detrás de otra,
+   no solo la que se está mirando. Es lo que se pidió ("descargar todo el dashboard") y es
+   lo único que tiene sentido en un archivo: en papel no hay pestañas que pulsar.
+
+   HTML y PDF no son la misma cosa y por eso están los dos:
+
+     HTML  · un solo archivo autocontenido, con los datos y el dashboard dentro. Se abre
+             con doble clic, sin servidor y sin internet, y SIGUE SIENDO INTERACTIVO:
+             filtros, pestañas, ordenar tablas. Es el archivo que se archiva.
+     PDF   · una foto fija para leer, imprimir o adjuntar. Pierde la interacción y gana
+             que se ve igual en todas partes.
+
+   Sobre el PDF: se hace con el diálogo de impresión del navegador y no en el servidor.
+   No es un atajo — es que el navegador que ya tiene el reporte pintado sabe exactamente
+   cómo se ve, mientras que un render en el servidor sería una segunda implementación que
+   se desincroniza con esta. La hoja de estilo de impresión de más abajo es la MISMA que
+   usará el trabajo nocturno de reportes semanales y mensuales cuando renderice con un
+   navegador sin ventana, así que hay un solo sitio que decide cómo se ve el PDF.
+   ════════════════════════════════════════════════════════════════════════════════════ */
+const PESTANAS=[['overview','Overview'],['paid','Paid Media'],
+                ['ventas','Vendedores'],['notas','Notas y salvedades']];
+
+(function estiloImpresion(){
+  // Va inyectada desde aquí, y no en el <style> de la cabecera, para que TODA esta función
+  // del producto viva en un archivo. La regla clave es print-color-adjust: sin ella el
+  // navegador tira los fondos oscuros y el reporte sale con texto claro sobre blanco,
+  // ilegible. El tema oscuro se mantiene a propósito: este PDF se lee en pantalla y se
+  // manda al cliente, no se imprime en papel.
+  const css=`
+@media print{
+  @page{size:A4;margin:11mm 9mm}
+  html,body{background:#0b0f14 !important;
+    -webkit-print-color-adjust:exact !important;print-color-adjust:exact !important}
+  /* fuera todo lo que solo sirve para interactuar */
+  .bar,.tabs,#lb,#datePop,#masPop,#view,#acciones,#foot .noprint{display:none !important}
+  header{margin-bottom:10px !important;padding:0 0 10px !important;
+    background:none !important;break-inside:avoid}
+  #tiraEstado{margin-bottom:8px !important}
+  #impresion{display:block !important}
+  /* Cada hoja del reporte empieza en su propia página: si no, un bloque se corta por la
+     mitad justo en el salto y la tabla de al lado parece de otra sección. */
+  .hojaimp{break-before:page;break-inside:auto}
+  .hojaimp:first-child{break-before:auto}
+  .hojaimp>h2{font:700 15px var(--d);color:var(--tx);margin:0 0 10px;
+    padding-bottom:6px;border-bottom:1px solid var(--line)}
+  /* Nada de animaciones de entrada al imprimir: dejaban bloques a opacidad 0 en el PDF. */
+  .kpi,.panel{animation:none !important;opacity:1 !important;transform:none !important}
+  .panel,.kpi,.note{break-inside:avoid}
+  tr,.filalead{break-inside:avoid}
+  thead{display:table-header-group}
+  /* Las tablas anchas se desplazan con el dedo en pantalla; en papel no hay dedo, así que
+     se dejan que se vean enteras aunque bajen de tamaño. */
+  .tw{overflow:visible !important}
+  a[href]:after{content:'' !important}
+}`;
+  const st=document.createElement('style');
+  st.id='estiloImpresion'; st.textContent=css;
+  document.head.appendChild(st);
+})();
+
+// Contenedor del reporte completo. Vacío y oculto hasta que se pide una descarga: montar
+// las cuatro pestañas cuesta cuatro render() y no hay razón de pagarlos al abrir.
+(function montaImpresion(){
+  const v=document.getElementById('view');
+  if(!v||document.getElementById('impresion'))return;
+  const d=document.createElement('div');
+  d.id='impresion'; d.style.display='none';
+  v.parentNode.insertBefore(d,v.nextSibling);
+})();
+
+/* Pinta las cuatro pestañas, una detrás de otra, dentro de #impresion.
+
+   Ojo con la pestaña Vendedores: al entrar en ella el dashboard CAMBIA el rango de fechas,
+   porque se alimenta de un export propio con su propia ventana (DATA.sp). Si no se
+   replicara aquí, esa hoja saldría vacía en el PDF; y si no se restaurara después, el
+   usuario se encontraría el reporte con otro rango del que tenía al pulsar el botón. Se
+   guarda el estado entero y se devuelve tal cual. */
+function pintaTodasLasHojas(){
+  const cont=document.getElementById('impresion');
+  const guarda={t:S.t,f1:S.f1,f2:S.f2,page:S.page};
+  let html='';
+  PESTANAS.forEach(([t,titulo])=>{
+    S.t=t; S.page=0;
+    if(t==='ventas'){
+      S.f1=(DATA.sp&&DATA.sp.desde)||guarda.f1;
+      S.f2=(DATA.sp&&DATA.sp.hasta)||guarda.f2;
+    } else { S.f1=guarda.f1; S.f2=guarda.f2 }
+    render();
+    html+=`<section class="hojaimp"><h2>${titulo}</h2>`
+         +document.getElementById('view').innerHTML+`</section>`;
+  });
+  cont.innerHTML=html;
+  Object.assign(S,guarda);
+  render();                      // deja la pantalla como estaba
+  return cont;
+}
+
+function nombreArchivo(ext){
+  const c=((DATA.cliente&&DATA.cliente.nombre)||'reporte')
+    .toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'')
+    .replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'');
+  return `${c}-${S.f1}-a-${S.f2}.${ext}`;
+}
+
+function descargaPDF(btn){
+  const antes=btn.textContent;
+  btn.disabled=true; btn.textContent='Preparando…';
+  // El navegador bloquea el hilo durante print(), así que el cambio de texto solo se ve si
+  // se le deja pintar antes. Dos marcos son suficientes.
+  requestAnimationFrame(()=>requestAnimationFrame(()=>{
+    try{ pintaTodasLasHojas(); window.print(); }
+    finally{ btn.disabled=false; btn.textContent=antes }
+  }));
+}
+
+/* El HTML autocontenido no se construye con outerHTML del documento vivo: eso guardaría el
+   DOM ya manipulado (una pestaña abierta, popovers, filtros aplicados) y encima sin el
+   código, porque el dashboard vive en /app.js aparte. Se piden las DOS piezas originales
+   al servidor y se cosen:
+
+     índice  · el HTML con su CSS y su marcado, tal como se sirve
+     app.js  · el dashboard entero
+
+   y el cargador del índice — que es el trozo que va a buscar snapshot.json y app.js por
+   la red — se sustituye por los datos ya incrustados. Así el archivo no necesita ni
+   servidor ni internet. */
+async function descargaHTML(btn){
+  const antes=btn.textContent;
+  btn.disabled=true; btn.textContent='Preparando…';
+  try{
+    const [idx,app]=await Promise.all([
+      fetch(location.href,{cache:'no-store',credentials:'same-origin'}).then(r=>r.text()),
+      fetch('/app.js',{cache:'no-store',credentials:'same-origin'}).then(r=>r.text()),
+    ]);
+    // Estas dos etiquetas NO se pueden escribir literales aquí: este archivo ES el
+    // contenido de un script, así que un cierre literal lo terminaría a mitad y rompería
+    // el dashboard entero (y también el corte índice/app.js que hace el servidor). Se
+    // arman por trozos, que es la forma estándar de nombrarlas desde dentro.
+    const ABRE='<'+'script>', CIERRA='<'+'/'+'script>';
+    // Un '</' dentro de una cadena JSON cerraría la etiqueta antes de tiempo. Es el único
+    // escape que hace falta y no cambia lo que JSON.parse lee después.
+    const datos=JSON.stringify(DATA).split('</').join('<\\/');
+    const i=idx.lastIndexOf(ABRE), j=idx.lastIndexOf(CIERRA);
+    if(i<0||j<i) throw new Error('el índice del visor no tiene la forma esperada');
+    // BUG REAL (encontrado abriendo el archivo descargado sin red, no en teoría): el
+    // índice trae la pantalla de carga #boot, y en el visor normal la quita el cargador
+    // cuando app.js termina de cargarse. Al sustituir el cargador, nadie la quitaba: el
+    // dashboard se pintaba DEBAJO, correcto y completo, pero con un panel de "Cargando
+    // los datos del reporte…" tapándolo y comiéndose todos los clics. Se replica ese
+    // último paso del cargador, que es lo único suyo que sigue haciendo falta.
+    const QUITA_BOOT="var b=document.getElementById('boot');"
+                    +"if(b&&b.parentNode)b.parentNode.removeChild(b);";
+    const salida=idx.slice(0,i)
+      +ABRE+'window.__SNAPSHOT__='+datos+';'+CIERRA
+      +'\n'+ABRE+app+CIERRA
+      +'\n'+ABRE+QUITA_BOOT+CIERRA
+      +idx.slice(j+CIERRA.length);
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(new Blob([salida],{type:'text/html;charset=utf-8'}));
+    a.download=nombreArchivo('html');
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(a.href),4000);
+  }catch(e){
+    // Sin alert(): un diálogo modal deja el reporte bloqueado. El error se dice en el
+    // propio botón, que es donde está mirando quien lo pulsó.
+    btn.textContent='No se pudo — reintenta';
+    setTimeout(()=>{btn.textContent=antes},4000);
+    return;
+  }finally{ btn.disabled=false }
+  btn.textContent='Descargado ✓';
+  setTimeout(()=>{btn.textContent=antes},2500);
+}
+
+(function montaAcciones(){
+  const tira=document.getElementById('tiraEstado'); if(!tira)return;
+  const d=document.createElement('div');
+  d.id='acciones';
+  d.style.cssText='display:flex;gap:7px;flex-wrap:wrap;margin:0 0 12px';
+  d.innerHTML=`<button type="button" class="accion" id="bpdf" title="Abre el diálogo de `
+    +`impresión con las cuatro pestañas seguidas. Elige «Guardar como PDF» como destino.`
+    +`\nEl rango de fechas del PDF es el que tengas puesto ahora.">Descargar PDF</button>`
+    +`<button type="button" class="accion" id="bhtml" title="Un solo archivo con los datos `
+    +`y el dashboard dentro. Se abre con doble clic, sin internet, y mantiene los filtros y `
+    +`las pestañas.">Descargar HTML</button>`;
+  tira.appendChild(d);
+  const est='background:var(--pn2,#171f2a);color:var(--dim,#93a1b5);'
+    +'border:1px solid var(--line);border-radius:6px;padding:5px 11px;'
+    +'font:600 11.5px var(--d);cursor:pointer';
+  d.querySelectorAll('.accion').forEach(b=>b.style.cssText=est);
+  document.getElementById('bpdf').onclick=function(){ descargaPDF(this) };
+  document.getElementById('bhtml').onclick=function(){ descargaHTML(this) };
+})();
+
+// Nada de esto depende de los filtros: describen el snapshot, no la selección. Se pintan
+// una vez, aquí, y no en render().
 updateActualizado();
 updateFuenteAviso();
