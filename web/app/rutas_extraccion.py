@@ -192,6 +192,11 @@ def montar(app, *, almacen, exige_admin, validar, leer_cuerpo, tope_mb: float):
         # "este cliente no anuncia en Google" se ven igual desde el snapshot (cero gasto de
         # Google en ambos) y significan cosas opuestas. Lo decide quien sí lo sabe: aquí.
         datos["fuentes"] = estado_fuentes(cfg, procedencia)
+        # La MONEDA también viaja en el snapshot. El dashboard formateaba todo con "$"
+        # metido a fuego, así que un cliente que factura en euros veía sus euros con
+        # el símbolo del dólar: un número que parece bueno y no lo es. Sale de la
+        # sub-cuenta del CRM (`currency`), igual que la zona horaria.
+        datos["moneda"] = (cfg.get("moneda") or "USD").strip().upper()
 
         problemas = validar(datos)
         if problemas:
