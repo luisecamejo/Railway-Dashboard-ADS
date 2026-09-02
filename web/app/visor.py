@@ -45,13 +45,13 @@ CAPA_BOOT = """
 
 CARGADOR = """
 <script>
-/* ══════════════════════════════════════════════════════════════════════════════════════
+/* ════════════════════════════════════════════════════════════════════════════════════════════
    ARRANQUE DEL VISOR · Fase 0
    Este archivo NO lleva datos dentro. Pide su snapshot al servidor y solo entonces carga
    app.js, que es el dashboard entero. La URL del snapshot es relativa al visor: el
    servicio sirve el visor en /r/{token}/ y los datos en /r/{token}/snapshot.json, así que
    este mismo archivo vale para todos los clientes y se cachea una sola vez.
-   ══════════════════════════════════════════════════════════════════════════════════════ */
+   ════════════════════════════════════════════════════════════════════════════════════════════ */
 (function(){
   var boot=document.getElementById('boot');
   function fallo(titulo,detalle,reintentar){
@@ -68,6 +68,7 @@ CARGADOR = """
     .then(function(r){
       if(r.status===404) throw {tipo:'404'};
       if(r.status===401||r.status===403) throw {tipo:'403'};
+      if(r.status===409) throw {tipo:'preparando'};
       if(!r.ok) throw {tipo:'http',cod:r.status};
       return r.json();
     })
@@ -84,6 +85,15 @@ CARGADOR = """
     .catch(function(e){
       var t=(e&&e.tipo)||'red';
       if(t==='404')      fallo('Este reporte no existe','El enlace es incorrecto o el reporte se dio de baja. Pide un enlace nuevo.',false);
+      // 409: el enlace es BUENO, lo que falta son los datos. Antes esto caia en el 404 y
+      // el mensaje mandaba a pedir un enlace nuevo que tampoco habria funcionado.
+      else if(t==='preparando'){
+        fallo('Estamos preparando este reporte',
+              'El enlace es correcto. La primera extraccion de datos todavia no ha '+
+              'terminado &mdash; suele tardar entre quince y veinticinco minutos. '+
+              'Esta pagina se actualiza sola.',false);
+        setTimeout(function(){ location.reload() },60000);
+      }
       else if(t==='403') fallo('Este enlace ya no es válido','Ha caducado o se revocó el acceso. Pide un enlace nuevo.',false);
       else if(t==='forma') fallo('Los datos llegaron incompletos','El servidor respondió, pero el snapshot no tiene la forma esperada. Hay que regenerarlo.',true);
       else if(t==='http') fallo('El servidor devolvió un error','Código <code>'+e.cod+'</code>. Suele pasar mientras se publica un snapshot nuevo.',true);
