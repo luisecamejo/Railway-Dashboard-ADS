@@ -27,6 +27,9 @@ Decisiones que costaron una prueba cada una:
   · LA VENTANA la calcula este extractor en la zona horaria DEL NEGOCIO, no en UTC.
     Un contenedor de Railway va en UTC: usar su fecha metería los leads de la noche
     en el día siguiente y los bordes del rango no cuadrarían con el CRM.
+
+  · EL TAMAÑO DEL LOTE DEL EXPORT DE VENDEDORES no es un detalle de rendimiento,
+    es la diferencia entre extraer y no extraer. Ver LOTE_VENDEDORES más abajo.
 """
 from __future__ import annotations
 
@@ -55,6 +58,18 @@ log = logging.getLogger("extractor.ghl")
 # recortar tiempo de ejecución.
 DIAS_VENDEDORES = int(os.environ.get("GHL_DIAS_VENDEDORES", "120"))
 TOPE_PAGINAS = int(os.environ.get("GHL_TOPE_PAGINAS", "400"))
+# Cuánto se le da al MCP para contestar UNA página. El export de conversaciones no es
+# una consulta, es un recorrido: por cada conversación del rango va a buscar su
+# historial de mensajes a GoHighLevel. Con los 120 s que traía el cliente por defecto,
+# la extracción de Cliff moría reintentando cuatro veces la misma página
+# ("The read operation timed out") y el cliente se quedaba sin reporte entero.
+TIMEOUT_MCP = int(os.environ.get("GHL_MCP_TIMEOUT", "240"))
+# Conversaciones por página del export de vendedores. El tope que acepta la herramienta
+# es 200, pero el trabajo por página crece con este número, así que pedir el máximo es
+# justo lo que hace que una página no quepa en el timeout. Con lotes pequeños el total
+# tarda lo mismo pero cada petición termina, y un fallo cuesta una página en vez de la
+# extracción completa del cliente.
+LOTE_VENDEDORES = int(os.environ.get("GHL_LOTE_VENDEDORES", "50"))
 PAUSA = float(os.environ.get("GHL_PAUSA_LLAMADAS", "0.05"))
 
 
@@ -88,6 +103,7 @@ def _paginar_cursor(mcp: ClienteMCP, herramienta: str, args: dict,
                     etiqueta: str) -> list[dict]:
     """Recorre un export de ghl-mcp mientras `meta.hasMore` sea true."""
     todo, cursor, n = [], None, 0
+    t0 = time.monotonic()
     while True:
         n += 1
         if n > TOPE_PAGINAS:
@@ -105,7 +121,14 @@ def _paginar_cursor(mcp: ClienteMCP, herramienta: str, args: dict,
             log.warning("%s dice hasMore pero no manda cursor: se para en %d filas",
                         etiqueta, len(todo))
             break
-    log.info("%s · %d filas en %d página(s)", etiqueta, len(todo), n)
+        # Un export de decenas de páginas tardaba minutos SIN escribir nada en el log,
+        # así que un cuelgue y un avance normal se veían igual. Cada 10 páginas se deja
+        # constancia de que sigue vivo y por dónde va.
+        if n % 10 == 0:
+            log.info("  %s · %d páginas, %d filas, %.0fs", etiqueta, n, len(todo),
+                     time.monotonic() - t0)
+    log.info("%s · %d filas en %d página(s) · %.0fs", etiqueta, len(todo), n,
+             time.monotonic() - t0)
     return todo
 
 
@@ -191,7 +214,7 @@ def oportunidades(mcp: ClienteMCP, loc: str, desde: str, hasta: str,
 def vendedores(mcp: ClienteMCP, loc: str, desde: str, hasta: str) -> list[dict]:
     return _paginar_cursor(mcp, "ghl_export_seller_performance",
                            {"client": loc, "startDate": desde, "endDate": hasta,
-                            "limit": 200},
+                            "limit": LOTE_VENDEDORES},
                            f"conversaciones {desde}→{hasta}")
 
 
@@ -256,6 +279,10 @@ def extraer_cliente(objetivo: dict, mcp: ClienteMCP) -> dict:
              sum(len(p["stages"]) for p in pipes))
     opps = oportunidades(mcp, loc, desde, hasta, tz)
     users = usuarios(mcp, loc)
+    # Esta línea existe por un diagnóstico que costó media hora: entre "oportunidades"
+    # y un fallo de conexión hay DOS llamadas distintas, y sin anunciar ninguna no se
+    # podía saber cuál se estaba colgando.
+    log.info("%d usuario(s) del CRM", len(users))
     filas = vendedores(mcp, loc, vdesde, vhasta)
 
     # El importe de la oportunidad no lo trae el export de vendedores: se cruza.
@@ -315,7 +342,8 @@ def main() -> int:
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(message)s")
     mcp = ClienteMCP(os.environ.get("GHL_MCP_URL", ""),
-                     os.environ.get("GHL_MCP_TOKEN", ""))
+                     os.environ.get("GHL_MCP_TOKEN", ""),
+                     timeout=TIMEOUT_MCP)
     rep = Reportes(os.environ.get("REPORTES_URL", ""),
                    os.environ.get("REPORTES_ADMIN_TOKEN", ""))
 
