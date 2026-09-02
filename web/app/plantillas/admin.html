@@ -250,7 +250,11 @@ tr:last-child td{border-bottom:0}
 
   // ── clientes ────────────────────────────────────────────────────────
   function resumen(c){
-    return esc(c.slug)+' · datos: '+fecha(c.ultimo_snapshot)+
+    // "sin configurar" en rojo: con la cartera entera dada de alta, esto es lo primero
+    // que hay que poder ver de un vistazo — un cliente sin cuentas no extrae nada.
+    return esc(c.slug)+
+      (c.configurado===false?' · <b style="color:var(--rd)">sin configurar</b>':'')+
+      ' · datos: '+fecha(c.ultimo_snapshot)+
       ' · '+(c.enlaces||0)+' enlace'+(c.enlaces===1?'':'s');
   }
 
@@ -276,7 +280,8 @@ tr:last-child td{border-bottom:0}
     }
 
     cont.innerHTML=cs.map(function(c){
-      return '<details class="cli" data-slug="'+esc(c.slug)+'">'+
+      return '<details class="cli" data-slug="'+esc(c.slug)+'" data-nombre="'+esc(c.nombre)+'"'+
+        ' data-tz="'+esc(c.tz||'')+'" data-loc="'+esc(c.ghl_location_id||'')+'">'+
         '<summary><span class="nm">'+esc(c.nombre)+'</span>'+
         '<span class="met">'+resumen(c)+'</span></summary>'+
         '<div class="cuerpo"><div class="nada">Abriendo…</div></div></details>';
@@ -290,6 +295,24 @@ tr:last-child td{border-bottom:0}
     var slug=det.dataset.slug, cuerpo=det.querySelector('.cuerpo');
     det.dataset.listo='1';
     cuerpo.innerHTML=
+      '<div class="bloque"><h2>Cuentas y extracción</h2>'+
+      '<p class="sub">Esto es lo que leen los extractores cada noche. La zona horaria y el '+
+      'location de GoHighLevel son obligatorios. De cuentas de anuncios puedes poner '+
+      '<b>tantas como tenga</b>: varias de Meta, varias de Google, o ninguna.</p>'+
+      '<div class="fila">'+
+      '<div><label>Zona horaria del negocio</label><input type="text" class="ktz" placeholder="America/Denver"></div>'+
+      '<div><label>Location de GoHighLevel</label><input type="text" class="kloc" placeholder="id de la sub-cuenta"></div>'+
+      '</div>'+
+      '<div style="margin-top:15px"><label>Cuentas de anuncios</label>'+
+      '<div class="cuentas"></div>'+
+      '<div class="preset"><button class="kmas">+ añadir cuenta</button></div></div>'+
+      '<div class="fila" style="margin-top:15px">'+
+      '<button class="kguardar">Guardar configuración</button>'+
+      '<button class="sec kensayo">Construir sin publicar</button>'+
+      '<button class="sec kconstruir">Construir y publicar</button></div>'+
+      '<div class="msg mconf"></div>'+
+      '<p class="nota kcrudos"></p></div>'+
+
       '<div class="bloque"><h2>Datos del reporte</h2>'+
       '<p class="sub">Sube el <code>snapshot.json</code>. Si no cuadra, el servicio lo rechaza y te dice exactamente qué falla — así un reporte con números malos no llega al cliente.</p>'+
       '<div class="fila"><div><label>Archivo snapshot.json</label>'+
@@ -319,6 +342,133 @@ tr:last-child td{border-bottom:0}
       '<div class="tw"><table class="tenlaces"><thead><tr><th>Enlace</th><th>Modo</th><th>Nota</th>'+
       '<th>Empotrar</th><th>Visitas</th><th>Creado</th><th></th></tr></thead><tbody></tbody></table></div>'+
       '<div class="snip" style="display:none"></div></div>';
+
+    // ── cuentas y extracción ────────────────────────────────────────
+    // CFG se guarda entero y se vuelve a mandar entero al guardar: la ruta reemplaza
+    // toda la configuración, así que si mandáramos solo estos campos borraríamos los
+    // productos, los roles y el SOP del cliente sin avisar.
+    var CFG={}, mconf=cuerpo.querySelector('.mconf');
+    var HUECO={Meta:'1003698104483915',Google:'580-642-2100'};
+
+    function filaCuenta(plataforma,id){
+      var cont=cuerpo.querySelector('.cuentas');
+      var f=document.createElement('div');
+      f.className='cuenta fila';
+      f.style.marginTop='7px';
+      f.innerHTML='<div style="flex:0 0 120px"><select class="kplat">'+
+        '<option value="Meta">Meta</option><option value="Google">Google</option></select></div>'+
+        '<div><input type="text" class="kid"></div>'+
+        '<button class="dgr kquitar" type="button">quitar</button>';
+      cont.appendChild(f);
+      var sel=f.querySelector('.kplat'), inp=f.querySelector('.kid');
+      sel.value=plataforma==='Google'?'Google':'Meta';
+      inp.value=id||'';
+      function hueco(){ inp.placeholder=HUECO[sel.value] }
+      sel.onchange=hueco; hueco();
+      f.querySelector('.kquitar').onclick=function(){ f.remove() };
+      return f;
+    }
+
+    cuerpo.querySelector('.kmas').onclick=function(){ filaCuenta('Meta','').querySelector('.kid').focus() };
+
+    function pintaConfig(){
+      // Si el cliente aún no tiene configuración, se parte de lo que ya se escribió en
+      // su alta. Volver a teclearlo es como acaban la ficha y la configuración diciendo
+      // zonas horarias distintas, y entonces las fechas no cuadran con el CRM.
+      cuerpo.querySelector('.ktz').value=CFG.tz||det.dataset.tz||'';
+      cuerpo.querySelector('.kloc').value=CFG.ghlLocationId||det.dataset.loc||'';
+      cuerpo.querySelector('.cuentas').innerHTML='';
+      var cs=CFG.cuentas||[];
+      if(!cs.length) filaCuenta('Meta','');
+      else cs.forEach(function(c){ filaCuenta(c.plataforma,c.id) });
+    }
+
+    function cargaConfig(){
+      return api('/admin/config/'+encodeURIComponent(slug)).then(function(d){
+        CFG=d.config||{}; pintaConfig();
+      }).catch(function(){ CFG={}; pintaConfig() });
+    }
+
+    cuerpo.querySelector('.kguardar').onclick=function(){
+      var tz=cuerpo.querySelector('.ktz').value.trim();
+      var loc=cuerpo.querySelector('.kloc').value.trim();
+      if(!tz) return pinta(mconf,'err','La zona horaria es obligatoria: es lo que hace que '+
+        'las fechas cuadren con el CRM. Ejemplos: <code>America/Denver</code>, '+
+        '<code>America/New_York</code>, <code>Europe/Madrid</code>.');
+      var cuentas=[], vistas={}, malas=[], repetidas=[];
+      Array.prototype.forEach.call(cuerpo.querySelectorAll('.cuenta'),function(f){
+        var p=f.querySelector('.kplat').value, id=f.querySelector('.kid').value.trim();
+        if(!id) return;
+        // La MISMA cuenta dos veces sumaría su gasto dos veces y el CPL saldría a la
+        // mitad. Se avisa en vez de quitarla en silencio, que esconde la errata.
+        if(vistas[p+'|'+id]) { repetidas.push(p+' '+id); return }
+        vistas[p+'|'+id]=1;
+        if(p==='Meta' && !/^\d{6,}$/.test(id.replace(/^act_/,'')))
+          malas.push('Meta <code>'+esc(id)+'</code> — se esperan solo dígitos');
+        if(p==='Google' && !/^\d{3}-?\d{3}-?\d{4}$/.test(id))
+          malas.push('Google <code>'+esc(id)+'</code> — se espera <code>123-456-7890</code>');
+        cuentas.push({plataforma:p,id:id});
+      });
+      if(repetidas.length) return pinta(mconf,'err','<b>Hay cuentas repetidas:</b><ul>'+
+        repetidas.map(function(r){return '<li>'+esc(r)+'</li>'}).join('')+
+        '</ul>La misma cuenta dos veces sumaría su gasto dos veces.');
+      if(malas.length) return pinta(mconf,'err','<b>Revisa estos ids:</b><ul>'+
+        malas.map(function(m){return '<li>'+m+'</li>'}).join('')+'</ul>');
+
+      var b=this; b.disabled=true;
+      pinta(mconf,'cargando','Guardando…');
+      var nueva=Object.assign({},CFG,{nombre:CFG.nombre||det.dataset.nombre,slug:slug,
+                                      tz:tz,ghlLocationId:loc,cuentas:cuentas});
+      api('/admin/config/'+encodeURIComponent(slug),
+          {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(nueva)})
+        .then(function(){
+          CFG=nueva;
+          var meta=cuentas.filter(function(c){return c.plataforma==='Meta'}).length;
+          var goo=cuentas.filter(function(c){return c.plataforma==='Google'}).length;
+          pinta(mconf,'ok','Configuración guardada: '+meta+' cuenta'+(meta===1?'':'s')+
+            ' de Meta y '+goo+' de Google.'+
+            (loc?'':'<br>Sin location de GoHighLevel este cliente <b>no</b> entra en la '+
+                 'extracción del CRM, así que su reporte saldría sin leads.'));
+          cargar();   // quita el "sin configurar" del resumen de arriba
+        })
+        .catch(function(e){ pinta(mconf,'err',problema(e)) })
+        .then(function(){ b.disabled=false });
+    };
+
+    function construir(ensayo){
+      var bs=[cuerpo.querySelector('.kensayo'),cuerpo.querySelector('.kconstruir')];
+      bs.forEach(function(b){b.disabled=true});
+      pinta(mconf,'cargando',ensayo?'Construyendo sin publicar… (puede tardar unos segundos)'
+                                   :'Construyendo y publicando…');
+      api('/admin/construir/'+encodeURIComponent(slug),
+          {method:'POST',headers:{'Content-Type':'application/json'},
+           body:JSON.stringify({publicar:!ensayo})})
+        .then(function(d){
+          var lineas=(d.resumen||'').split('\n').filter(function(l){return l.trim()});
+          pinta(mconf,'ok','<b>'+(d.publicado?'Publicado. Los enlaces ya muestran esto.'
+                                             :'Ensayo: NO se publicó nada.')+'</b><ul>'+
+            lineas.map(function(l){return '<li>'+esc(l.trim())+'</li>'}).join('')+'</ul>'+
+            ((d.avisos||[]).length?'<b>Avisos:</b><ul>'+
+               d.avisos.map(function(a){return '<li>'+esc(a)+'</li>'}).join('')+'</ul>':''));
+          historial(); crudos(); cargar();
+        })
+        .catch(function(e){ pinta(mconf,'err',problema(e)) })
+        .then(function(){ bs.forEach(function(b){b.disabled=false}) });
+    }
+    cuerpo.querySelector('.kensayo').onclick=function(){ construir(true) };
+    cuerpo.querySelector('.kconstruir').onclick=function(){ construir(false) };
+
+    function crudos(){
+      return api('/admin/crudo/'+encodeURIComponent(slug)).then(function(d){
+        var f=d.fuentes||{}, ks=Object.keys(f).sort(), out;
+        out = ks.length
+          ? 'Datos recibidos: '+ks.map(function(k){
+              return '<b>'+esc(k)+'</b> '+fecha(f[k].recibido)+' ('+f[k].kb+' KB)' }).join(' · ')
+          : 'Todavía no ha llegado ningún dato de los extractores.';
+        if((d.faltan||[]).length) out+='<br>Sin datos de: '+d.faltan.map(esc).join(', ')+'.';
+        cuerpo.querySelector('.kcrudos').innerHTML=out;
+      }).catch(function(){});
+    }
 
     var msnap=cuerpo.querySelector('.msnap');
     cuerpo.querySelector('.bsnap').onclick=function(){
@@ -451,7 +601,7 @@ tr:last-child td{border-bottom:0}
         });
       });
     }
-    historial(); enlaces();
+    cargaConfig(); crudos(); historial(); enlaces();
   }
 })();
 </script>
