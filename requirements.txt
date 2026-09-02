@@ -1,7 +1,17 @@
-# Dependencias del servicio `reportes`, en la raíz porque su directorio raíz en Railway
-# es la raíz del repositorio: la imagen necesita `web/` Y `extractores/`, porque el botón
-# de "actualizar ahora" corre los extractores dentro de este mismo proceso.
+# Dependencias del servicio `reportes`.
 #
-# Los extractores NO añaden nada: van a propósito solo con librería estándar. Esa es
-# justamente la razón de que quepan aquí sin coste (ver extractores/requirements.txt).
--r web/requirements.txt
+# Están en la RAÍZ del repositorio porque el directorio raíz del servicio en Railway es
+# la raíz: la imagen necesita `web/` Y `extractores/`, porque el botón de "actualizar
+# ahora" del dashboard corre los extractores dentro de este mismo proceso.
+#
+# Y están escritas aquí, no delegadas con `-r web/requirements.txt`, porque Railpack
+# copia SOLO este archivo a la capa donde ejecuta pip, antes del resto del código. Una
+# indirección apunta a un archivo que en ese momento no está en la imagen y el build
+# falla con "Could not open requirements file".
+#
+# Los extractores no añaden ni una línea: van a propósito solo con librería estándar.
+# Esa es justamente la razón de que quepan en esta imagen sin coste.
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+psycopg[binary]==3.2.3
+psycopg-pool==3.2.4
