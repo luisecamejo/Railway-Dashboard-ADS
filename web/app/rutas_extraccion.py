@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
@@ -32,6 +33,10 @@ log = logging.getLogger("reportes.extraccion")
 router = APIRouter()
 
 FUENTES = ("ghl", "meta", "google")
+
+# Las fuentes que son un API de anuncios. El CRM no está aquí a propósito: sin él no hay
+# reporte y ya se rechaza antes (409), así que nunca puede "faltar" en un snapshot publicado.
+PLATAFORMAS = ("meta", "google")
 
 
 def montar(app, *, almacen, exige_admin, validar, leer_cuerpo, tope_mb: float):
@@ -182,6 +187,12 @@ def montar(app, *, almacen, exige_admin, validar, leer_cuerpo, tope_mb: float):
             raise HTTPException(422, {"error": "No se pudo construir el snapshot",
                                       "problemas": [str(ex)], "avisos": avisos})
 
+        # ALERTA DE FUENTES: el snapshot lleva escrito con qué fuentes se construyó y con
+        # cuáles no. El dashboard no puede deducirlo solo: "no llegó el trozo de Google" y
+        # "este cliente no anuncia en Google" se ven igual desde el snapshot (cero gasto de
+        # Google en ambos) y significan cosas opuestas. Lo decide quien sí lo sabe: aquí.
+        datos["fuentes"] = estado_fuentes(cfg, procedencia)
+
         problemas = validar(datos)
         if problemas:
             raise HTTPException(422, {"error": "El snapshot construido no cuadra",
@@ -204,6 +215,85 @@ def montar(app, *, almacen, exige_admin, validar, leer_cuerpo, tope_mb: float):
 
     app.include_router(router)
     return router
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Estado de las fuentes — para que el dashboard pueda avisar
+# ═════════════════════════════════════════════════════════════════════════════
+def _momento(v) -> Optional[datetime]:
+    """
+    El 'recibido' del almacén llega como datetime (Postgres) o como cadena (ficheros).
+
+    Se normaliza aquí y no en el almacén porque es el único sitio que necesita hacer
+    aritmética con él. Sin zona horaria se asume UTC, que es lo que ambos almacenes
+    guardan.
+    """
+    if isinstance(v, datetime):
+        return v if v.tzinfo else v.replace(tzinfo=timezone.utc)
+    if not v:
+        return None
+    try:
+        d = datetime.fromisoformat(str(v).strip().replace(" ", "T").replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+
+
+def estado_fuentes(cfg: dict, procedencia: dict) -> dict:
+    """
+    Con qué fuentes se construyó este snapshot y con cuáles no.
+
+    Distinguir dos cosas que desde el snapshot se ven idénticas es todo el punto:
+
+      · El cliente tiene cuentas de Google declaradas y el trozo de Google NO llegó
+        (la extracción falló, o falta el token). El gasto de Google desaparece, pero los
+        leads y las ventas siguen ahí porque salen del CRM. Resultado: CPL, CAC y ROAS se
+        dividen por MENOS gasto del real y salen MEJORES de lo que son. Es una alerta.
+      · El cliente no anuncia en Google. Cero gasto de Google es la verdad. No es nada.
+
+    Un trozo viejo es el caso intermedio y también engaña: llegó, así que no "falta", pero
+    le faltan los últimos días del rango — justo los que se miran.
+    """
+    ahora = datetime.now(timezone.utc)
+
+    cuentas: dict[str, int] = {}
+    for c in (cfg.get("cuentas") or []):
+        plat = str(c.get("plataforma") or "").strip().lower()
+        if plat in PLATAFORMAS and str(c.get("id") or "").strip():
+            cuentas[plat] = cuentas.get(plat, 0) + 1
+
+    detalle: dict[str, dict] = {}
+    faltan: list[str] = []
+    viejas: list[str] = []
+    sin_cuenta: list[str] = []
+
+    for fuente in FUENTES:
+        d: dict = {}
+        if fuente in PLATAFORMAS:
+            d["cuentas"] = cuentas.get(fuente, 0)
+        recibido = procedencia.get(fuente)
+        if recibido is None:
+            if fuente in PLATAFORMAS and not cuentas.get(fuente):
+                d["estado"] = "sinCuenta"
+                sin_cuenta.append(fuente)
+            else:
+                d["estado"] = "falta"
+                faltan.append(fuente)
+        else:
+            t = _momento(recibido)
+            # Días COMPLETOS de diferencia, no cambio de fecha: el extractor de Meta que
+            # corrió a las 09:05 y la construcción de las 09:15 del mismo día dan 0, que es
+            # lo correcto. Si Meta falló ayer, su trozo da 1 y se marca viejo.
+            dias = max(0, (ahora - t).days) if t else 0
+            d["recibido"] = t.strftime("%Y-%m-%dT%H:%MZ") if t else str(recibido)
+            d["dias"] = dias
+            d["estado"] = "vieja" if dias >= 1 else "ok"
+            if dias >= 1:
+                viejas.append(fuente)
+        detalle[fuente] = d
+
+    return {"detalle": detalle, "faltan": faltan, "viejas": viejas,
+            "sinCuenta": sin_cuenta}
 
 
 # ═════════════════════════════════════════════════════════════════════════════

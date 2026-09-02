@@ -1,0 +1,149 @@
+/* ════════════════════════════════════════════════════════════════════════════════════
+   06b · TIRA DE ESTADO DEL REPORTE
+   ────────────────────────────────────────────────────────────────────────────────────
+   Todo lo que responde a "¿de cuándo son estos datos y están completos?" vive aquí, en su
+   propia parte, y no repartido por 00/01/07: es una sola función del producto y así se toca
+   en un solo archivo.
+
+   Dos elementos, ambos creados desde JS e insertados justo encima de #view (o sea, visibles
+   en TODAS las pestañas):
+
+     #actualizado   · cuándo se extrajeron estos datos, siempre, sin tener que buscarlo.
+     #fuenteAviso   · aviso cuando el snapshot se construyó sin una fuente, o con una vieja.
+
+   Se crean desde JS a propósito: son elementos que dependen del contenido del snapshot, no
+   del marcado, y así el HTML de arriba no crece con nodos que la mayoría de las veces están
+   vacíos.
+   ════════════════════════════════════════════════════════════════════════════════════ */
+(function montaTiraEstado(){
+  const v=document.getElementById('view');
+  if(!v||document.getElementById('tiraEstado'))return;
+  const t=document.createElement('div');
+  t.id='tiraEstado';
+  t.innerHTML='<div id="actualizado"></div><div id="fuenteAviso" style="display:none"></div>';
+  v.parentNode.insertBefore(t,v);
+})();
+
+/* ────────────────────────────────────────────────────────────────────────────────────
+   ÚLTIMA ACTUALIZACIÓN — "el dashboard debe mostrar siempre cuándo fue la última vez que
+   se actualizó, así la persona que lo ve sabe de cuándo es la extracción y que quizás el
+   día de hoy pueden haber más ventas de lo que muestra".
+
+   Ya existía el dato (DATA.generado) en dos sitios, pero enterrado: en la ficha técnica
+   gris de la cabecera y en el chip "Datos: …" de la barra de filtros. Ninguno de los dos
+   lo lee un cliente. Aquí se dice en una línea, en la hora del negocio y en lenguaje de
+   reloj de pared ("hace 2 horas"), y se dice también lo que NO está: lo que pasó después
+   de la extracción.
+
+   Ojo con la hora: DATA.generado viene en UTC ('2026-09-01T10:34Z'), pero TODO el reporte
+   está fechado en la zona del negocio. Mostrarlo en UTC haría que la hora de actualización
+   fuese la única cifra del reporte en otro huso — justo la confusión que el resto del
+   dashboard se esfuerza en evitar.
+   ──────────────────────────────────────────────────────────────────────────────────── */
+function momentoGenerado(){
+  const g=DATA.generado; if(!g) return null;
+  // acepta '2026-09-01T10:34Z' y '2026-09-01T10:34:00Z'; sin 'Z' se asume UTC igualmente,
+  // porque es lo que escribe el constructor del snapshot.
+  const d=new Date(/[Zz]|[+-]\d\d:?\d\d$/.test(g)?g:g+'Z');
+  return isNaN(d.getTime())?null:d;
+}
+function haceTxt(ms){
+  const min=Math.floor(ms/60000);
+  if(min<2) return 'hace un momento';
+  if(min<60) return `hace ${min} minutos`;
+  const h=Math.floor(min/60);
+  if(h<24) return `hace ${h} hora${h>1?'s':''}`;
+  const d=Math.floor(h/24);
+  return `hace ${d} día${d>1?'s':''}`;
+}
+function updateActualizado(){
+  const el=document.getElementById('actualizado'); if(!el) return;
+  const d=momentoGenerado();
+  if(!d){el.style.display='none';return}
+  const tz=(DATA.cliente&&DATA.cliente.tz)||undefined;
+  let reloj;
+  try{
+    reloj=new Intl.DateTimeFormat('es-ES',{timeZone:tz,day:'numeric',month:'short',
+      hour:'2-digit',minute:'2-digit',hour12:false}).format(d);
+  }catch(_){ reloj=d.toISOString().slice(0,16).replace('T',' ')+' UTC' }
+  const ms=Date.now()-d.getTime();
+  // 26 h y no 24: la extracción es diaria y no siempre a la misma hora, así que un reporte
+  // de "hace 25 horas" está al día. A partir de 26 h de verdad se saltó una extracción.
+  const viejo=ms>26*3600*1000;
+  const col=viejo?'var(--am)':'var(--faint)';
+  el.innerHTML=`<span style="color:${col}">&#8635; Actualizado <b>${haceTxt(ms)}</b>`
+    +` · ${reloj}${tz?' hora del negocio':''}</span>`
+    +`<span style="color:var(--faint)"> — lo que haya pasado después (leads nuevos, ventas `
+    +`cerradas, leads que cambiaron de etapa) todavía no está en estos números.</span>`;
+  el.style.cssText=`display:block;margin:0 0 10px;font-size:12px;line-height:1.5`;
+  el.title=`Extracción: ${DATA.generado} (UTC).`
+    +`\nEl reporte es una foto de ese momento, no una vista en vivo del CRM: si abres GoHighLevel `
+    +`ahora mismo puedes ver más leads o más ventas que aquí, y eso no es un descuadre.`
+    +(viejo?`\n\nHan pasado más de 26 horas: la extracción diaria no corrió como debía.`:'');
+}
+
+/* ════════════════════════════════════════════════════════════════════════════════════
+   ALERTA DE FUENTES — "el dashboard debe mostrar una alerta cuando se genere sin el acceso de
+   Google o de Meta. Así sabemos que no tiene los datos de las campañas".
+
+   Por qué importa aunque casi todo el reporte salga del CRM: del API de anuncios NO sale ni un
+   lead ni una venta — sale el GASTO (y con él impresiones, clics, campañas y creativos). Si el
+   trozo de una plataforma no llega, los leads y el ingreso siguen COMPLETOS y el gasto no, así
+   que CPL, CAC, ROAS y coste por venta se dividen por menos gasto del real y salen MEJORES de
+   lo que son. Un hueco se ve; un número bueno de mentira no. De ahí que esto sea un cartel
+   arriba del reporte y no una nota al pie.
+
+   El servidor lo decide al construir (datos["fuentes"]) porque es el único que sabe qué cuentas
+   tiene declaradas el cliente: desde el snapshot, "falló Google" y "no anuncia en Google" se
+   ven igual (cero gasto de Google) y significan lo contrario.
+
+     falta     · hay cuentas declaradas de esa plataforma y el trozo no llegó  → rojo
+     vieja     · el trozo llegó pero es de días anteriores                     → ámbar
+     sinCuenta · el cliente no anuncia ahí: cero gasto es la verdad            → no se avisa
+   ════════════════════════════════════════════════════════════════════════════════════ */
+const FUENTE_NOMBRE={ghl:'GoHighLevel (CRM)',meta:'Meta Ads',google:'Google Ads'};
+const nomFuente=f=>FUENTE_NOMBRE[f]||f;
+function updateFuenteAviso(){
+  const el=document.getElementById('fuenteAviso'); if(!el)return;
+  const F=DATA.fuentes;
+  // Un snapshot generado antes de que existiera esta alerta no trae 'fuentes'. Ahí no se
+  // inventa nada: sin saber qué cuentas tiene el cliente no se puede distinguir un fallo de
+  // extracción de un cliente que simplemente no anuncia en esa plataforma.
+  if(!F){el.style.display='none';return}
+  const det=F.detalle||{}, faltan=F.faltan||[], viejas=F.viejas||[];
+  if(!faltan.length&&!viejas.length){el.style.display='none';return}
+  const grave=faltan.length>0;
+  const col=grave?'var(--rd)':'var(--am)';
+  const fondo=grave?'rgba(248,113,113,.10)':'rgba(251,191,36,.10)';
+  const borde=grave?'rgba(248,113,113,.38)':'rgba(251,191,36,.38)';
+  const titulo=[];
+  if(faltan.length)titulo.push(`<b>Este reporte se generó SIN los datos de `
+    +faltan.map(f=>{const n=(det[f]||{}).cuentas;
+      return nomFuente(f)+(n?` · ${n} cuenta${n>1?'s':''}`:'')}).join(' y ')+`.</b>`);
+  if(viejas.length)titulo.push(`Los datos de `
+    +viejas.map(f=>{const d=(det[f]||{}).dias||0;
+      return `${nomFuente(f)} son de hace ${d} día${d>1?'s':''}`}).join(' y los de ')+`.`);
+  // el cuerpo explica la CONSECUENCIA, que es lo único que le sirve a quien lee el reporte;
+  // qué se rompe depende de si lo que falta es un API de anuncios o el propio CRM.
+  const anuncios=faltan.concat(viejas).filter(f=>f!=='ghl');
+  let cuerpo;
+  if(grave&&anuncios.length)cuerpo=`Del API de anuncios sale el <b>gasto</b>, no los leads: todo `
+    +`lo que viene del CRM —leads, citas, ventas e ingreso— está completo y es correcto. `
+    +`Lo que no está completo es el gasto, así que <b>CPL, CAC, ROAS, coste por venta y la tabla `
+    +`de campañas están calculados con menos gasto del real y salen mejores de lo que son.</b> `
+    +`No compares estos números con el Ads Manager hasta que la fuente vuelva.`;
+  else if(anuncios.length)cuerpo=`Falta el gasto de los días más recientes del rango, que son `
+    +`justo los que se suelen mirar. En esos días el CPL y el ROAS salen mejores de lo que son, `
+    +`y las campañas que solo estuvieron activas ahí pueden aparecer con cero gasto.`;
+  else cuerpo=`Los leads, citas y ventas de los últimos días pueden no estar todavía en el `
+    +`reporte. Lo que se ve es correcto; lo que falta es el final del periodo.`;
+  el.innerHTML=`<div style="color:${col};margin-bottom:5px">${grave?'&#9888;':'&#33;'} `
+    +`${titulo.join(' ')}</div><div style="color:var(--faint);line-height:1.55">${cuerpo}</div>`;
+  el.style.cssText=`display:block;margin:0 0 14px;padding:11px 13px;border:1px solid ${borde};`
+    +`border-left:3px solid ${col};border-radius:8px;background:${fondo};font-size:12.5px`;
+}
+
+// Ninguno de los dos depende de los filtros: describen el snapshot, no la selección. Se
+// pintan una vez, aquí, y no en render().
+updateActualizado();
+updateFuenteAviso();
