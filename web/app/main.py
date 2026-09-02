@@ -1,6 +1,6 @@
 """
 Servicio de reportes · Sentinel Marketing
-════════════════════════════════════════
+═══════════════════════════════════════
 Sirve un único visor (cacheable, igual para todos los clientes) y el snapshot de datos
 de cada cliente por separado, detrás de un enlace con token.
 
@@ -34,6 +34,14 @@ Rutas de extracción (Fase 1, en rutas_extraccion.py)
     POST /admin/crudo/{slug}/{fuente} → un extractor deja su trozo (ghl|meta|google)
     GET  /admin/crudo/{slug}          → qué trozos hay y de cuándo
     POST /admin/construir/{slug}      → junta, valida y publica el snapshot
+
+Refresco a demanda (en rutas_refrescar.py)
+    GET  /r/{token}/refrescar         → ¿se puede refrescar? ¿hay uno en marcha?
+    POST /r/{token}/refrescar         → lo pide el botón del dashboard
+    GET  /admin/refrescar/{slug}      → lo mismo, desde el panel
+    POST /admin/refrescar/{slug}      → sin límite de antigüedad
+    GET  /admin/cola-refresco         → lo consulta `extractor-ahora` al arrancar
+    POST /admin/cola-refresco/{slug}  → y ahí dice cómo acabó
 """
 from __future__ import annotations
 
@@ -54,6 +62,7 @@ from starlette.exceptions import HTTPException as ErrorHTTP
 from .almacen import abrir_almacen
 from .rutas_panel import router as router_panel
 from . import rutas_extraccion
+from . import rutas_refrescar
 from .privacidad import MODOS, aplicar
 from . import seguridad as seg
 from .visor import partir_html
@@ -80,7 +89,7 @@ app.include_router(router_panel)
 
 almacen = abrir_almacen()
 
-# ── el dashboard se versiona en el repositorio ───────────────────────────────
+# ── el dashboard se versiona en el repositorio ────────────────────────────
 # `web/visor/dashboard.html` es la FUENTE DE VERDAD del dashboard: el código, sin datos.
 # Cada despliegue lo parte y lo guarda, así que mejorar el dashboard es un commit y nada
 # más. POST /admin/visor sigue existiendo como atajo de emergencia (cambiar el dashboard
@@ -417,7 +426,8 @@ async def admin_subir_visor(peticion: Request):
 
     El camino normal es un commit en `web/visor/partes/*.part`: Railway despliega y el
     servicio lo siembra solo. Esto sirve para probar algo en caliente o para salir de un
-    apuro — y el siguiente despliegue vuelve a poner el del repositorio.
+    apuro — y el siguiente despliegue vuelve a poner el del repositorio. Se dejó sin
+    botón en el panel a propósito: la puerta invitaba a usarlo como camino normal.
     """
     try:
         crudo = await seg.leer_cuerpo(peticion, TOPE_VISOR_MB, "dashboard")
@@ -584,7 +594,7 @@ def validar(d: Any) -> list[str]:
         p.append("El cliente no declara zona horaria ('cliente.tz'): sin ella las fechas "
                  "no son comparables con el CRM.")
 
-    # ── fechas coherentes ──────────────────────────────────────────────
+    # ── fechas coherentes ─────────────────────────────────────────
     try:
         datetime.fromisoformat(d["desde"])
         datetime.fromisoformat(d["hasta"])
@@ -594,7 +604,7 @@ def validar(d: Any) -> list[str]:
         p.append("'desde' y 'hasta' tienen que ser fechas ISO (2026-05-03).")
         return p
 
-    # ── los leads caen dentro de la ventana ────────────────────────────────
+    # ── los leads caen dentro de la ventana ────────────────────────────
     # El criterio de extracción es la CREACIÓN DE LA OPORTUNIDAD ('fo'): eso sí tiene que
     # caer siempre dentro. El alta del contacto ('f') puede ser anterior — son los clientes
     # recurrentes — y en ese caso el lead tiene que venir marcado con rec=1. Si un lead
@@ -618,7 +628,7 @@ def validar(d: Any) -> list[str]:
         p.append(f"Hay oportunidades duplicadas: {len(ids)} filas y {len(set(ids))} ids "
                  f"únicos. Suele ser el cursor de paginación saltándose registros.")
 
-    # ── cada lead apunta a una etapa que existe ─────────────────────────
+    # ── cada lead apunta a una etapa que existe ──────────────────────
     etapas = {s.get("id") for s in (d.get("stages") or [])}
     if etapas:
         huerf = sum(1 for l in leads if l.get("ei") and l["ei"] not in etapas)
@@ -626,7 +636,7 @@ def validar(d: Any) -> list[str]:
             p.append(f"{huerf} de {len(leads)} leads apuntan a una etapa que no está en "
                      f"'stages'. Parece que las etapas se extrajeron de otro pipeline.")
 
-    # ── el gasto diario suma lo que dice sumar ──────────────────────────
+    # ── el gasto diario suma lo que dice sumar ───────────────────────
     if d.get("granularidadGasto") == "dia":
         for c in (d.get("camps") or []):
             roto = next((w for w in (c.get("w") or [])
@@ -652,3 +662,9 @@ def validar(d: Any) -> list[str]:
 rutas_extraccion.montar(app, almacen=almacen, exige_admin=exige_admin,
                         validar=validar, leer_cuerpo=seg.leer_cuerpo,
                         tope_mb=TOPE_SNAPSHOT_MB)
+
+# El botón de "actualizar ahora" del dashboard. Necesita _resolver_enlace, que es lo que
+# convierte el token de un enlace en su cliente: el enlace ES la autorización para
+# refrescar, porque ya da acceso a todos los datos de ese cliente.
+rutas_refrescar.montar(app, almacen=almacen, exige_admin=exige_admin,
+                       resolver_enlace=_resolver_enlace)
