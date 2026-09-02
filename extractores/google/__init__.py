@@ -1,1 +1,1 @@
-# extractor-google · pendiente del token de desarrollador de Google Ads.
+# extractor-google · gasto diario por campaña desde la API de Google Ads.
