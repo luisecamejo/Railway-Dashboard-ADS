@@ -31,6 +31,7 @@ input[type=text],input[type=password],select,input[type=file]{
   border-radius:6px;padding:8px 10px;font:13px var(--d);outline:none}
 input:focus,select:focus{border-color:var(--pu)}
 input[type=file]{font-family:var(--m);font-size:11.5px;padding:7px 9px;cursor:pointer}
+input:disabled,select:disabled{opacity:.72;cursor:default}
 button{background:var(--pu);color:#fff;border:0;border-radius:6px;padding:8px 15px;
   font:600 13px var(--d);cursor:pointer;white-space:nowrap}
 button:hover{filter:brightness(1.1)}
@@ -120,13 +121,21 @@ tr:last-child td{border-bottom:0}
 
   <div class="panel">
     <h2>Alta de cliente</h2>
-    <p class="sub">El identificador se usa en las rutas y no se puede cambiar después. La zona horaria es obligatoria: sin ella las fechas no cuadran con el CRM.</p>
+    <!-- La zona horaria ya NO se pregunta. Se lee de la sub-cuenta de GoHighLevel, que es
+         quien sella la hora de cada lead: pedirla era pedir un dato que el sistema ya
+         sabe, y equivocarse no daba ningún error, daba fechas corridas. -->
+    <p class="sub">El identificador se usa en las rutas y no se puede cambiar después. La zona
+    horaria y la moneda <b>se leen del CRM</b> en cuanto pegas el location: no hay que elegirlas.</p>
     <div class="fila">
       <div><label for="cnom">Nombre</label><input type="text" id="cnom" placeholder="Clínica Ejemplo"></div>
       <div><label for="cslug">Identificador</label><input type="text" id="cslug" placeholder="clinica-ejemplo"></div>
       <div><label for="cloc">Location de GHL</label><input type="text" id="cloc" placeholder="id de la sub-cuenta"></div>
-      <div><label for="ctz">Zona horaria</label><select id="ctz"></select></div>
       <button id="bcli">Guardar</button>
+    </div>
+    <p class="nota" id="cficha">Pega el location de GoHighLevel y leo del CRM la zona horaria y la moneda.</p>
+    <div id="ctzman" style="display:none;max-width:420px">
+      <label for="ctz">Zona horaria (el CRM no la dice, elígela a mano)</label>
+      <select id="ctz"></select>
     </div>
     <div class="msg" id="mcli"></div>
   </div>
@@ -177,13 +186,13 @@ tr:last-child td{border-bottom:0}
   }
   function esc(s){return String(s).replace(/[<>&]/g,function(c){return{'<':'&lt;','>':'&gt;','&':'&amp;'}[c]})}
 
-  // ── zonas horarias ────────────────────────────────────────────
-  // Antes esto era una casilla de texto libre y era una trampa. Un texto que no sea un
-  // identificador IANA exacto — "EST", "Colombia", "GMT-5", "Denver" — no lo entiende ni
-  // el servidor ni el navegador, y el resultado NO es un error visible: son fechas
-  // corridas unas horas, o directamente la extracción saltándose al cliente. Eso es peor
-  // que fallar, porque el reporte sale y no cuadra con el CRM sin decir por qué.
+  // ── zonas horarias ─────────────────────────────────────────────
+  // La zona se LEE DEL CRM (ver rutas_ficha.py). Este desplegable es el camino de escape
+  // para cuando la sub-cuenta no la declara o el CRM no contesta — y para corregir a mano
+  // una sub-cuenta mal configurada.
   //
+  // Lo que NO puede volver a ser es una casilla de texto libre: un texto que no sea un
+  // identificador IANA exacto ("EST", "Colombia", "GMT-5") no da error, da fechas corridas.
   // La lista sale del PROPIO navegador (Intl.supportedValuesOf), así que son las zonas que
   // de verdad existen y se actualiza sola. No una tabla escrita a mano que envejece.
   var ZONAS=(function(){
@@ -279,24 +288,65 @@ tr:last-child td{border-bottom:0}
   };
   $('cslug').oninput=function(){ $('cslug').dataset.tocado='1' };
 
+  // Se lee del CRM en cuanto hay un location con pinta de serlo. Con retardo, para no
+  // llamar una vez por tecla mientras se pega o se escribe.
+  var FICHA={}, tficha=null;
+  $('cloc').oninput=function(){
+    var loc=$('cloc').value.trim();
+    FICHA={}; clearTimeout(tficha);
+    $('ctzman').style.display='none';
+    if(loc.length<6){ $('cficha').innerHTML='Pega el location de GoHighLevel y leo del CRM la zona horaria y la moneda.'; return }
+    $('cficha').innerHTML='Preguntando al CRM…';
+    tficha=setTimeout(function(){
+      api('/admin/ficha?location='+encodeURIComponent(loc)).then(function(d){
+        FICHA=d||{};
+        var trozos=[];
+        if(d.nombre) trozos.push('<b>'+esc(d.nombre)+'</b>');
+        if(d.ciudad||d.pais) trozos.push(esc([d.ciudad,d.pais].filter(Boolean).join(', ')));
+        if(d.tz) trozos.push('zona <b>'+esc(d.tz)+'</b> ('+esc(husoDe(d.tz))+')');
+        if(d.moneda) trozos.push('moneda <b>'+esc(d.moneda)+'</b>');
+        $('cficha').innerHTML='Leído del CRM: '+trozos.join(' · ');
+        if(!d.tz){
+          $('cficha').innerHTML+='<br>Esta sub-cuenta <b>no declara zona horaria</b> en GoHighLevel. Elígela a mano.';
+          $('ctzman').style.display='block';
+        }
+        if(d.nombre && !$('cnom').value.trim()){
+          $('cnom').value=d.nombre; $('cnom').oninput();
+        }
+      }).catch(function(e){
+        $('cficha').innerHTML='No pude leer el CRM: '+problema(e)+'<br>Elige la zona horaria a mano.';
+        $('ctzman').style.display='block';
+      });
+    },450);
+  };
+
   $('bcli').onclick=function(){
     var cuerpo={nombre:$('cnom').value.trim(),slug:$('cslug').value.trim(),
-                ghl_location_id:$('cloc').value.trim()||null,tz:$('ctz').value.trim()||null,
+                ghl_location_id:$('cloc').value.trim()||null,
+                tz:(FICHA.tz||$('ctz').value||'').trim()||null,
+                moneda:FICHA.moneda||null,
                 fuentes:['crm','meta','google']};
     if(!cuerpo.nombre||!cuerpo.slug) return pinta($('mcli'),'err','Hacen falta nombre e identificador.');
-    if(!cuerpo.tz) return pinta($('mcli'),'err','Elige la zona horaria: es lo que hace que las fechas cuadren con el CRM.');
+    if(!cuerpo.ghl_location_id&&!cuerpo.tz) return pinta($('mcli'),'err',
+      'Pon el location de GoHighLevel: de ahí sale la zona horaria, y sin zona las fechas no cuadran con el CRM.');
     pinta($('mcli'),'cargando','Guardando…');
     api('/admin/clientes',{method:'POST',body:JSON.stringify(cuerpo),
                            headers:{'Content-Type':'application/json'}})
       .then(function(d){
-        pinta($('mcli'),'ok','Cliente <b>'+esc(d.nombre)+'</b> guardado.');
+        pinta($('mcli'),'ok','Cliente <b>'+esc(d.nombre)+'</b> guardado'+
+          (d.tz?' · zona <b>'+esc(d.tz)+'</b>'+(d.tzDetectada?' (leída del CRM)':' (a mano)'):'')+
+          (d.moneda?' · moneda <b>'+esc(d.moneda)+'</b>':'')+
+          '.<br>Ábrelo abajo y pulsa <b>Preparar el reporte</b> para extraer sus datos.'+
+          (d.aviso?'<br>'+esc(d.aviso):''));
         ['cnom','cslug','cloc','ctz'].forEach(function(k){$(k).value=''});
+        FICHA={}; $('ctzman').style.display='none';
+        $('cficha').innerHTML='Pega el location de GoHighLevel y leo del CRM la zona horaria y la moneda.';
         delete $('cslug').dataset.tocado; cargar();
       })
       .catch(function(e){ pinta($('mcli'),'err',problema(e)) });
   };
 
-  // ── clientes ──────────────────────────────────────────────
+  // ── clientes ───────────────────────────────────────────────
   function resumen(c){
     // "sin configurar" en rojo: con la cartera entera dada de alta, esto es lo primero
     // que hay que poder ver de un vistazo — un cliente sin cuentas no extrae nada.
@@ -344,12 +394,19 @@ tr:last-child td{border-bottom:0}
     det.dataset.listo='1';
     cuerpo.innerHTML=
       '<div class="bloque"><h2>Cuentas y extracción</h2>'+
-      '<p class="sub">Esto es lo que leen los extractores cada noche. La zona horaria y el '+
-      'location de GoHighLevel son obligatorios. De cuentas de anuncios puedes poner '+
-      '<b>tantas como tenga</b>: varias de Meta, varias de Google, o ninguna.</p>'+
+      '<p class="sub">Esto es lo que leen los extractores cada noche. La zona horaria y la '+
+      'moneda salen del CRM; el location de GoHighLevel es obligatorio. De cuentas de '+
+      'anuncios puedes poner <b>tantas como tenga</b>: varias de Meta, varias de Google, o ninguna.</p>'+
       '<div class="fila">'+
-      '<div><label>Zona horaria del negocio</label><select class="ktz"></select></div>'+
       '<div><label>Location de GoHighLevel</label><input type="text" class="kloc" placeholder="id de la sub-cuenta"></div>'+
+      // El select va DESACTIVADO: el valor se ve, pero para cambiarlo hay que pulsar
+      // "corregir a mano". Así lo normal es lo que dice el CRM, y lo excepcional cuesta
+      // un clic — al revés de antes, que lo normal era teclearlo y equivocarse.
+      '<div><label>Zona horaria (del CRM)</label><select class="ktz" disabled></select>'+
+      '<div class="preset"><button class="krel" type="button">releer del CRM</button>'+
+      '<button class="ktzed" type="button">corregir a mano</button></div></div>'+
+      '<div style="flex:0 0 110px"><label>Moneda</label>'+
+      '<input type="text" class="kmon" placeholder="USD" maxlength="3" disabled></div>'+
       '</div>'+
       '<div style="margin-top:15px"><label>Cuentas de anuncios</label>'+
       '<div class="cuentas"></div>'+
@@ -368,15 +425,20 @@ tr:last-child td{border-bottom:0}
       // reporte era un paso manual. Este bloque ahora solo INFORMA de lo publicado.
       '<div class="bloque"><h2>Datos del reporte</h2>'+
       '<p class="sub">Los datos <b>ya no se suben desde aquí</b>: los traen los extractores '+
-      '(Meta, Google y el CRM) y el snapshot lo construye el servicio con la configuración de '+
-      'arriba. Para rehacerlo ahora mismo usa <b>Construir y publicar</b>, o <b>Actualizar ahora</b> '+
-      'en el propio dashboard si además quieres volver a extraer.</p>'+
+      '(el CRM, Meta y Google) y el snapshot lo construye el servicio con la configuración de '+
+      'arriba. Cada noche se hace solo. Para hacerlo <b>ahora</b>, el botón de abajo.</p>'+
+      '<div class="fila"><button class="bprep">Preparar el reporte (extraer ahora)</button>'+
+      '<span class="nota kprepn" style="margin-top:0">Extrae de GoHighLevel, Meta y Google y '+
+      'construye el reporte. Tarda entre 15 y 25 minutos; puedes cerrar la página.</span></div>'+
+      '<div class="msg mprep"></div>'+
       '<div class="tw"><table class="hist"><thead><tr><th>Publicado</th><th>Ventana</th>'+
       '<th>Oportunidades</th><th>Tamaño</th></tr></thead><tbody></tbody></table></div></div>'+
 
       '<div class="bloque"><h2>Enlaces</h2>'+
       '<p class="sub"><b>interno</b>: para el equipo. <b>cliente</b>: para el cliente, ve sus datos completos. '+
-      '<b>demo</b>: nombres de pacientes enmascarados y negocio oculto, para casos de éxito.</p>'+
+      '<b>demo</b>: nombres de pacientes enmascarados y negocio oculto, para casos de éxito.<br>'+
+      'Un enlace <b>no se crea si el cliente todavía no tiene reporte</b>: si lo pides antes, '+
+      'arranco la extracción y lo creo cuando los datos ya estén.</p>'+
       '<div class="fila"><div><label>Modo</label><select class="emodo">'+
       '<option value="cliente">cliente</option><option value="interno">interno</option>'+
       '<option value="demo">demo</option></select></div>'+
@@ -423,12 +485,42 @@ tr:last-child td{border-bottom:0}
 
     cuerpo.querySelector('.kmas').onclick=function(){ filaCuenta('Meta','').querySelector('.kid').focus() };
 
+    cuerpo.querySelector('.ktzed').onclick=function(){
+      cuerpo.querySelector('.ktz').disabled=false;
+      cuerpo.querySelector('.kmon').disabled=false;
+      pinta(mconf,'ok','Zona y moneda desbloqueadas. Lo que guardes aquí gana sobre lo que '+
+        'diga el CRM — úsalo solo si la sub-cuenta está mal configurada en GoHighLevel.');
+    };
+
+    // Para los clientes dados de alta antes de que esto se leyera del CRM, y para cuando
+    // alguien corrige la sub-cuenta en GoHighLevel.
+    cuerpo.querySelector('.krel').onclick=function(){
+      var b=this; b.disabled=true;
+      pinta(mconf,'cargando','Preguntando al CRM…');
+      api('/admin/ficha/'+encodeURIComponent(slug)).then(function(d){
+        var puestos=[];
+        if(d.tz){ cuerpo.querySelector('.ktz').innerHTML=opcionesZona(d.tz); puestos.push('zona <b>'+esc(d.tz)+'</b>') }
+        if(d.moneda){ cuerpo.querySelector('.kmon').value=d.moneda; puestos.push('moneda <b>'+esc(d.moneda)+'</b>') }
+        pinta(mconf, puestos.length?'ok':'err', puestos.length
+          ? ('Leído del CRM: '+puestos.join(' · ')+'. Pulsa <b>Guardar configuración</b> para fijarlo.')
+          : 'El CRM no declara zona horaria ni moneda para esta sub-cuenta. Corrígelo allí o pon la zona a mano.');
+      }).catch(function(e){ pinta(mconf,'err',problema(e)) })
+        .then(function(){ b.disabled=false });
+    };
+
     function pintaConfig(){
       // Si el cliente aún no tiene configuración, se parte de lo que ya se escribió en
       // su alta. Volver a teclearlo es como acaban la ficha y la configuración diciendo
       // zonas horarias distintas, y entonces las fechas no cuadran con el CRM.
       var tzAct=CFG.tz||det.dataset.tz||'';
       cuerpo.querySelector('.ktz').innerHTML=opcionesZona(tzAct);
+      cuerpo.querySelector('.kmon').value=CFG.moneda||'';
+      // Si NO hay zona, el select no puede quedarse bloqueado: sería un campo obligatorio
+      // imposible de rellenar. Bloqueado solo cuando ya hay un valor bueno que proteger.
+      if(!tzAct){
+        cuerpo.querySelector('.ktz').disabled=false;
+        cuerpo.querySelector('.kmon').disabled=false;
+      }
       cuerpo.querySelector('.kloc').value=CFG.ghlLocationId||det.dataset.loc||'';
       cuerpo.querySelector('.cuentas').innerHTML='';
       var cs=CFG.cuentas||[];
@@ -469,8 +561,10 @@ tr:last-child td{border-bottom:0}
 
       var b=this; b.disabled=true;
       pinta(mconf,'cargando','Guardando…');
+      var mon=(cuerpo.querySelector('.kmon').value||'').trim().toUpperCase();
       var nueva=Object.assign({},CFG,{nombre:CFG.nombre||det.dataset.nombre,slug:slug,
                                       tz:tz,ghlLocationId:loc,cuentas:cuentas});
+      if(mon) nueva.moneda=mon;
       api('/admin/config/'+encodeURIComponent(slug),
           {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(nueva)})
         .then(function(){
@@ -522,6 +616,62 @@ tr:last-child td{border-bottom:0}
       }).catch(function(){});
     }
 
+    // ── preparar el reporte ───────────────────────────────────────
+    // Es la MISMA pasada que hacen los tres crones de la madrugada, pero para un cliente
+    // y ahora. Corre en el servidor, en un solo hilo y en cola, así que la página no
+    // tiene que quedarse abierta: solo sondea para contar por dónde va.
+    var mprep=cuerpo.querySelector('.mprep'), tprep=null;
+
+    function estadoRefresco(){ return api('/admin/refrescar/'+encodeURIComponent(slug)) }
+
+    function sondeaPrep(gen0, alTerminar){
+      clearTimeout(tprep);
+      return estadoRefresco().then(function(est){
+        if(est.enCurso){
+          pinta(mprep,'cargando','<b>Extrayendo…</b> GoHighLevel, Meta y Google, en ese orden. '+
+            (est.motivo?esc(est.motivo):'Suele tardar unos '+esc(est.duracionMin)+' minutos.')+
+            '<br>Puedes cerrar esta página: el trabajo sigue en el servidor.');
+          tprep=setTimeout(function(){ sondeaPrep(gen0,alTerminar) },20000);
+          return;
+        }
+        historial(); crudos(); cargar();
+        if(est.generado && est.generado!==gen0){
+          pinta(mprep,'ok','<b>Reporte preparado.</b> Datos del '+fecha(est.generado)+
+            '. Ya puedes crear el enlace.');
+          if(alTerminar) alTerminar(est);
+        }else{
+          pinta(mprep,'err','La extracción terminó pero <b>no se publicó ningún reporte</b>. '+
+            'Lo más habitual es que falte el trozo del CRM: mira la línea de abajo y prueba '+
+            '<b>Construir sin publicar</b>, que dice exactamente qué falla.');
+        }
+      }).catch(function(e){ pinta(mprep,'err',problema(e)) });
+    }
+
+    function prepara(alTerminar){
+      var b=cuerpo.querySelector('.bprep');
+      b.disabled=true;
+      pinta(mprep,'cargando','Arrancando la extracción…');
+      return estadoRefresco().then(function(antes){
+        var gen0=antes.generado||null;
+        return api('/admin/refrescar/'+encodeURIComponent(slug),{method:'POST'})
+          .catch(function(e){
+            // 409 = ya había una en marcha para este cliente. No es un error: es
+            // justamente lo que queremos, así que se sigue sondeando la que hay.
+            if(e.codigo!==409) throw e;
+          })
+          .then(function(){ return sondeaPrep(gen0,alTerminar) });
+      }).catch(function(e){ pinta(mprep,'err',problema(e)) })
+        .then(function(){ b.disabled=false });
+    }
+
+    cuerpo.querySelector('.bprep').onclick=function(){ prepara(null) };
+
+    // Si al abrir la ficha ya hay una extracción en marcha, se engancha al sondeo en vez
+    // de dejar la pantalla muda.
+    estadoRefresco().then(function(est){
+      if(est.enCurso) sondeaPrep(est.generado||null,null);
+    }).catch(function(){});
+
     var menlace=cuerpo.querySelector('.menlace');
     var snip=cuerpo.querySelector('.snip');
     var GHL='app.gohighlevel.com, *.gohighlevel.com, *.msgsndr.com, *.leadconnectorhq.com';
@@ -531,20 +681,61 @@ tr:last-child td{border-bottom:0}
     };
     cuerpo.querySelector('.pvacio').onclick=function(){ cuerpo.querySelector('.edoms').value='' };
 
-    cuerpo.querySelector('.benlace').onclick=function(){
+    // Qué fuentes se ESPERABAN de este cliente y no llegaron. No se puede usar el
+    // 'faltan' de /admin/crudo tal cual: ahí falta todo lo que no ha llegado, incluido
+    // Google en un cliente que no anuncia en Google. Lo que decide es qué cuentas tiene
+    // declaradas, y eso el panel ya lo sabe.
+    function fuentesQueFaltan(){
+      return api('/admin/crudo/'+encodeURIComponent(slug)).then(function(d){
+        var hay=d.fuentes||{}, cs=CFG.cuentas||[], esperadas=['ghl'];
+        if(cs.some(function(c){return c.plataforma==='Meta'}))   esperadas.push('meta');
+        if(cs.some(function(c){return c.plataforma==='Google'})) esperadas.push('google');
+        var nom={ghl:'los datos del CRM',meta:'el gasto de Meta',google:'el gasto de Google'};
+        return esperadas.filter(function(f){ return !hay[f] }).map(function(f){ return nom[f] });
+      }).catch(function(){ return [] });
+    }
+
+    var avisado=false;   // el aviso de fuente que falta se da una vez; el segundo clic crea
+
+    function creaEnlace(){
       var modo=cuerpo.querySelector('.emodo').value,
           nota=cuerpo.querySelector('.enota').value.trim(),
           doms=cuerpo.querySelector('.edoms').value.trim();
-      pinta(menlace,'cargando','Creando…');
-      api('/admin/enlaces',{method:'POST',headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({cliente:slug,modo:modo,nota:nota||null,dominios:doms||null})})
-        .then(function(d){
-          pinta(menlace,'ok','Enlace creado'+(d.dominios&&d.dominios.length
-            ?' y autorizado para empotrarse en '+d.dominios.length+' dominio'+(d.dominios.length===1?'':'s')+'.'
-            :'. No es empotrable: sirve para compartir el enlace, no para meterlo en una web.'));
-          cuerpo.querySelector('.enota').value=''; enlaces(); cargar();
-        })
-        .catch(function(e){ pinta(menlace,'err',problema(e)) });
+      return fuentesQueFaltan().then(function(fal){
+        if(fal.length && !avisado){
+          avisado=true;
+          return pinta(menlace,'err','<b>El reporte se construyó sin '+fal.join(' ni ')+'.</b>'+
+            '<ul><li>Sin ese gasto, el CPL y el ROAS salen <b>mejores de lo que son</b>.</li>'+
+            '<li>El propio dashboard lo avisa arriba, así que el cliente ve el hueco.</li></ul>'+
+            'Si te vale así, vuelve a pulsar <b>Crear enlace</b>.');
+        }
+        pinta(menlace,'cargando','Creando…');
+        return api('/admin/enlaces',{method:'POST',headers:{'Content-Type':'application/json'},
+              body:JSON.stringify({cliente:slug,modo:modo,nota:nota||null,dominios:doms||null})})
+          .then(function(d){
+            avisado=false;
+            pinta(menlace,'ok','Enlace creado'+(d.dominios&&d.dominios.length
+              ?' y autorizado para empotrarse en '+d.dominios.length+' dominio'+(d.dominios.length===1?'':'s')+'.'
+              :'. No es empotrable: sirve para compartir el enlace, no para meterlo en una web.'));
+            cuerpo.querySelector('.enota').value=''; enlaces(); cargar();
+          })
+          .catch(function(e){ pinta(menlace,'err',problema(e)) });
+      });
+    }
+
+    cuerpo.querySelector('.benlace').onclick=function(){
+      // Primero se mira si HAY reporte. Antes se creaba el enlace igual y quien lo abría
+      // leía "Este reporte no existe", que sonaba a enlace roto cuando lo que faltaba
+      // eran los datos. Ahora, si no hay, se arranca la extracción y el enlace se crea
+      // solo cuando el reporte ya existe.
+      pinta(menlace,'cargando','Comprobando si este cliente ya tiene reporte…');
+      estadoRefresco().then(function(est){
+        if(est.generado) return creaEnlace();
+        pinta(menlace,'cargando','<b>Este cliente todavía no tiene reporte.</b> Arranco la '+
+          'extracción y creo el enlace en cuanto haya datos. Mira el progreso en '+
+          '«Datos del reporte», más arriba.');
+        return prepara(function(){ creaEnlace() });
+      }).catch(function(e){ pinta(menlace,'err',problema(e)) });
     };
 
     function historial(){
