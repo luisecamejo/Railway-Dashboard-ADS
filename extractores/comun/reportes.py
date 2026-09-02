@@ -27,7 +27,7 @@ class Reportes:
         self.cab = {"X-Admin-Token": token}
         self.timeout = timeout
 
-    # ── lectura ───────────────────────────────────────────────
+    # ── lectura ───────────────────────────────────────────
     def clientes(self) -> list[dict]:
         return json_get(f"{self.base}/admin/estado", cabeceras=self.cab,
                         timeout=self.timeout).get("clientes") or []
@@ -67,7 +67,7 @@ class Reportes:
                           "tz": cfg["tz"], "cuentas": cuentas, "config": cfg})
         return fuera
 
-    # ── escritura ────────────────────────────────────────────
+    # ── escritura ────────────────────────────────────────
     def guardar_config(self, slug: str, cfg: dict) -> dict:
         """
         Deja la configuración de construcción del cliente.
@@ -90,4 +90,18 @@ class Reportes:
 
     def construir(self, slug: str, *, publicar: bool = True) -> dict:
         return json_post(f"{self.base}/admin/construir/{slug}", {"publicar": publicar},
+                         cabeceras=self.cab, timeout=self.timeout)
+
+    # ── cola de refresco a demanda ──────────────────────────────
+    # Solo las usa `refrescar.py`. Están aquí y no allí por la misma razón que el
+    # resto: un único sitio sabe hablar con el servicio.
+    def cola_refresco(self) -> list[str]:
+        """Los clientes que pidieron refresco. Al pedirla, quedan marcados en curso."""
+        r = json_get(f"{self.base}/admin/cola-refresco", cabeceras=self.cab,
+                     timeout=self.timeout)
+        return list(r.get("pendientes") or [])
+
+    def cerrar_refresco(self, slug: str, *, ok: bool, detalle: str = "") -> dict:
+        return json_post(f"{self.base}/admin/cola-refresco/{slug}",
+                         {"ok": ok, "detalle": detalle},
                          cabeceras=self.cab, timeout=self.timeout)
