@@ -10,7 +10,7 @@
 
      #actualizado   · cuándo se extrajeron estos datos, siempre, sin tener que buscarlo.
      #fuenteAviso   · aviso cuando el snapshot se construyó sin una fuente, o con una vieja.
-     #acciones      · descargar el reporte completo en PDF o en HTML.
+     #acciones      · actualizar ahora, y descargar el reporte en PDF o en HTML.
 
    Se crean desde JS a propósito: dependen del contenido del snapshot, no del marcado, y
    así el HTML de arriba no crece con nodos que la mayoría de las veces están vacíos.
@@ -319,24 +319,144 @@ async function descargaHTML(btn){
   setTimeout(()=>{btn.textContent=antes},2500);
 }
 
+/* ════════════════════════════════════════════════════════════════════════════════════
+   ACTUALIZAR AHORA — "un botón para forzar hacer una nueva extracción y actualizar los
+   datos".
+
+   Lo importante que hay que saber al usarlo: esto NO es instantáneo. Una pasada
+   completa (Meta + Google + GoHighLevel + reconstruir el snapshot) tarda del orden de
+   veinte minutos, y la parte lenta es el CRM: para un cliente con dos mil
+   conversaciones hay que recorrerlas todas pidiendo su historial de mensajes. Así que
+   el botón no "actualiza", ENCARGA una actualización: se puede cerrar la pestaña y el
+   reporte estará al día cuando se vuelva.
+
+   El servidor decide si se puede o no, y lo decide por la EDAD DEL SNAPSHOT, no por
+   cuántas veces se haya pulsado: si los datos son de hace cinco minutos, volver a
+   extraer no cambiaría nada. Aquí solo se pinta lo que el servidor conteste — la regla
+   vive en un sitio, no en dos.
+   ════════════════════════════════════════════════════════════════════════════════════ */
+// Cada cuánto se pregunta si ya terminó. 20 s es bastante fino para algo de 20 minutos
+// y no molesta al servidor: es una lectura de la cola, no una consulta a las APIs.
+const REFRESCO_SONDEO_MS=20000;
+let refTimer=null;
+
+async function refEstado(){
+  const r=await fetch(new URL('refrescar', location.href).href,
+                      {cache:'no-store',credentials:'same-origin'});
+  if(!r.ok) throw Object.assign(new Error('http'),{codigo:r.status,
+    detalle:(await r.json().catch(()=>({}))).detail});
+  return r.json();
+}
+
+function refPinta(btn, est){
+  if(est.enCurso){
+    btn.disabled=true;
+    btn.textContent='Extrayendo…';
+    btn.title=est.motivo+'\nPuedes cerrar esta página: cuando termine, el reporte se '
+      +'actualiza solo.';
+    return;
+  }
+  btn.disabled=!est.puede;
+  btn.textContent='Actualizar ahora';
+  btn.title=est.puede
+    ? `Encarga una extracción nueva de Meta, Google y el CRM, y reconstruye el reporte.`
+      +`\nTarda unos ${est.duracionMin} minutos: puedes cerrar esta página y volver `
+      +`después.\nLos datos de hoy pueden estar incompletos, porque el día no ha `
+      +`terminado.`
+    : est.motivo;
+}
+
+// Mientras hay una extracción en marcha se pregunta cada poco. Cuando termina, la
+// página se recarga sola en vez de avisar de que hay datos nuevos: el reporte entero
+// (KPIs, tablas, la línea de "Actualizado hace…") depende del snapshot, así que
+// refrescarlo a medias dejaría cifras viejas junto a cifras nuevas.
+function refSondea(btn, generadoAlPedir){
+  clearTimeout(refTimer);
+  refTimer=setTimeout(async ()=>{
+    let est;
+    try{ est=await refEstado() }catch(_){ return refSondea(btn,generadoAlPedir) }
+    if(!est.enCurso && est.generado && est.generado!==generadoAlPedir){
+      btn.textContent='Listo, recargando…';
+      return location.reload();
+    }
+    refPinta(btn,est);
+    if(est.enCurso) refSondea(btn,generadoAlPedir);
+  },REFRESCO_SONDEO_MS);
+}
+
+async function pideRefresco(btn){
+  const generadoAlPedir=DATA.generado||'';
+  btn.disabled=true; btn.textContent='Encargando…';
+  try{
+    const r=await fetch(new URL('refrescar', location.href).href,
+      {method:'POST',cache:'no-store',credentials:'same-origin'});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){
+      // 429 es la respuesta normal de "todavía no": no es un fallo, es la regla. Se
+      // muestra su motivo, que ya viene redactado del servidor.
+      btn.disabled=true;
+      btn.textContent='Actualizar ahora';
+      btn.title=(typeof d.detail==='string'?d.detail:'')||'No se pudo pedir el refresco.';
+      const t=document.getElementById('refmsg');
+      if(t){ t.textContent=btn.title; t.style.display='block' }
+      return;
+    }
+    refPinta(btn,d);
+    const t=document.getElementById('refmsg');
+    if(t){
+      t.textContent='Extracción encargada. Tarda unos '+(d.duracionMin||20)+' minutos; '
+        +'puedes cerrar esta página y volver después.';
+      t.style.display='block';
+    }
+    refSondea(btn,generadoAlPedir);
+  }catch(e){
+    btn.disabled=false; btn.textContent='Actualizar ahora';
+    btn.title='No se pudo hablar con el servidor. Reintenta en un momento.';
+  }
+}
+
 (function montaAcciones(){
   const tira=document.getElementById('tiraEstado'); if(!tira)return;
+  // En el archivo HTML descargado no hay servidor: ni se puede refrescar ni se puede
+  // volver a descargar (app.js no está al lado). Se dejaría un botón que solo sabe
+  // fallar, así que en file:// solo se ofrece el PDF, que sí funciona sin red.
+  const local=location.protocol==='file:';
   const d=document.createElement('div');
   d.id='acciones';
-  d.style.cssText='display:flex;gap:7px;flex-wrap:wrap;margin:0 0 12px';
-  d.innerHTML=`<button type="button" class="accion" id="bpdf" title="Abre el diálogo de `
+  d.style.cssText='display:flex;gap:7px;flex-wrap:wrap;align-items:center;margin:0 0 12px';
+  d.innerHTML=(local?'':`<button type="button" class="accion" id="bref"`
+      +` title="Comprobando…" disabled>Actualizar ahora</button>`)
+    +`<button type="button" class="accion" id="bpdf" title="Abre el diálogo de `
     +`impresión con las cuatro pestañas seguidas. Elige «Guardar como PDF» como destino.`
     +`\nEl rango de fechas del PDF es el que tengas puesto ahora.">Descargar PDF</button>`
-    +`<button type="button" class="accion" id="bhtml" title="Un solo archivo con los datos `
-    +`y el dashboard dentro. Se abre con doble clic, sin internet, y mantiene los filtros y `
-    +`las pestañas.">Descargar HTML</button>`;
+    +(local?'':`<button type="button" class="accion" id="bhtml" title="Un solo archivo `
+      +`con los datos y el dashboard dentro. Se abre con doble clic, sin internet, y `
+      +`mantiene los filtros y las pestañas.">Descargar HTML</button>`)
+    +`<span id="refmsg" style="display:none;color:var(--faint);font-size:11.5px"></span>`;
   tira.appendChild(d);
   const est='background:var(--pn2,#171f2a);color:var(--dim,#93a1b5);'
     +'border:1px solid var(--line);border-radius:6px;padding:5px 11px;'
     +'font:600 11.5px var(--d);cursor:pointer';
-  d.querySelectorAll('.accion').forEach(b=>b.style.cssText=est);
+  d.querySelectorAll('.accion').forEach(b=>{
+    b.style.cssText=est;
+    // un botón deshabilitado tiene que PARECER deshabilitado, o se pulsa y se culpa al
+    // dashboard de no hacer nada
+    b.addEventListener('mouseenter',()=>{if(b.disabled)b.style.cursor='default'});
+  });
   document.getElementById('bpdf').onclick=function(){ descargaPDF(this) };
-  document.getElementById('bhtml').onclick=function(){ descargaHTML(this) };
+  const bh=document.getElementById('bhtml');
+  if(bh) bh.onclick=function(){ descargaHTML(this) };
+
+  const br=document.getElementById('bref');
+  if(!br) return;
+  br.onclick=function(){ pideRefresco(this) };
+  // Se pregunta el estado al abrir: puede haber una extracción en marcha que alguien
+  // pidió desde otra pestaña, o desde el panel. Si la ruta no existe (un servidor
+  // anterior a esto), el botón desaparece en vez de quedarse mintiendo.
+  refEstado().then(e=>{
+    refPinta(br,e);
+    if(e.enCurso) refSondea(br,DATA.generado||'');
+  }).catch(()=>{ br.remove() });
 })();
 
 // Nada de esto depende de los filtros: describen el snapshot, no la selección. Se pintan
