@@ -1,6 +1,6 @@
 """
 Servicio de reportes · Sentinel Marketing
-═══════════════════════════════════════
+══════════════════════════════════════
 Sirve un único visor (cacheable, igual para todos los clientes) y el snapshot de datos
 de cada cliente por separado, detrás de un enlace con token.
 
@@ -20,10 +20,12 @@ Panel
 Rutas de administración (cabecera X-Admin-Token)
     GET  /admin/estado
     POST /admin/visor                → atajo de emergencia; el despliegue vuelve al del repo
-    POST /admin/clientes
-    POST /admin/snapshots/{slug}
+    POST /admin/clientes             → detecta zona horaria y moneda en el CRM
+    GET  /admin/ficha?location=…     → lo que el CRM sabe de una sub-cuenta
+    GET  /admin/ficha/{slug}
+    POST /admin/snapshots/{slug}    → atajo de emergencia; ya no hay puerta en el panel
     GET  /admin/snapshots/{slug}
-    POST /admin/enlaces
+    POST /admin/enlaces              → 409 si el cliente todavía no tiene datos
     GET  /admin/enlaces
     POST /admin/enlaces/{token}/dominios
     POST /admin/enlaces/{token}/revocar
@@ -39,9 +41,8 @@ Refresco a demanda (en rutas_refrescar.py)
     GET  /r/{token}/refrescar         → ¿se puede refrescar? ¿hay uno en marcha?
     POST /r/{token}/refrescar         → lo pide el botón del dashboard
     GET  /admin/refrescar/{slug}      → lo mismo, desde el panel
-    POST /admin/refrescar/{slug}      → sin límite de antigüedad
-    GET  /admin/cola-refresco         → lo consulta `extractor-ahora` al arrancar
-    POST /admin/cola-refresco/{slug}  → y ahí dice cómo acabó
+    POST /admin/refrescar/{slug}      → sin límite de antigüedad; lo usa "Preparar el reporte"
+    GET  /admin/refrescos             → la cola entera, solo lectura
 """
 from __future__ import annotations
 
@@ -63,6 +64,7 @@ from .almacen import abrir_almacen
 from .rutas_panel import router as router_panel
 from . import rutas_extraccion
 from . import rutas_refrescar
+from . import rutas_ficha
 from .privacidad import MODOS, aplicar
 from . import seguridad as seg
 from .visor import partir_html
@@ -89,7 +91,7 @@ app.include_router(router_panel)
 
 almacen = abrir_almacen()
 
-# ── el dashboard se versiona en el repositorio ────────────────────────────
+# ── el dashboard se versiona en el repositorio ───────────────────────
 # `web/visor/dashboard.html` es la FUENTE DE VERDAD del dashboard: el código, sin datos.
 # Cada despliegue lo parte y lo guarda, así que mejorar el dashboard es un commit y nada
 # más. POST /admin/visor sigue existiendo como atajo de emergencia (cambiar el dashboard
@@ -269,6 +271,9 @@ _MOTIVOS = {
           "El enlace es incorrecto o se dio de baja. Pide uno nuevo a tu contacto en Sentinel."),
     403: ("Este enlace ya no es válido",
           "Se revocó o caducó. Pide uno nuevo a tu contacto en Sentinel."),
+    409: ("Estamos preparando este reporte",
+          "El enlace es correcto: lo que aún no ha terminado es la primera extracción de "
+          "datos. Vuelve a abrirlo en un rato."),
     429: ("Demasiadas peticiones",
           "Espera unos minutos y vuelve a intentarlo."),
     503: ("El reporte todavía no está disponible",
@@ -396,7 +401,12 @@ def snapshot(token: str, peticion: Request):
     e = _resolver_enlace(token, peticion)
     datos = almacen.snapshot(e["cliente"])
     if datos is None:
-        raise HTTPException(404, "Todavía no hay datos publicados para este cliente.")
+        # 409 y no 404 A PROPÓSITO. El enlace es VÁLIDO; lo que falta son los datos. Con
+        # 404 el cargador del visor pintaba "Este reporte no existe · el enlace es
+        # incorrecto o se dio de baja", que es mentira y manda al cliente a pedir un
+        # enlace nuevo que tampoco funcionaría. Ver el manejo del 409 en visor.py.
+        raise HTTPException(409, "El reporte de este cliente todavía se está preparando: "
+                                 "aún no hay una extracción de datos terminada.")
     # El enmascarado del modo demo se hace AQUÍ, en el servidor: un enlace demo nunca
     # transporta el nombre real de un paciente, así que da igual quién abra el inspector.
     return JSONResponse(aplicar(datos, e.get("modo") or "cliente"),
@@ -458,16 +468,76 @@ async def admin_subir_visor(peticion: Request):
 
 @app.post("/admin/clientes", dependencies=[Depends(exige_admin)])
 def admin_cliente(cuerpo: dict = Body(...)):
+    """
+    Da de alta un cliente y le deja la ficha lista para extraer.
+
+    Dos cosas que antes había que hacer a mano y ahora no:
+
+    1. **La zona horaria se lee del CRM**, no se teclea (ver el comentario largo de
+       rutas_ficha.py). Solo si la sub-cuenta no la declara se pide a mano.
+    2. **Se siembra la configuración de construcción** con lo que ya se sabe. Antes el
+       alta y la configuración eran dos formularios que pedían los mismos datos, y era
+       fácil acabar con una zona horaria en la ficha y otra distinta en la config.
+    """
     slug = (cuerpo.get("slug") or "").strip().lower()
     if not slug or not slug.replace("-", "").isalnum():
         raise HTTPException(400, "slug obligatorio, solo letras, números y guiones.")
     nombre = (cuerpo.get("nombre") or "").strip()
     if not nombre:
         raise HTTPException(400, "nombre obligatorio.")
-    return almacen.guardar_cliente(slug, nombre, cuerpo.get("ghl_location_id"),
-                                   cuerpo.get("tz"), cuerpo.get("fuentes"))
+    loc = (cuerpo.get("ghl_location_id") or "").strip() or None
+
+    tz = (cuerpo.get("tz") or "").strip() or None
+    moneda = (cuerpo.get("moneda") or "").strip().upper() or None
+    detectado, aviso = None, None
+    if loc and not tz:
+        try:
+            detectado = rutas_ficha.ficha_crm(loc)
+            tz = detectado.get("tz")
+            moneda = moneda or detectado.get("moneda")
+        except Exception as ex:               # noqa: BLE001
+            # Que el CRM no conteste NO impide dar de alta al cliente: se da de alta sin
+            # zona y el panel la pide a mano. Fallar aquí dejaría al operador atascado
+            # por algo que puede resolver él en diez segundos. Se atrapa TODO a propósito,
+            # HTTPException incluida: ninguna forma de fallar la detección justifica no
+            # poder crear un cliente.
+            detalle = getattr(ex, "detail", None) or str(ex)
+            aviso = (f"No se pudo leer la zona horaria del CRM ({detalle}). "
+                     "Elígela a mano en la ficha del cliente.")
+            log.warning("alta de %s sin zona detectada: %s", slug, detalle)
+
+    c = almacen.guardar_cliente(slug, nombre, loc, tz, cuerpo.get("fuentes"))
+
+    if tz:
+        cfg = dict((almacen.cliente(slug) or {}).get("config") or {})
+        cfg.update({"nombre": nombre, "slug": slug, "tz": tz, "ghlLocationId": loc})
+        cfg.setdefault("cuentas", [])
+        if moneda:
+            cfg["moneda"] = moneda
+        # De dónde salió la zona queda ESCRITO y viaja al snapshot (construir.py lo copia
+        # a cliente.tzFuente). Cuando dentro de seis meses un número no cuadre, la primera
+        # pregunta va a ser "¿y esta zona quién la puso?".
+        cfg["tzFuente"] = ("Sub-cuenta de GoHighLevel " + str(loc) + " (timezone)"
+                           if detectado and detectado.get("tz")
+                           else "Puesta a mano en el panel")
+        almacen.guardar_config(slug, cfg)
+
+    out = {k: (str(v) if not isinstance(v, (dict, list, type(None))) else v)
+           for k, v in (c or {}).items()}
+    out.update({"tz": tz, "moneda": moneda,
+                "tzDetectada": bool(detectado and detectado.get("tz")),
+                "ciudad": (detectado or {}).get("ciudad"),
+                "pais": (detectado or {}).get("pais")})
+    if aviso:
+        out["aviso"] = aviso
+    return out
 
 
+# El panel ya no ofrece subir el snapshot a mano: los datos los traen los extractores y el
+# snapshot lo construye el servicio con la configuración del cliente. Una subida manual
+# competía con eso (el cron de la madrugada la sobrescribía) y hacía creer que publicar un
+# reporte era un paso manual. La ruta se queda como atajo de emergencia —restaurar a mano un
+# snapshot bueno mientras se arregla un extractor— igual que POST /admin/visor.
 @app.post("/admin/snapshots/{slug}", dependencies=[Depends(exige_admin)])
 async def admin_publicar(slug: str, peticion: Request):
     if not almacen.cliente(slug):
@@ -519,6 +589,17 @@ def admin_crear_enlace(cuerpo: dict = Body(...)):
         raise HTTPException(400, "Ningún dominio válido. Se esperan orígenes https, "
                                  "con comodín opcional: https://app.gohighlevel.com, "
                                  "https://*.msgsndr.com")
+
+    # UN ENLACE SIN DATOS ES UN ENLACE MUERTO. Se creaba igual, y quien lo abría leía
+    # "Este reporte no existe": el enlace estaba bien, no había snapshot. El panel ya
+    # avisa, pero la garantía tiene que estar aquí, porque el panel se puede saltar.
+    # `forzar` existe para el caso raro de tener que crear el enlace antes que los datos
+    # (por ejemplo, dejar el iframe puesto en la web del cliente); no lo usa el panel.
+    if almacen.snapshot(slug) is None and not cuerpo.get("forzar"):
+        raise HTTPException(409,
+            f"El cliente '{slug}' todavía no tiene datos publicados, así que este enlace "
+            "no mostraría nada. Pulsa «Preparar el reporte» en su ficha para extraer de "
+            "GoHighLevel, Meta y Google, y crea el enlace cuando el reporte ya exista.")
 
     e = almacen.crear_enlace(slug, modo, cuerpo.get("nota"), caduca, doms)
     log.info("enlace creado · %s · modo %s · empotrable en %s",
@@ -594,7 +675,7 @@ def validar(d: Any) -> list[str]:
         p.append("El cliente no declara zona horaria ('cliente.tz'): sin ella las fechas "
                  "no son comparables con el CRM.")
 
-    # ── fechas coherentes ─────────────────────────────────────────
+    # ── fechas coherentes ─────────────────────────────
     try:
         datetime.fromisoformat(d["desde"])
         datetime.fromisoformat(d["hasta"])
@@ -604,7 +685,7 @@ def validar(d: Any) -> list[str]:
         p.append("'desde' y 'hasta' tienen que ser fechas ISO (2026-05-03).")
         return p
 
-    # ── los leads caen dentro de la ventana ────────────────────────────
+    # ── los leads caen dentro de la ventana ─────────────────────
     # El criterio de extracción es la CREACIÓN DE LA OPORTUNIDAD ('fo'): eso sí tiene que
     # caer siempre dentro. El alta del contacto ('f') puede ser anterior — son los clientes
     # recurrentes — y en ese caso el lead tiene que venir marcado con rec=1. Si un lead
@@ -622,13 +703,13 @@ def validar(d: Any) -> list[str]:
                  f"pero no están marcados como recurrentes (ej. {sin_marca[0]}). "
                  f"Con eso el CPL y el ROAS del periodo salen inflados.")
 
-    # ── ids únicos: el bug de paginación que ya nos mordió una vez ────────
+    # ── ids únicos: el bug de paginación que ya nos mordió una vez ────
     ids = [l.get("id") for l in leads if l.get("id")]
     if len(ids) != len(set(ids)):
         p.append(f"Hay oportunidades duplicadas: {len(ids)} filas y {len(set(ids))} ids "
                  f"únicos. Suele ser el cursor de paginación saltándose registros.")
 
-    # ── cada lead apunta a una etapa que existe ──────────────────────
+    # ── cada lead apunta a una etapa que existe ──────────────────
     etapas = {s.get("id") for s in (d.get("stages") or [])}
     if etapas:
         huerf = sum(1 for l in leads if l.get("ei") and l["ei"] not in etapas)
@@ -636,7 +717,7 @@ def validar(d: Any) -> list[str]:
             p.append(f"{huerf} de {len(leads)} leads apuntan a una etapa que no está en "
                      f"'stages'. Parece que las etapas se extrajeron de otro pipeline.")
 
-    # ── el gasto diario suma lo que dice sumar ───────────────────────
+    # ── el gasto diario suma lo que dice sumar ─────────────────
     if d.get("granularidadGasto") == "dia":
         for c in (d.get("camps") or []):
             roto = next((w for w in (c.get("w") or [])
@@ -668,3 +749,7 @@ rutas_extraccion.montar(app, almacen=almacen, exige_admin=exige_admin,
 # refrescar, porque ya da acceso a todos los datos de ese cliente.
 rutas_refrescar.montar(app, almacen=almacen, exige_admin=exige_admin,
                        resolver_enlace=_resolver_enlace)
+
+# La zona horaria y la moneda las lee del CRM, para no pedírselas a nadie.
+rutas_ficha.montar(app, almacen=almacen, exige_admin=exige_admin,
+                   config_de=lambda s: (almacen.cliente(s) or {}).get("config") or {})
