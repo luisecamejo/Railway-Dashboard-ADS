@@ -250,7 +250,7 @@ footer b{color:var(--dim)}
 
 <script>
 const DATA = {};
-/* ════════════════════════════════════════════════════════════════════════════════════
+/* ══════════════════════════════════════════════════════════════════════════════════════════
    SANEADO DE LOS DATOS DEL CRM  (bug encontrado en la auditoría del 1 sep 2026)
 
    Todo el reporte se dibuja con plantillas de texto (`${...}`) que acaban en innerHTML. Los
@@ -266,7 +266,7 @@ const DATA = {};
    Se escapan `<`, `>` y `"` — con eso no se puede ni abrir una etiqueta ni salirse de un
    atributo. NO se toca `&`: es habitual en nombres reales ("Botox & Fillers") y escaparlo se
    vería como `&amp;` en los sitios que usan textContent.
-   ════════════════════════════════════════════════════════════════════════════════════ */
+   ══════════════════════════════════════════════════════════════════════════════════════════ */
 (function sanearDATA(){
   const esc=v=>v.replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   const salta=new Set(['notas']); // si la extracción trae notas ya redactadas en HTML, se respetan
@@ -282,8 +282,26 @@ const DATA = {};
 })();
 
 const L = DATA.leads, C = DATA.camps;
-const fmt=n=>'$'+(n||0).toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0});
-const fmt2=n=>'$'+(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+/* La MONEDA sale del snapshot, no esta metida a fuego. Antes todo se formateaba con
+   '$': un cliente que factura en euros veia sus euros con el simbolo del dolar, que es
+   la peor clase de error porque el numero parece correcto. La moneda la declara la
+   sub-cuenta del CRM y viaja en DATA.moneda.
+   Se prueba UNA VEZ al cargar y no en cada llamada: un codigo de moneda invalido hace
+   que Intl lance, y eso pasando por cada KPI dejaria el reporte en blanco. Si falla, se
+   cae al formato de antes, que es exactamente lo que veian los clientes en dolares. */
+const MONEDA = String(DATA.moneda||'USD').toUpperCase();
+const _locMon = MONEDA==='EUR' ? 'es-ES' : 'en-US';
+const _dinero = (function(){
+  try{
+    (0).toLocaleString(_locMon,{style:'currency',currency:MONEDA});
+    return (n,d)=>(n||0).toLocaleString(_locMon,{style:'currency',currency:MONEDA,
+      minimumFractionDigits:d,maximumFractionDigits:d});
+  }catch(_){
+    return (n,d)=>'$'+(n||0).toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d});
+  }
+})();
+const fmt=n=>_dinero(n,0);
+const fmt2=n=>_dinero(n,2);
 const num=n=>(n||0).toLocaleString('es-ES');
 const pct=n=>(isFinite(n)?n.toFixed(1):'0.0')+'%';
 const dd=s=>new Date(s+'T00:00:00Z');
@@ -291,7 +309,7 @@ const iso=d=>d.toISOString().slice(0,10);
 const MESES_C=['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
 const fmtD=s=>{const d=dd(s);return `${d.getUTCDate()} ${MESES_C[d.getUTCMonth()]} ${d.getUTCFullYear()}`};
 
-/* ════════════════════════════════════════════════════════════════════════════════════
+/* ══════════════════════════════════════════════════════════════════════════════════════════
    VENTANA DE DATOS — fuente unica de verdad de TODO filtro de fecha del reporte.
 
    Pedido literal: "la fecha debe dejar filtrar solo hasta la fecha real que tiene datos, ni
@@ -312,7 +330,7 @@ const fmtD=s=>{const d=dd(s);return `${d.getUTCDate()} ${MESES_C[d.getUTCMonth()
      atraso = dias entre el ultimo dia con datos y el dia real de hoy. Si es > 0 el reporte
             esta viejo y se avisa en la barra; NO se mueve la ventana hacia hoy, porque mover
             la ventana sin volver a extraer solo produciria dias vacios.
-   ════════════════════════════════════════════════════════════════════════════════════ */
+   ══════════════════════════════════════════════════════════════════════════════════════════ */
 const WIN=(()=>{
   const max=DATA.hasta, desde=DATA.desde;
   const ini120=iso(new Date(dd(max).getTime()-119*864e5));
