@@ -1,72 +1,90 @@
 # extractor-google
 
-`extraer.py` **ya está hecho y probado** (`pruebas/test_google.py`, 10 comprobaciones
-sin credenciales ni red: reproduce las 204 filas y los 4.139,37 de gasto del trozo ya
-validado). Lo que falta son las credenciales.
+`extraer.py` está hecho y probado (`pruebas/test_google.py`, 10 comprobaciones sin
+credenciales ni red: reproduce las 204 filas y los 4.139,37 de gasto del trozo ya
+validado).
 
-## Las cuatro piezas, y cuál sirve para todos los clientes
+## Lo que hay montado (2 sep 2026)
 
-| Variable | Ámbito | Dónde se saca |
+| Qué | Valor |
+|---|---|
+| Cuenta MCC | **Sentinel Marketing, LLC · `769-924-3841`** |
+| Developer token | ya existía, con **Explorer Access** concedido |
+| Cuenta de Google | `luis@sentinelmarketing.net` |
+| Proyecto de Google Cloud | `servidor-railway-dashboard` |
+| Cliente OAuth | «extractor-google (Railway)», tipo *Aplicación web* |
+| Pantalla de consentimiento | tipo **Internal** |
+| Redirect autorizado | `https://developers.google.com/oauthplayground` |
+
+Las 10 cuentas de la cartera cuelgan de esa MCC, así que **un solo developer token
+sirve para todas**. Lo único que cambia por cliente es su `customer_id`, que se escribe
+en el panel de administración (que admite varias cuentas de Google por cliente).
+
+| Cliente | `customer_id` |
+|---|---|
+| Aesthetics by Cliff | 580-642-2100 |
+| BeVisionary | 484-287-4719 |
+| Brightnest Services | 755-536-6682 |
+| CPR Car Care | 806-243-8733 |
+| Enroll America | 284-624-3843 |
+| Garage Door Experts | 985-244-7343 |
+| Golden Rose Wellness | 856-535-3498 |
+| Oreamuno's Contractors | 228-015-4054 |
+| Respira Libre | 120-114-2299 |
+| Sentinel Marketing (cancelada) | 774-938-2990 |
+
+## Variables
+
+| Variable | Ámbito | Dónde sale |
 |---|---|---|
-| `GOOGLE_DEVELOPER_TOKEN` | **UNA para toda la agencia** | API Center de una cuenta MCC de Google Ads |
-| `GOOGLE_CLIENT_ID` | una para todos | Google Cloud → Credenciales → ID de cliente OAuth |
-| `GOOGLE_CLIENT_SECRET` | una para todos | lo mismo |
-| `GOOGLE_REFRESH_TOKEN` | uno por usuario de Google | el consentimiento OAuth, una sola vez |
-| `GOOGLE_LOGIN_CUSTOMER_ID` | el id de la MCC | solo si se entra a las cuentas a través de ella |
+| `GOOGLE_DEVELOPER_TOKEN` | **una para toda la agencia** | API Center de la MCC |
+| `GOOGLE_CLIENT_ID` | una para todos | Cloud → Clients (es público, no es secreto) |
+| `GOOGLE_CLIENT_SECRET` | una para todos | Cloud → Clients |
+| `GOOGLE_REFRESH_TOKEN` | uno | OAuth Playground, una sola vez |
+| `GOOGLE_LOGIN_CUSTOMER_ID` | `769-924-3841` | el id de la MCC, sin guiones al usarlo |
 | `GOOGLE_API_VERSION` | `v25` | se sube cuando Google jubile la versión |
 
-Lo importante: **la espera del token no se multiplica por cartera.** Se pide una vez
-sobre una MCC, y a partir de ahí añadir un cliente es escribir su `customer_id` en el
-panel. No hay nada que montar por cliente.
+## Dos trampas que costaron media hora encontrar
 
-El `customer_id` de cada cuenta vive en la configuración del cliente
-(`cuentas[] → {plataforma: "Google", id: "580-642-2100"}`) y se pone desde el panel de
-administración, que admite **varias cuentas de Google por cliente**.
+**1 · El API Center solo existe en la MCC, y hay dos cuentas con el mismo nombre.**
+Entrando en una cuenta hija sale *«The API Center is only available to manager
+accounts»*, que es fácil de leer como «no tengo MCC» cuando sí la hay. Y en esta
+agencia existen **dos** cuentas llamadas «Sentinel Marketing, LLC»: la `774-938-2990`
+(cancelada, **no** es manager) y la `769-924-3841` (la manager). Además, la cuenta de
+Gmail personal solo ve BeVisionary y no tiene ninguna MCC: hay que entrar con
+`luis@sentinelmarketing.net`.
 
-## Los pasos, en orden
+**2 · Para VER el token, Google exige passkey y no ofrece alternativa.** Su propio
+diálogo da la salida buena:
 
-**1 · Developer token.** Google Ads → la cuenta **MCC** → Herramientas → Configuración
-→ **API Center**. Ahí se solicita y ahí se ve. Hace falta verificación en dos pasos en
-la cuenta de Google para poder mostrarlo; si la cuenta acaba de cambiar su seguridad,
-Google impone una espera. Salida rápida: hacerlo desde **otra cuenta de Google que ya
-tenga 2FA** y que sea administradora de la MCC.
+> You won't be able to continue without confirming it's you, but you can:
+> · Ask **another account user** to make the change
 
-Niveles de acceso: **Explorer** (se aprueba solo y permite cuentas reales con un tope
-diario de operaciones) basta — la extracción diaria son un puñado de consultas por
-cuenta. **Test Account** NO sirve: solo lee cuentas de prueba.
+El token es de la **cuenta**, no de la persona: cualquier admin de la MCC ve el mismo.
+En *Admin → Access and security → Users* hay una columna **Passkey status** que dice
+quién puede hacerlo hoy.
 
-**2 · Proyecto de Google Cloud.** console.cloud.google.com → crear proyecto →
-APIs y servicios → **habilitar "Google Ads API"**.
+## Renovar el refresh token, si alguna vez falla
 
-**3 · Pantalla de consentimiento.** APIs y servicios → Pantalla de consentimiento OAuth.
-Añadir el permiso `https://www.googleapis.com/auth/adwords`.
+1. [OAuth Playground](https://developers.google.com/oauthplayground) → rueda de ajustes
+2. Marcar **Use your own OAuth credentials**, pegar Client ID y Client secret
+3. Comprobar **Access type: Offline** y **Force prompt: Consent Screen** — sin eso
+   Google devuelve solo un access token de una hora y no un refresh token
+4. Scope: `https://www.googleapis.com/auth/adwords` → *Authorize APIs*
+5. *Exchange authorization code for tokens* → el **Refresh token** es el que empieza
+   por `1//`, no el access token
 
-> **Esto es lo que rompe el trabajo nocturno una semana después.** Con tipo
-> **External** y estado **Testing**, Google emite refresh tokens que **caducan a los 7
-> días** (está en su documentación). Se monta, funciona, y el martes siguiente a las 3
-> de la mañana deja de funcionar sin que nadie haya tocado nada. Con tipo **Internal**
-> (posible si el dominio está en Google Workspace) no aplica: la regla que Google
-> enuncia acota los 7 días a "external". La otra salida es publicar la app.
+El código de autorización del paso 4 caduca en minutos: hay que hacer el canje seguido.
+Y un cliente OAuth recién creado tarda entre 5 minutos y unas horas en propagarse; si
+sale `redirect_uri_mismatch` o `invalid_client` recién creado, es eso y no un error de
+configuración.
 
-**4 · ID de cliente OAuth.** Credenciales → Crear credenciales → ID de cliente OAuth →
-tipo **Aplicación web** → en URIs de redireccionamiento autorizados añadir
-`https://developers.google.com/oauthplayground`. De ahí salen `client_id` y
-`client_secret`.
+La pantalla de consentimiento es **Internal** a propósito: con **External** + estado
+**Testing**, Google emite refresh tokens que **caducan a los 7 días** (está en su
+documentación). Se montaría, funcionaría, y el martes siguiente a las 3 de la mañana
+dejaría de funcionar sin que nadie hubiera tocado nada.
 
-(Tipo *Aplicación web* y no *Aplicación de escritorio* solo para poder usar el
-Playground del paso 5 sin instalar nada en local.)
-
-**5 · Refresh token.** developers.google.com/oauthplayground → rueda de ajustes →
-marcar **"Use your own OAuth credentials"** → pegar `client_id` y `client_secret` →
-en el campo de permisos escribir `https://www.googleapis.com/auth/adwords` →
-*Authorize APIs* → iniciar sesión con la cuenta que tiene acceso a las cuentas de
-Google Ads → *Exchange authorization code for tokens*. El **refresh token** es el que
-se guarda.
-
-**6 · Railway.** Servicio `extractor-google` → Variables → las cinco de arriba.
-Ninguna se pega en un chat: se escriben directamente ahí.
-
-## Mientras falten
+## Si faltan credenciales
 
 El extractor **falla en rojo y nombra la variable que falta**, en vez de callarse:
 
@@ -74,15 +92,10 @@ El extractor **falla en rojo y nombra la variable que falta**, en vez de callars
 ValueError: Faltan credenciales de Google Ads: GOOGLE_DEVELOPER_TOKEN, ...
 ```
 
-Eso es a propósito. Si devolviera un trozo vacío, el snapshot se publicaría con el
-gasto de Google a **cero** y el CPL mezclado saldría mejor de lo real sin que nadie se
-enterara. `pruebas/test_google.py` fija ese comportamiento para que no se "arregle"
-por error más adelante.
-
-Y el reporte no se queda roto: si un cliente no tiene trozo de Google, `reportes`
-construye con lo que hay. Pero **ojo con publicar así**: en Aesthetics by Cliff, Google
-son ~4.073 de 17.000, el **24% del gasto**. Un reporte sin eso enseña un CPL mezclado
-un 24% mejor que el real.
+Es a propósito. Si devolviera un trozo vacío, el snapshot se publicaría con el gasto de
+Google a **cero** y el CPL mezclado saldría mejor de lo real sin que nadie se enterara.
+En Aesthetics by Cliff, Google son ~4.073 de 17.000: el **24% del gasto**.
+`pruebas/test_google.py` fija ese comportamiento para que no se «arregle» por error.
 
 ## Lo que produce
 
