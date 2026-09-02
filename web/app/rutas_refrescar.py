@@ -2,39 +2,58 @@
 """
 Refrescar un reporte a demanda, desde el propio dashboard.
 
-    dashboard ──POST /r/{token}/refrescar──> reportes ──API de Railway──> extractor-ahora
-                                                 │                              │
-                                                 └──GET /admin/cola-refresco────┘
+    dashboard ──POST /r/{token}/refrescar──> reportes ──hilo aparte──> los 3 extractores
 
-Por qué hace falta un servicio aparte y no se reutilizan los tres crones: en Railway,
-un `redeploy` de un servicio CON cron no lo ejecuta, solo espera al siguiente tick.
-Para poder disparar una extracción a demanda hace falta un servicio SIN cron, y ese es
-`extractor-ahora`: mismo código, misma imagen, sin horario. Un deploy suyo sí arranca
-el contenedor, y eso es lo único que este módulo necesita poder provocar.
+POR QUÉ CORRE AQUÍ DENTRO Y NO EN UN SERVICIO APARTE
+──────────────────────────────────────────────────
+El primer diseño era un cuarto servicio de Railway sin cron (`extractor-ahora`) al que
+este módulo le disparaba un despliegue por la API. Se descartó por dos razones, y la
+segunda es la buena:
 
-Por qué el slug NO viaja en una variable de entorno del servicio: dos clientes
-pulsando el botón a la vez se pisarían la variable y uno de los dos se quedaría sin
-refrescar creyendo que sí. En vez de eso, aquí se guarda una COLA y el servicio la
-consulta al arrancar. Un disparo puede recoger varios clientes de una pasada.
+  1. El plan de Railway no admite un sexto servicio en este proyecto.
+  2. Los extractores NO tienen dependencias: solo librería estándar. Así que meterlos en
+     esta imagen no cuesta ni un paquete, y con eso desaparece TODA la maquinaria de
+     coordinación: el token de API de Railway, la mutación GraphQL, la cola compartida
+     entre dos procesos y una trampa que ya nos habría mordido — un despliegue SKIPPED
+     (el que Railway crea cuando un push no toca los ficheros vigilados de un servicio)
+     pasa a ser el "último despliegue" y bloquea el `redeploy` siguiente con
+     "Cannot redeploy without a snapshot". El botón habría dejado de funcionar sin que
+     nadie tocara nada.
 
-Sobre el límite de tiempo. No se cuenta cuántas veces se ha pulsado el botón: se mira
-la EDAD DEL SNAPSHOT, que es el dato que de verdad importa. Si los datos son de hace
-cinco minutos, volver a extraer no cambiaría nada — y da igual si esa frescura la puso
-el cron de la madrugada o un botón. Además así no hay estado que persistir para que el
-límite funcione: sale de lo que ya está guardado.
+El precio, dicho claro: la extracción corre en el contenedor que además sirve las
+páginas. Es trabajo de ESPERA (peticiones a GoHighLevel, Meta y Google), así que gasta
+poca CPU, y va en un hilo aparte para no bloquear el servidor. Pero si este servicio se
+despliega a mitad de una extracción, esa extracción se pierde: de eso se encarga el
+plazo de caducidad de más abajo, y el usuario vuelve a pulsar.
+
+UN SOLO OBRERO, EN COLA
+─────────────────────
+Las extracciones se hacen de una en una, no en paralelo. No es por prudencia: los
+extractores se configuran por variable de entorno (SOLO_CLIENTE), que es global al
+proceso, así que dos a la vez se pisarían y un cliente se quedaría sin refrescar
+creyendo que sí. Con la cola, el segundo espera su turno y se le dice cuántos tiene
+delante.
+
+EL LÍMITE DE TIEMPO
+─────────────────
+No se cuenta cuántas veces se ha pulsado el botón: se mira la EDAD DEL SNAPSHOT, que es
+el dato que de verdad importa. Si los datos son de hace cinco minutos, volver a extraer
+no cambiaría nada — y da igual si esa frescura la puso el cron de la madrugada o un
+botón. Además así no hay estado que persistir para que el límite funcione: sale de lo
+que ya está guardado.
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
+import pathlib
+import sys
 import threading
-import urllib.error
-import urllib.request
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 log = logging.getLogger("reportes.refrescar")
 
@@ -46,61 +65,77 @@ ESPERA_MIN = int(os.environ.get("REFRESCO_ESPERA_MIN", "30"))
 # que no se quede mirando la pantalla. La extracción de GoHighLevel de un cliente con
 # dos mil conversaciones tarda entre quince y veinticinco minutos de verdad.
 DURACION_MIN = int(os.environ.get("REFRESCO_DURACION_MIN", "20"))
-# Si un contenedor se muere a mitad, su cliente se quedaría "en curso" para siempre y
+# Si el contenedor se reinicia a mitad, su cliente se quedaría "en curso" para siempre y
 # el botón no volvería a funcionar nunca. Pasado este plazo se da por perdido.
 CADUCA_MIN = int(os.environ.get("REFRESCO_CADUCA_MIN", "45"))
 
-API_RAILWAY = os.environ.get("RAILWAY_API_URL",
-                             "https://backboard.railway.com/graphql/v2")
-
-# slug -> {"pedido": datetime, "por": str, "curso": bool, "detalle": str|None}
+# slug -> {"pedido": datetime, "por": str, "curso": bool}
 _cola: dict[str, dict] = {}
 _cerrojo = threading.Lock()
+_obrero: Optional[threading.Thread] = None
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-#  Disparar el servicio de extracción a demanda
+#  El trabajo
 # ═════════════════════════════════════════════════════════════════════════════
-MUTACION = ("mutation($s:String!,$e:String!)"
-            "{serviceInstanceRedeploy(serviceId:$s,environmentId:$e)}")
-
-
-def _disparar() -> None:
+def _refrescar_cliente(slug: str) -> tuple[bool, str]:
     """
-    Le pide a Railway que despliegue `extractor-ahora`, lo que lo arranca.
+    Corre los tres extractores para un cliente y reconstruye su snapshot.
 
-    Lanza RuntimeError con un mensaje que se pueda leer si falta configuración: es
-    preferible que el botón diga "no está configurado" que quedarse callado y dejar al
-    usuario esperando un refresco que nunca se pidió.
+    La función vive en `extractores/refrescar.py`, con los extractores, y no aquí: es
+    ahí donde tiene sentido leerla y ahí donde está el resto de la extracción. Se
+    importa tarde porque `extractores/` no es un paquete instalado, solo una carpeta
+    hermana dentro de la imagen.
     """
-    tok = (os.environ.get("RAILWAY_API_TOKEN") or "").strip()
-    srv = (os.environ.get("REFRESCO_SERVICE_ID") or "").strip()
-    env = (os.environ.get("RAILWAY_ENVIRONMENT_ID") or "").strip()
-    faltan = [n for n, v in (("RAILWAY_API_TOKEN", tok),
-                             ("REFRESCO_SERVICE_ID", srv),
-                             ("RAILWAY_ENVIRONMENT_ID", env)) if not v]
-    if faltan:
-        raise RuntimeError("El refresco a demanda no está configurado: falta "
-                           + ", ".join(faltan))
+    raiz = pathlib.Path(__file__).resolve().parents[2] / "extractores"
+    if str(raiz) not in sys.path:
+        sys.path.insert(0, str(raiz))
+    from refrescar import refrescar_cliente     # noqa: E402
+    return refrescar_cliente(slug)
 
-    cuerpo = json.dumps({"query": MUTACION,
-                         "variables": {"s": srv, "e": env}}).encode("utf-8")
-    pet = urllib.request.Request(API_RAILWAY, data=cuerpo, method="POST", headers={
-        "Authorization": f"Bearer {tok}",
-        "Content-Type": "application/json",
-    })
-    try:
-        with urllib.request.urlopen(pet, timeout=30) as r:
-            datos = json.loads(r.read() or b"{}")
-    except urllib.error.HTTPError as ex:
-        raise RuntimeError(f"Railway devolvió {ex.code} al arrancar el extractor.")
-    except Exception as ex:
-        raise RuntimeError(f"No se pudo hablar con la API de Railway: {ex}")
-    # GraphQL contesta 200 aunque haya fallado: el error va en el cuerpo. Sin mirarlo,
-    # un token caducado se vería como un refresco lanzado con éxito.
-    if datos.get("errors"):
-        msg = (datos["errors"][0] or {}).get("message") or "error sin mensaje"
-        raise RuntimeError(f"Railway rechazó el arranque: {msg}")
+
+def _siguiente() -> Optional[str]:
+    with _cerrojo:
+        for s, p in _cola.items():
+            if not p["curso"]:
+                p["curso"] = True
+                return s
+    return None
+
+
+def _trabajar() -> None:
+    """Vacía la cola, un cliente detrás de otro, y se muere cuando no queda nada."""
+    global _obrero
+    while True:
+        slug = _siguiente()
+        if slug is None:
+            with _cerrojo:
+                # Se comprueba otra vez DENTRO del cerrojo antes de morir: si no, una
+                # petición que llegase en este hueco vería un obrero vivo que ya se está
+                # apagando y su cliente se quedaría en la cola para siempre.
+                if not any(not p["curso"] for p in _cola.values()):
+                    _obrero = None
+                    return
+            continue
+        t0 = time.monotonic()
+        try:
+            ok, detalle = _refrescar_cliente(slug)
+        except Exception as ex:                  # noqa: BLE001
+            ok, detalle = False, f"error inesperado: {ex}"
+        with _cerrojo:
+            _cola.pop(slug, None)
+        (log.info if ok else log.error)(
+            "refresco terminado · %s · %s · %s · %.0fs",
+            slug, "OK" if ok else "FALLÓ", detalle, time.monotonic() - t0)
+
+
+def _arrancar_obrero() -> None:
+    global _obrero
+    with _cerrojo:
+        if _obrero and _obrero.is_alive():
+            return
+        _obrero = threading.Thread(target=_trabajar, name="refresco", daemon=True)
+        _obrero.start()
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -118,18 +153,32 @@ def _momento(v) -> Optional[datetime]:
     return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
 
 
-def _en_curso(slug: str) -> Optional[dict]:
-    """La petición viva de ese cliente, o None. Descarta las caducadas."""
+def _limpia_caducados() -> None:
+    """Un reinicio del contenedor deja peticiones huérfanas: se descartan por edad."""
+    ahora = datetime.now(timezone.utc)
+    with _cerrojo:
+        viejos = [s for s, p in _cola.items()
+                  if ahora - p["pedido"] > timedelta(minutes=CADUCA_MIN)]
+        for s in viejos:
+            _cola.pop(s, None)
+    for s in viejos:
+        log.warning("refresco de %s dado por perdido: %d min sin terminar", s, CADUCA_MIN)
+
+
+def _pendiente(slug: str) -> Optional[dict]:
+    _limpia_caducados()
     with _cerrojo:
         p = _cola.get(slug)
         if not p:
             return None
-        if datetime.now(timezone.utc) - p["pedido"] > timedelta(minutes=CADUCA_MIN):
-            _cola.pop(slug, None)
-            log.warning("refresco de %s dado por perdido: %d min sin terminar",
-                        slug, CADUCA_MIN)
-            return None
-        return dict(p)
+        # Cuántos tiene delante: los que entraron antes y todavía no han terminado. Los
+        # dict de Python conservan el orden de inserción, que aquí es el orden de llegada.
+        delante = 0
+        for s in _cola:
+            if s == slug:
+                break
+            delante += 1
+        return {**p, "delante": delante}
 
 
 def montar(app, *, almacen, exige_admin, resolver_enlace):
@@ -146,16 +195,19 @@ def montar(app, *, almacen, exige_admin, resolver_enlace):
 
     def _estado(slug: str) -> dict:
         g, mins = _edad_min(slug)
-        vivo = _en_curso(slug)
+        p = _pendiente(slug)
         out = {"cliente": slug, "generado": g, "minutos": mins,
-               "enCurso": bool(vivo), "duracionMin": DURACION_MIN,
+               "enCurso": bool(p), "duracionMin": DURACION_MIN,
                "esperaMin": ESPERA_MIN}
-        if vivo:
-            out["pedido"] = vivo["pedido"].strftime("%Y-%m-%dT%H:%MZ")
+        if p:
+            out["pedido"] = p["pedido"].strftime("%Y-%m-%dT%H:%MZ")
             out["puede"] = False
-            out["motivo"] = ("Ya hay una extracción en marcha para este cliente. "
-                             f"Suele tardar unos {DURACION_MIN} minutos; cuando acabe, "
-                             "este reporte se actualiza solo.")
+            out["motivo"] = (
+                "Ya hay una extracción en marcha para este cliente. "
+                if p["curso"] else
+                f"Este cliente está en la cola, con {p['delante']} por delante. ")
+            out["motivo"] += (f"Suele tardar unos {DURACION_MIN} minutos; cuando acabe, "
+                              "este reporte se actualiza solo.")
         elif mins is not None and mins < ESPERA_MIN:
             out["puede"] = False
             out["motivo"] = (f"Los datos son de hace {mins} minuto"
@@ -170,14 +222,9 @@ def montar(app, *, almacen, exige_admin, resolver_enlace):
     def _encolar(slug: str, por: str) -> dict:
         with _cerrojo:
             _cola[slug] = {"pedido": datetime.now(timezone.utc), "por": por,
-                           "curso": False, "detalle": None}
-        try:
-            _disparar()
-        except RuntimeError as ex:
-            with _cerrojo:
-                _cola.pop(slug, None)
-            raise HTTPException(503, str(ex))
-        log.info("refresco pedido · %s · por %s", slug, por)
+                           "curso": False}
+        _arrancar_obrero()
+        log.info("refresco pedido · %s · por %s · %d en cola", slug, por, len(_cola))
         return _estado(slug)
 
     # ── desde el dashboard, con el token del enlace ──────────────────
@@ -215,42 +262,24 @@ def montar(app, *, almacen, exige_admin, resolver_enlace):
         """
         Sin límite por antigüedad: si el operador quiere volver a extraer, sabe por qué.
 
-        Lo único que se sigue respetando es no lanzar dos extracciones del mismo cliente
-        a la vez, que no aceleraría nada y duplicaría el gasto de cuota.
+        Lo único que se sigue respetando es no encolar dos veces el mismo cliente, que
+        no aceleraría nada y duplicaría el gasto de cuota.
         """
         if not almacen.cliente(slug):
             raise HTTPException(404, f"El cliente '{slug}' no existe.")
-        if _en_curso(slug):
+        if _pendiente(slug):
             raise HTTPException(409, _estado(slug)["motivo"])
         return _encolar(slug, "admin")
 
-    # ── lo que usa `extractor-ahora` ─────────────────────────────
-    @router.get("/admin/cola-refresco", dependencies=[Depends(exige_admin)])
-    def cola():
-        """
-        Qué clientes hay que refrescar. Las marca en curso al entregarlas.
-
-        Se marcan aquí y no cuando termina cada una para que un segundo contenedor que
-        arrancase a la vez no repitiera el mismo trabajo.
-        """
+    @router.get("/admin/refrescos", dependencies=[Depends(exige_admin)])
+    def refrescos():
+        """La cola entera, para el panel. Solo lectura."""
+        _limpia_caducados()
         with _cerrojo:
-            pendientes = [s for s, p in _cola.items() if not p["curso"]]
-            for s in pendientes:
-                _cola[s]["curso"] = True
-        if pendientes:
-            log.info("cola de refresco entregada · %s", ", ".join(pendientes))
-        return {"pendientes": pendientes}
-
-    @router.post("/admin/cola-refresco/{slug}", dependencies=[Depends(exige_admin)])
-    def cerrar(slug: str, cuerpo: dict = Body(default={})):
-        """El extractor dice cómo acabó. Se saca de la cola en cualquier caso."""
-        with _cerrojo:
-            _cola.pop(slug, None)
-        ok = bool(cuerpo.get("ok"))
-        detalle = str(cuerpo.get("detalle") or "")[:500]
-        (log.info if ok else log.error)("refresco terminado · %s · %s · %s",
-                                        slug, "OK" if ok else "FALLÓ", detalle)
-        return {"ok": True, "cliente": slug}
+            return {"cola": [{"cliente": s,
+                              "pedido": p["pedido"].strftime("%Y-%m-%dT%H:%MZ"),
+                              "por": p["por"], "curso": p["curso"]}
+                             for s, p in _cola.items()]}
 
     app.include_router(router)
     return router

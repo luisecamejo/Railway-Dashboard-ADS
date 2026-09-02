@@ -1,14 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-extractor-ahora · una pasada completa para los clientes que la pidieron.
+Una pasada completa de extracción para UN cliente, a demanda.
 
-Es el mismo trabajo que hacen los tres crones, pero en un solo contenedor y solo para
-los clientes que están en la cola de `reportes`.
-
-Por qué existe como servicio aparte: en Railway, un `redeploy` de un servicio CON cron
-no lo ejecuta — solo espera al siguiente tick. Este servicio NO tiene cron, así que un
-deploy suyo sí arranca el contenedor, y eso es lo único que el botón de "refrescar
-ahora" del dashboard necesita poder provocar.
+Es el mismo trabajo que hacen los tres crones de la madrugada, pero para un solo
+cliente y cuando alguien lo pide con el botón "Actualizar ahora" del dashboard. Lo
+llama un hilo del servicio `reportes` (ver el comentario largo de
+web/app/rutas_refrescar.py, que explica por qué corre ahí dentro y no en un servicio
+aparte).
 
 Y por qué no reimplementa nada: se limita a llamar al `main()` de cada extractor con
 SOLO_CLIENTE puesto. Esos main() ya saben pedir la configuración al servicio, filtrar
@@ -17,7 +15,12 @@ donde arreglar el mismo fallo, que es justo lo que se evitó en el resto de la F
 
 El orden importa: Meta y Google primero, GoHighLevel al final. El CRM es la fuente más
 lenta y la que dispara la construcción del snapshot, así que cuando llega ya están los
-otros dos trozos del día. Es el mismo orden que los crones (09:00, 09:15, 09:30).
+otros dos trozos. Es el mismo orden que los crones (09:00, 09:15, 09:30 UTC).
+
+OJO al llamarlo: configura los extractores por VARIABLE DE ENTORNO, que es global al
+proceso. Dos llamadas a la vez se pisarían SOLO_CLIENTE y un cliente se quedaría sin
+refrescar creyendo que sí. Quien lo use tiene que serializarlo — `rutas_refrescar` lo
+hace con un único hilo obrero y una cola.
 """
 from __future__ import annotations
 
@@ -29,10 +32,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from comun.reportes import Reportes          # noqa: E402
-from comun.http import ErrorHTTP             # noqa: E402
-
-log = logging.getLogger("extractor.ahora")
+log = logging.getLogger("extractor.refresco")
 
 # Meta y Google no construyen; GoHighLevel sí, y por eso va último.
 PASOS = (("meta", "meta.extraer", "0"),
@@ -76,48 +76,11 @@ def refrescar_cliente(slug: str) -> tuple[bool, str]:
     return ("ghl" not in fallos), detalle
 
 
-def main() -> int:
-    logging.basicConfig(level=logging.INFO,
-                        format="%(asctime)s %(levelname)s %(message)s")
-    rep = Reportes(os.environ.get("REPORTES_URL", ""),
-                   os.environ.get("REPORTES_ADMIN_TOKEN", ""))
-
-    try:
-        cola = rep.cola_refresco()
-    except ErrorHTTP as ex:
-        log.error("no se pudo leer la cola de refresco: %s", ex)
-        return 1
-
-    if not cola:
-        # No es un error y no debe salir en rojo: pasa siempre que el servicio se
-        # despliega por un cambio de código en vez de por el botón. Y también si
-        # `reportes` se reinició justo después de encolar, porque la cola vive en su
-        # memoria; en ese caso el usuario vuelve a pulsar y ya está.
-        log.info("La cola de refresco está vacía. Nada que hacer.")
-        return 0
-
-    log.info("refrescando %d cliente(s): %s", len(cola), ", ".join(cola))
-    mal = []
-    for slug in cola:
-        t0 = time.monotonic()
-        ok, detalle = refrescar_cliente(slug)
-        detalle = f"{detalle} · total {time.monotonic() - t0:.0f}s"
-        if not ok:
-            mal.append(slug)
-        log.info("%s · %s · %s", slug, "listo" if ok else "CON FALLOS", detalle)
-        try:
-            # Se avisa SIEMPRE, incluso si falló: si no, el cliente se queda "en curso"
-            # en el panel hasta que caduca y el botón no vuelve a funcionar hasta
-            # entonces.
-            rep.cerrar_refresco(slug, ok=ok, detalle=detalle)
-        except ErrorHTTP as ex:
-            log.error("%s · no se pudo cerrar el refresco: %s", slug, ex)
-
-    if mal:
-        log.error("con fallos: %s", ", ".join(mal))
-        return 1
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+# Antes esto tenía un main() que leía una cola en `reportes` y refrescaba a los clientes
+# que estuvieran en ella: era el punto de entrada de un cuarto servicio de Railway sin
+# cron. Se quitó cuando esa pasada se movió DENTRO de `reportes` (ver el comentario largo
+# de web/app/rutas_refrescar.py). Lo que queda —refrescar_cliente()— es lo único que hacía
+# falta, y ahora lo llama un hilo del propio servicio.
+#
+# El módulo se deja aquí, con los extractores, porque es donde tiene sentido leerlo: usa
+# sus main() y comparte su forma de trabajar.

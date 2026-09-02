@@ -1,0 +1,7 @@
+# Dependencias del servicio `reportes`, en la raíz porque su directorio raíz en Railway
+# es la raíz del repositorio: la imagen necesita `web/` Y `extractores/`, porque el botón
+# de "actualizar ahora" corre los extractores dentro de este mismo proceso.
+#
+# Los extractores NO añaden nada: van a propósito solo con librería estándar. Esa es
+# justamente la razón de que quepan aquí sin coste (ver extractores/requirements.txt).
+-r web/requirements.txt

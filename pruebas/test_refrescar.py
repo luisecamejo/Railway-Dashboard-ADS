@@ -3,25 +3,29 @@ Comprobaciones del refresco a demanda.
 
     python pruebas/test_refrescar.py
 
-Se monta el router sobre un FastAPI de mentira con un almacén y un resolutor de enlaces
-falsos, y se sustituye el disparo a Railway por un contador. Así se prueban las reglas
-—que son lo delicado— sin tocar Railway ni las APIs de nadie.
+Se monta el router sobre un FastAPI de mentira, con un almacén y un resolutor de enlaces
+falsos, y se sustituye la extracción de verdad por una función que solo tarda un rato.
+Así se prueban las reglas —que son lo delicado— sin tocar ninguna API.
 
 Lo que se protege:
   · que un enlace solo pueda refrescar SU cliente
-  · que no se lancen dos extracciones del mismo cliente a la vez
   · que un snapshot reciente bloquee el botón, y que el mensaje diga cuánto falta
-  · que el admin pueda saltarse la espera pero NO la extracción en curso
-  · que un contenedor muerto no deje al cliente bloqueado para siempre
-  · que la cola se entregue UNA vez (dos contenedores no repiten el trabajo)
+  · que el admin pueda saltarse la espera pero NO una petición ya en cola
+  · que las extracciones se hagan DE UNA EN UNA: los extractores se configuran por
+    variable de entorno, que es global al proceso, así que dos a la vez se pisarían
+  · que el segundo de la cola sepa cuántos tiene delante
+  · que un fallo de la extracción no deje al cliente bloqueado
+  · que el hilo obrero no se muera dejando a alguien en la cola para siempre
 """
 import datetime as dt
 import pathlib
 import sys
+import threading
+import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "web"))
 
-from fastapi import FastAPI, HTTPException, Request        # noqa: E402
+from fastapi import FastAPI, HTTPException                 # noqa: E402
 from fastapi.testclient import TestClient                  # noqa: E402
 
 from app import rutas_refrescar as R                       # noqa: E402
@@ -43,7 +47,7 @@ def iso(minutos_atras):
 
 class AlmacenFalso:
     def __init__(self):
-        self.gen = {"cliff": iso(600), "majo": iso(5)}
+        self.gen = {"cliff": iso(600), "majo": iso(5), "garage": iso(600)}
 
     def snapshot(self, slug):
         return {"generado": self.gen[slug]} if slug in self.gen else None
@@ -52,8 +56,8 @@ class AlmacenFalso:
         return {"slug": slug} if slug in self.gen else None
 
 
-ENLACES = {"tok-cliff": {"cliente": "cliff", "modo": "cliente"},
-           "tok-majo": {"cliente": "majo", "modo": "cliente"}}
+ENLACES = {"tok-cliff": {"cliente": "cliff"}, "tok-majo": {"cliente": "majo"},
+           "tok-garage": {"cliente": "garage"}}
 
 
 def resolver(token, peticion):
@@ -63,8 +67,32 @@ def resolver(token, peticion):
     return e
 
 
-disparos = []
-R._disparar = lambda: disparos.append(1)          # nada de tocar Railway
+# ── la extracción de mentira ───────────────────────────────────
+# Registra CUÁNDO entra y sale cada cliente, que es lo que permite comprobar que no se
+# solapan. `suelta` la mantiene dentro hasta que la prueba quiera.
+entradas, salidas = [], []
+suelta = threading.Event()
+falla_para = set()
+simultaneos, max_simultaneos = 0, 0
+guardia = threading.Lock()
+
+
+def extraccion_falsa(slug):
+    global simultaneos, max_simultaneos
+    with guardia:
+        simultaneos += 1
+        max_simultaneos = max(max_simultaneos, simultaneos)
+    entradas.append(slug)
+    suelta.wait(timeout=10)
+    with guardia:
+        simultaneos -= 1
+    salidas.append(slug)
+    if slug in falla_para:
+        raise RuntimeError("la API dijo no")
+    return True, f"{slug} refrescado"
+
+
+R._refrescar_cliente = extraccion_falsa
 R.ESPERA_MIN = 30
 R.CADUCA_MIN = 45
 R.DURACION_MIN = 20
@@ -74,76 +102,83 @@ app = FastAPI()
 R.montar(app, almacen=alm, exige_admin=lambda: None, resolver_enlace=resolver)
 c = TestClient(app)
 
+
+def espera_hasta(cond, seg=5):
+    fin = time.monotonic() + seg
+    while time.monotonic() < fin:
+        if cond():
+            return True
+        time.sleep(0.02)
+    return False
+
+
 print("\n== refresco a demanda ==")
 
-# 1 · un snapshot viejo se puede refrescar
+# 1 · las reglas de si se puede
 r = c.get("/r/tok-cliff/refrescar").json()
 ok("un snapshot de hace 10 h se puede refrescar", r["puede"] is True and not r["enCurso"])
-
-# 2 · un snapshot recén hecho, no; y dice cuánto falta
 r = c.get("/r/tok-majo/refrescar").json()
 ok("un snapshot de hace 5 min NO se puede refrescar", r["puede"] is False)
 ok("y el motivo dice cuántos minutos faltan", "25 minutos" in r["motivo"])
-
-# 3 · el POST respeta la regla
-r = c.post("/r/tok-majo/refrescar")
-ok("pedirlo igualmente devuelve 429, no 500", r.status_code == 429)
-ok("y no dispara nada", len(disparos) == 0)
-
-# 4 · el caso bueno encola y dispara
-r = c.post("/r/tok-cliff/refrescar")
-ok("el cliente con datos viejos sí encola", r.status_code == 200)
-ok("y dispara el extractor exactamente una vez", len(disparos) == 1)
-ok("el estado pasa a 'en curso'", r.json()["enCurso"] is True)
-
-# 5 · no se lanzan dos a la vez
-r2 = c.post("/r/tok-cliff/refrescar")
-ok("un segundo intento del mismo cliente da 429", r2.status_code == 429)
-ok("y no vuelve a disparar", len(disparos) == 1)
-
-# 6 · un enlace solo ve su cliente
-ok("el enlace de majo no puede refrescar a cliff",
+ok("pedirlo igualmente devuelve 429, no 500",
+   c.post("/r/tok-majo/refrescar").status_code == 429)
+ok("un enlace solo ve su cliente",
    c.get("/r/tok-majo/refrescar").json()["cliente"] == "majo")
 ok("un token inventado da 404", c.get("/r/no-existe/refrescar").status_code == 404)
 
-# 7 · la cola se entrega una sola vez
-q1 = c.get("/admin/cola-refresco").json()["pendientes"]
-q2 = c.get("/admin/cola-refresco").json()["pendientes"]
-ok("la cola entrega el cliente pedido", q1 == ["cliff"])
-ok("y no lo entrega dos veces: un segundo contenedor no repite el trabajo", q2 == [])
+# 2 · encolar dos y comprobar que NO se solapan
+suelta.clear()
+r1 = c.post("/r/tok-cliff/refrescar")
+ok("el primer cliente encola", r1.status_code == 200 and r1.json()["enCurso"] is True)
+ok("el obrero arranca y entra en el primero", espera_hasta(lambda: entradas == ["cliff"]))
 
-# 8 · el admin no puede saltarse una extracción en curso
-ok("el admin tampoco lanza dos a la vez",
+r2 = c.post("/r/tok-garage/refrescar")
+ok("un segundo cliente distinto también encola", r2.status_code == 200)
+ok("pero NO empieza: las extracciones van de una en una", entradas == ["cliff"])
+est = c.get("/r/tok-garage/refrescar").json()
+ok("y se le dice que está en la cola, con uno delante",
+   "en la cola" in est["motivo"] and "1 por delante" in est["motivo"])
+
+ok("repetir el mismo cliente da 429", c.post("/r/tok-cliff/refrescar").status_code == 429)
+ok("y el admin tampoco lo encola dos veces",
    c.post("/admin/refrescar/cliff").status_code == 409)
 
-# 9 · al cerrarla, el cliente vuelve a estar libre
-c.post("/admin/cola-refresco/cliff", json={"ok": True, "detalle": "prueba"})
-r = c.get("/r/tok-cliff/refrescar").json()
-ok("cerrado el refresco, ya no está en curso", r["enCurso"] is False)
+vista = c.get("/admin/refrescos").json()["cola"]
+ok("el panel ve la cola entera, en orden de llegada",
+   [x["cliente"] for x in vista] == ["cliff", "garage"])
+ok("y sabe cuál se está ejecutando",
+   vista[0]["curso"] is True and vista[1]["curso"] is False)
 
-# 10 · el admin SÍ se salta la espera por antigüedad
-ok("el admin puede refrescar un snapshot recén hecho",
+# 3 · se suelta: los dos terminan, uno detrás de otro
+suelta.set()
+ok("los dos acaban", espera_hasta(lambda: sorted(salidas) == ["cliff", "garage"], 8))
+ok("nunca hubo dos a la vez", max_simultaneos == 1)
+ok("la cola queda vacía", espera_hasta(lambda: c.get("/admin/refrescos").json()["cola"] == []))
+ok("y el obrero se muere cuando no queda trabajo",
+   espera_hasta(lambda: R._obrero is None or not R._obrero.is_alive()))
+
+# 4 · el admin SÍ se salta la espera por antigüedad
+ok("el admin puede refrescar un snapshot recién hecho",
    c.post("/admin/refrescar/majo").status_code == 200)
-c.post("/admin/cola-refresco/majo", json={"ok": True})
 ok("un cliente que no existe da 404", c.post("/admin/refrescar/nadie").status_code == 404)
+ok("majo termina", espera_hasta(lambda: "majo" in salidas, 8))
 
-# 11 · un contenedor muerto no bloquea para siempre
-c.post("/r/tok-cliff/refrescar")
-R._cola["cliff"]["pedido"] -= dt.timedelta(minutes=R.CADUCA_MIN + 1)
-r = c.get("/r/tok-cliff/refrescar").json()
-ok("una extracción caducada deja de contar como en curso", r["enCurso"] is False)
+# 5 · una extracción que falla no deja al cliente bloqueado
+falla_para.add("cliff")
+c.post("/admin/refrescar/cliff")
+ok("tras un fallo, el cliente sale de la cola",
+   espera_hasta(lambda: not c.get("/admin/refrescos").json()["cola"], 8))
+falla_para.clear()
+
+# 6 · una petición huérfana (contenedor reiniciado a mitad) se descarta por edad
+R._cola["garage"] = {"pedido": dt.datetime.now(dt.timezone.utc)
+                     - dt.timedelta(minutes=R.CADUCA_MIN + 1),
+                     "por": "enlace", "curso": True}
+r = c.get("/r/tok-garage/refrescar").json()
+ok("una petición caducada deja de contar como en curso", r["enCurso"] is False)
 ok("y el cliente vuelve a poder refrescar", r["puede"] is True)
 
-# 12 · sin configuración de Railway, el botón lo dice en vez de callarse
-def sin_config():
-    raise RuntimeError("El refresco a demanda no está configurado: falta RAILWAY_API_TOKEN")
-R._disparar = sin_config
-r = c.post("/r/tok-cliff/refrescar")
-ok("sin configurar, responde 503 y lo explica",
-   r.status_code == 503 and "no está configurado" in r.json()["detail"])
-ok("y no deja al cliente encolado a medias", "cliff" not in R._cola)
-
-print(f"\n{21 - len(fallos)}/21 comprobaciones")
+print(f"\n{24 - len(fallos)}/24 comprobaciones")
 if fallos:
     print("FALLAN: " + "; ".join(fallos))
     sys.exit(1)
