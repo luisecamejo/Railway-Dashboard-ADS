@@ -107,12 +107,15 @@ tr:last-child td{border-bottom:0}
 
   <div class="panel">
     <h2>Dashboard (el visor)</h2>
-    <p class="sub">Sube el <code>dashboard.html</code> de una pieza. El servicio lo parte en visor + datos y a partir de ese momento <b>todos</b> los clientes ven el dashboard nuevo. No hace falta volver a desplegar ni regenerar snapshots.</p>
-    <div class="fila">
-      <div><label for="fvisor">Archivo dashboard.html</label><input type="file" id="fvisor" accept=".html,text/html"></div>
-      <button id="bvisor">Subir visor</button>
-    </div>
-    <div class="msg" id="mvisor"></div>
+    <!-- Aquí había un formulario para subir el dashboard.html a mano. Se quitó a
+         propósito: el dashboard vive en el repositorio y cada despliegue lo vuelve a
+         sembrar, así que una subida manual solo aguantaba hasta el despliegue siguiente
+         y mientras tanto hacía creer que el código del repositorio no era la verdad.
+         Este bloque ahora solo INFORMA de qué versión se está sirviendo. -->
+    <p class="sub">El dashboard <b>ya no se sube desde aquí</b>: vive en el repositorio, en
+    <code>web/visor/partes/</code>, y cada despliegue de Railway lo vuelve a sembrar. Un cambio en
+    el código llega solo a <b>todos</b> los clientes, sin regenerar snapshots y sin tocar este panel.</p>
+    <div class="msg ok" id="mvisor" style="display:block"></div>
   </div>
 
   <div class="panel">
@@ -122,7 +125,7 @@ tr:last-child td{border-bottom:0}
       <div><label for="cnom">Nombre</label><input type="text" id="cnom" placeholder="Clínica Ejemplo"></div>
       <div><label for="cslug">Identificador</label><input type="text" id="cslug" placeholder="clinica-ejemplo"></div>
       <div><label for="cloc">Location de GHL</label><input type="text" id="cloc" placeholder="id de la sub-cuenta"></div>
-      <div><label for="ctz">Zona horaria</label><input type="text" id="ctz" placeholder="America/New_York"></div>
+      <div><label for="ctz">Zona horaria</label><select id="ctz"></select></div>
       <button id="bcli">Guardar</button>
     </div>
     <div class="msg" id="mcli"></div>
@@ -173,11 +176,60 @@ tr:last-child td{border-bottom:0}
     return esc(JSON.stringify(det));
   }
   function esc(s){return String(s).replace(/[<>&]/g,function(c){return{'<':'&lt;','>':'&gt;','&':'&amp;'}[c]})}
+
+  // ── zonas horarias ────────────────────────────────────────────
+  // Antes esto era una casilla de texto libre y era una trampa. Un texto que no sea un
+  // identificador IANA exacto — "EST", "Colombia", "GMT-5", "Denver" — no lo entiende ni
+  // el servidor ni el navegador, y el resultado NO es un error visible: son fechas
+  // corridas unas horas, o directamente la extracción saltándose al cliente. Eso es peor
+  // que fallar, porque el reporte sale y no cuadra con el CRM sin decir por qué.
+  //
+  // La lista sale del PROPIO navegador (Intl.supportedValuesOf), así que son las zonas que
+  // de verdad existen y se actualiza sola. No una tabla escrita a mano que envejece.
+  var ZONAS=(function(){
+    var l=[];
+    try{ l=Intl.supportedValuesOf('timeZone') }catch(_){}
+    return l.length?l:['America/New_York','America/Chicago','America/Denver','America/Phoenix',
+      'America/Los_Angeles','America/Anchorage','Pacific/Honolulu','America/Bogota',
+      'America/Mexico_City','America/Caracas','America/Santiago','America/Argentina/Buenos_Aires',
+      'Europe/Madrid','Europe/London','UTC'];
+  })();
+  // Las que usa la agencia, arriba: es lo que se elige casi siempre, y evita bajar por
+  // cuatrocientas entradas para volver a poner America/Denver.
+  var ZONAS_FREC=['America/New_York','America/Chicago','America/Denver','America/Phoenix',
+    'America/Los_Angeles','America/Bogota','America/Mexico_City','Europe/Madrid'];
+  function husoDe(tz){
+    // El desplazamiento de HOY, calculado por el navegador, así que respeta el horario de
+    // verano. Va escrito al lado del nombre porque "America/Phoenix" y "America/Denver"
+    // suenan igual de plausibles y en verano difieren en una hora.
+    try{
+      var p=new Intl.DateTimeFormat('es',{timeZone:tz,timeZoneName:'shortOffset'})
+              .formatToParts(new Date()).filter(function(x){return x.type==='timeZoneName'})[0];
+      return p?p.value.replace('GMT','UTC').replace('-','−'):'';
+    }catch(_){ return '' }
+  }
+  function opcionesZona(sel){
+    function op(z){
+      var h=husoDe(z);
+      return '<option value="'+esc(z)+'"'+(z===sel?' selected':'')+'>'+esc(z)+
+             (h?' · '+esc(h):'')+'</option>';
+    }
+    var out='<option value=""'+(sel?'':' selected')+'>— elige la zona horaria —</option>';
+    out+='<optgroup label="Habituales">'+ZONAS_FREC.map(op).join('')+'</optgroup>';
+    out+='<optgroup label="Todas">'+ZONAS.map(op).join('')+'</optgroup>';
+    // Una zona guardada antes de que esto fuese un desplegable puede no estar en la lista
+    // (un texto inventado). No se descarta en silencio: se muestra marcada como no válida,
+    // que es la única forma de que alguien la corrija.
+    if(sel&&ZONAS.indexOf(sel)<0)
+      out+='<optgroup label="Guardada, pero no es una zona válida">'+
+           '<option value="'+esc(sel)+'" selected>'+esc(sel)+' · no reconocida</option></optgroup>';
+    return out;
+  }
   function fecha(s){ if(!s||s==='None')return '—';
     var d=new Date(s); if(isNaN(d))return esc(s);
     return d.toLocaleString('es-ES',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}) }
 
-  // ── arranque ────────────────────────────────────────────────────────
+  // ── arranque ─────────────────────────────────────────────────
   var guardado=sessionStorage.getItem('tok_reportes');
   if(guardado){ TOK=guardado; entrar() } else { $('login').style.display='block'; $('tok').focus() }
 
@@ -192,7 +244,11 @@ tr:last-child td{border-bottom:0}
   };
   $('tok').onkeydown=function(e){ if(e.key==='Enter') $('entrar').click() };
 
-  function entrar(){ $('app').style.display='block'; cargar() }
+  function entrar(){
+    $('app').style.display='block';
+    $('ctz').innerHTML=opcionesZona('');
+    cargar();
+  }
 
   function cargar(){
     return api('/admin/estado').then(function(d){
@@ -201,29 +257,21 @@ tr:last-child td{border-bottom:0}
         ' · visor '+(v.hash?('<b>'+esc(v.hash)+'</b> ('+Math.round((v.bytes||0)/1024)+' KB, '+fecha(v.subido)+')')
                             :'<b style="color:var(--rd)">sin cargar</b>');
       pintaClientes(d.clientes||[]);
+      // El hash es la huella del dashboard que se está sirviendo. Sirve para una sola
+      // pregunta, pero es LA pregunta: "¿el cambio que acabo de subir al repositorio ya
+      // está en producción?". Si cambia, sí.
+      pinta($('mvisor'),v.hash?'ok':'err', v.hash
+        ? ('Sirviendo la versión <b>'+esc(v.hash)+'</b> · '+Math.round((v.bytes||0)/1024)+
+           ' KB · sembrada el '+fecha(v.subido)+'. Cuando cambies el dashboard en el '+
+           'repositorio, este código cambia en el despliegue siguiente.')
+        : 'No hay dashboard cargado. Revisa que <code>web/visor/partes/</code> llegó en el despliegue.');
     }).catch(function(e){
       if(e.codigo===401){ sessionStorage.removeItem('tok_reportes'); location.reload(); return }
       $('estado').innerHTML='<span style="color:var(--rd)">no se pudo leer el estado</span>';
     });
   }
 
-  // ── visor ───────────────────────────────────────────────────────────
-  $('bvisor').onclick=function(){
-    var f=$('fvisor').files[0];
-    if(!f) return pinta($('mvisor'),'err','Elige el archivo dashboard.html primero.');
-    pinta($('mvisor'),'cargando','Subiendo '+Math.round(f.size/1024)+' KB…');
-    $('bvisor').disabled=true;
-    api('/admin/visor',{method:'POST',body:f,headers:{'Content-Type':'text/html; charset=utf-8'}})
-      .then(function(d){
-        pinta($('mvisor'),'ok','Visor actualizado. Versión <b>'+esc(d.hash)+'</b> · visor '+
-          d.index_kb+' KB · app.js '+d.app_kb+' KB. Todos los clientes ya lo están usando.');
-        $('fvisor').value=''; cargar();
-      })
-      .catch(function(e){ pinta($('mvisor'),'err',problema(e)) })
-      .then(function(){ $('bvisor').disabled=false });
-  };
-
-  // ── alta de cliente ─────────────────────────────────────────────────
+  // ── alta de cliente ───────────────────────────────────────────
   $('cnom').oninput=function(){
     if($('cslug').dataset.tocado) return;
     $('cslug').value=$('cnom').value.toLowerCase().normalize('NFD')
@@ -236,7 +284,7 @@ tr:last-child td{border-bottom:0}
                 ghl_location_id:$('cloc').value.trim()||null,tz:$('ctz').value.trim()||null,
                 fuentes:['crm','meta','google']};
     if(!cuerpo.nombre||!cuerpo.slug) return pinta($('mcli'),'err','Hacen falta nombre e identificador.');
-    if(!cuerpo.tz) return pinta($('mcli'),'err','La zona horaria es obligatoria: es lo que hace que las fechas cuadren con el CRM.');
+    if(!cuerpo.tz) return pinta($('mcli'),'err','Elige la zona horaria: es lo que hace que las fechas cuadren con el CRM.');
     pinta($('mcli'),'cargando','Guardando…');
     api('/admin/clientes',{method:'POST',body:JSON.stringify(cuerpo),
                            headers:{'Content-Type':'application/json'}})
@@ -248,7 +296,7 @@ tr:last-child td{border-bottom:0}
       .catch(function(e){ pinta($('mcli'),'err',problema(e)) });
   };
 
-  // ── clientes ────────────────────────────────────────────────────────
+  // ── clientes ──────────────────────────────────────────────
   function resumen(c){
     // "sin configurar" en rojo: con la cartera entera dada de alta, esto es lo primero
     // que hay que poder ver de un vistazo — un cliente sin cuentas no extrae nada.
@@ -300,7 +348,7 @@ tr:last-child td{border-bottom:0}
       'location de GoHighLevel son obligatorios. De cuentas de anuncios puedes poner '+
       '<b>tantas como tenga</b>: varias de Meta, varias de Google, o ninguna.</p>'+
       '<div class="fila">'+
-      '<div><label>Zona horaria del negocio</label><input type="text" class="ktz" placeholder="America/Denver"></div>'+
+      '<div><label>Zona horaria del negocio</label><select class="ktz"></select></div>'+
       '<div><label>Location de GoHighLevel</label><input type="text" class="kloc" placeholder="id de la sub-cuenta"></div>'+
       '</div>'+
       '<div style="margin-top:15px"><label>Cuentas de anuncios</label>'+
@@ -343,7 +391,7 @@ tr:last-child td{border-bottom:0}
       '<th>Empotrar</th><th>Visitas</th><th>Creado</th><th></th></tr></thead><tbody></tbody></table></div>'+
       '<div class="snip" style="display:none"></div></div>';
 
-    // ── cuentas y extracción ────────────────────────────────────────
+    // ── cuentas y extracción ───────────────────────────────────
     // CFG se guarda entero y se vuelve a mandar entero al guardar: la ruta reemplaza
     // toda la configuración, así que si mandáramos solo estos campos borraríamos los
     // productos, los roles y el SOP del cliente sin avisar.
@@ -375,7 +423,8 @@ tr:last-child td{border-bottom:0}
       // Si el cliente aún no tiene configuración, se parte de lo que ya se escribió en
       // su alta. Volver a teclearlo es como acaban la ficha y la configuración diciendo
       // zonas horarias distintas, y entonces las fechas no cuadran con el CRM.
-      cuerpo.querySelector('.ktz').value=CFG.tz||det.dataset.tz||'';
+      var tzAct=CFG.tz||det.dataset.tz||'';
+      cuerpo.querySelector('.ktz').innerHTML=opcionesZona(tzAct);
       cuerpo.querySelector('.kloc').value=CFG.ghlLocationId||det.dataset.loc||'';
       cuerpo.querySelector('.cuentas').innerHTML='';
       var cs=CFG.cuentas||[];
@@ -392,9 +441,8 @@ tr:last-child td{border-bottom:0}
     cuerpo.querySelector('.kguardar').onclick=function(){
       var tz=cuerpo.querySelector('.ktz').value.trim();
       var loc=cuerpo.querySelector('.kloc').value.trim();
-      if(!tz) return pinta(mconf,'err','La zona horaria es obligatoria: es lo que hace que '+
-        'las fechas cuadren con el CRM. Ejemplos: <code>America/Denver</code>, '+
-        '<code>America/New_York</code>, <code>Europe/Madrid</code>.');
+      if(!tz) return pinta(mconf,'err','Elige la zona horaria del negocio: es lo que hace que '+
+        'las fechas cuadren con el CRM. Sin ella los extractores se saltan a este cliente.');
       var cuentas=[], vistas={}, malas=[], repetidas=[];
       Array.prototype.forEach.call(cuerpo.querySelectorAll('.cuenta'),function(f){
         var p=f.querySelector('.kplat').value, id=f.querySelector('.kid').value.trim();
