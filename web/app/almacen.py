@@ -40,9 +40,9 @@ def slug_valido(v) -> bool:
     return bool(_SLUG.match(str(v or "")))
 
 
-# ═════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 #  Postgres
-# ═════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 ESQUEMA = """
 CREATE TABLE IF NOT EXISTS clientes (
   slug              TEXT PRIMARY KEY,
@@ -135,7 +135,7 @@ class AlmacenPostgres:
         with self.pool.connection() as c:
             c.execute(ESQUEMA)
 
-    # ── clientes ─────────────────────────────────────────────────────
+    # ── clientes ──────────────────────────────────────────────
     def guardar_cliente(self, slug, nombre, ghl_location_id=None, tz=None, fuentes=None):
         with self.pool.connection() as c:
             c.execute(
@@ -160,13 +160,18 @@ class AlmacenPostgres:
 
     def clientes(self) -> list[dict]:
         with self.pool.connection() as c:
-            rs = c.execute("""SELECT c.slug,c.nombre,c.activo,
+            # tz y ghl_location_id viajan aquí para que el panel pueda rellenarlos solo al
+            # abrir un cliente nuevo: si el operador tuviera que reescribirlos, la ficha del
+            # cliente y su configuración acabarían diciendo zonas horarias distintas.
+            rs = c.execute("""SELECT c.slug,c.nombre,c.activo,c.tz,c.ghl_location_id,
+                                (c.config IS NOT NULL AND c.config::text <> '{}'),
                                 (SELECT max(generado) FROM snapshots s WHERE s.cliente=c.slug),
                                 (SELECT count(*) FROM enlaces e WHERE e.cliente=c.slug AND NOT e.revocado)
                               FROM clientes c ORDER BY c.nombre""").fetchall()
-        return [dict(zip(("slug", "nombre", "activo", "ultimo_snapshot", "enlaces"), r)) for r in rs]
+        return [dict(zip(("slug", "nombre", "activo", "tz", "ghl_location_id", "configurado",
+                          "ultimo_snapshot", "enlaces"), r)) for r in rs]
 
-    # ── configuracion de construccion y datos crudos ─────────────────────
+    # ── configuracion de construccion y datos crudos ────────────────────
     def guardar_config(self, slug, config: dict) -> dict:
         with self.pool.connection() as c:
             n = c.execute("UPDATE clientes SET config=%s WHERE slug=%s",
@@ -192,7 +197,7 @@ class AlmacenPostgres:
                            "WHERE cliente=%s", (cliente,)).fetchall()
         return {r[0]: {"datos": r[1], "recibido": r[2], "bytes": r[3]} for r in rs}
 
-    # ── snapshots ─────────────────────────────────────────────────
+    # ── snapshots ────────────────────────────────────────
     def publicar_snapshot(self, cliente, datos: dict) -> dict:
         crudo = json.dumps(datos, ensure_ascii=False, separators=(",", ":"))
         with self.pool.connection() as c:
@@ -225,7 +230,7 @@ class AlmacenPostgres:
                           (cliente, cliente, conservar))
             return r.rowcount
 
-    # ── visor ──────────────────────────────────────────────────────
+    # ── visor ────────────────────────────────────────────
     def guardar_visor(self, index_html, app_js, hash_) -> dict:
         with self.pool.connection() as c:
             c.execute("""INSERT INTO visor (id,index_html,app_js,hash,subido)
@@ -243,7 +248,7 @@ class AlmacenPostgres:
             return None
         return {"index": r[0], "app": r[1], "hash": r[2], "subido": r[3]}
 
-    # ── enlaces ───────────────────────────────────────────────────
+    # ── enlaces ──────────────────────────────────────────
     def crear_enlace(self, cliente, modo="cliente", nota=None, caduca=None,
                      dominios=None) -> dict:
         tok = nuevo_token()
@@ -297,9 +302,9 @@ class AlmacenPostgres:
             pass  # contar accesos nunca debe tumbar una visita
 
 
-# ═════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 #  Ficheros (desarrollo, pruebas y despliegue con volumen)
-# ═════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 class AlmacenFicheros:
     tipo = "ficheros"
 
@@ -343,7 +348,7 @@ class AlmacenFicheros:
     def cliente(self, slug):
         return self._leer()["clientes"].get(slug)
 
-    # ── configuracion de construccion y datos crudos ─────────────────────
+    # ── configuracion de construccion y datos crudos ────────────────────
     def guardar_config(self, slug, config: dict) -> dict:
         with self._lock:
             d = self._leer()
@@ -388,6 +393,8 @@ class AlmacenFicheros:
         for slug, c in sorted(d["clientes"].items(), key=lambda kv: kv[1]["nombre"]):
             h = d["historial"].get(slug) or []
             out.append({"slug": slug, "nombre": c["nombre"], "activo": c["activo"],
+                        "tz": c.get("tz"), "ghl_location_id": c.get("ghl_location_id"),
+                        "configurado": bool(c.get("config")),
                         "ultimo_snapshot": h[0]["generado"] if h else None,
                         "enlaces": sum(1 for e in d["enlaces"].values()
                                        if e["cliente"] == slug and not e["revocado"])})
