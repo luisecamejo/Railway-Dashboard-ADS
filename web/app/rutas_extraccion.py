@@ -28,6 +28,8 @@ from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 
+from . import enlace_general
+
 log = logging.getLogger("reportes.extraccion")
 
 router = APIRouter()
@@ -210,6 +212,10 @@ def montar(app, *, almacen, exige_admin, validar, leer_cuerpo, tope_mb: float):
 
         reg = almacen.publicar_snapshot(slug, datos)
         almacen.purgar_snapshots(slug, conservar=30)
+        # El enlace general nace aquí: en cuanto el cliente tiene reporte, tiene enlace, ya
+        # empotrable en GoHighLevel. Es idempotente, así que las publicaciones siguientes
+        # no lo tocan — ese es justamente el punto: el enlace no cambia nunca.
+        enlace_general.tras_publicar(almacen, slug)
         log.info("snapshot construido y publicado · %s · %s leads · fuentes %s",
                  slug, reg.get("n_leads"), ", ".join(sorted(procedencia)))
         for a in avisos:
@@ -222,9 +228,9 @@ def montar(app, *, almacen, exige_admin, validar, leer_cuerpo, tope_mb: float):
     return router
 
 
-# ═════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 #  Estado de las fuentes — para que el dashboard pueda avisar
-# ═════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 def _momento(v) -> Optional[datetime]:
     """
     El 'recibido' del almacén llega como datetime (Postgres) o como cadena (ficheros).
@@ -301,9 +307,9 @@ def estado_fuentes(cfg: dict, procedencia: dict) -> dict:
             "sinCuenta": sin_cuenta}
 
 
-# ═════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 #  Comprobaciones por fuente — un trozo malo se rechaza donde se recibe
-# ═════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 def comprobar_crudo(fuente: str, d: dict) -> list[str]:
     p: list[str] = []
     if fuente == "ghl":
