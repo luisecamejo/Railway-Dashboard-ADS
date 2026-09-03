@@ -224,9 +224,13 @@
           return;
         }
         historial(); crudos(); cargar();
+        // El enlace general lo crea el servidor al publicar. Se repinta para que se vea
+        // aparecer aquí mismo en vez de tener que cerrar y abrir la ficha.
+        general();
         if(est.generado && est.generado!==gen0){
           pinta(mprep,'ok','<b>Reporte preparado.</b> Datos del '+fecha(est.generado)+
-            '. Ya puedes crear el enlace.');
+            '. Su <b>enlace general</b> ya está listo, más abajo: ese es el que se pega en '+
+            'GoHighLevel y no hay que volver a crearlo.');
           if(alTerminar) alTerminar(est);
         }else{
           pinta(mprep,'err','La extracción terminó pero <b>no se publicó ningún reporte</b>. '+
