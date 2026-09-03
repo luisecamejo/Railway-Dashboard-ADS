@@ -83,6 +83,13 @@ CREATE TABLE IF NOT EXISTS enlaces (
   dominios       JSONB NOT NULL DEFAULT '[]'::jsonb
 );
 ALTER TABLE enlaces ADD COLUMN IF NOT EXISTS dominios JSONB NOT NULL DEFAULT '[]'::jsonb;
+-- El enlace general: uno por cliente, el que se empotra en GoHighLevel y no se
+-- rehace nunca. El indice unico parcial es el que garantiza que no haya DOS, que es
+-- el fallo que importa: dos enlaces generales significa que nadie sabe cual esta
+-- pegado en la web del cliente, y revocar el equivocado la apaga.
+ALTER TABLE enlaces ADD COLUMN IF NOT EXISTS general BOOLEAN NOT NULL DEFAULT FALSE;
+CREATE UNIQUE INDEX IF NOT EXISTS ux_enlaces_general ON enlaces (cliente)
+  WHERE general AND NOT revocado;
 CREATE INDEX IF NOT EXISTS ix_enlaces_cliente ON enlaces (cliente);
 
 CREATE TABLE IF NOT EXISTS visor (
@@ -136,7 +143,7 @@ class AlmacenPostgres:
         with self.pool.connection() as c:
             c.execute(ESQUEMA)
 
-    # ── clientes ────────────────────────────────────────────
+    # ── clientes ──────────────────────────────────────────
     def guardar_cliente(self, slug, nombre, ghl_location_id=None, tz=None, fuentes=None):
         with self.pool.connection() as c:
             c.execute(
@@ -236,7 +243,7 @@ class AlmacenPostgres:
                            "WHERE cliente=%s", (cliente,)).fetchall()
         return {r[0]: {"datos": r[1], "recibido": r[2], "bytes": r[3]} for r in rs}
 
-    # ── snapshots ───────────────────────────────────
+    # ── snapshots ───────────────────────────────────────
     def publicar_snapshot(self, cliente, datos: dict) -> dict:
         crudo = json.dumps(datos, ensure_ascii=False, separators=(",", ":"))
         with self.pool.connection() as c:
@@ -269,7 +276,7 @@ class AlmacenPostgres:
                           (cliente, cliente, conservar))
             return r.rowcount
 
-    # ── visor ──────────────────────────────────────
+    # ── visor ───────────────────────────────────────────
     def guardar_visor(self, index_html, app_js, hash_) -> dict:
         with self.pool.connection() as c:
             c.execute("""INSERT INTO visor (id,index_html,app_js,hash,subido)
@@ -287,16 +294,18 @@ class AlmacenPostgres:
             return None
         return {"index": r[0], "app": r[1], "hash": r[2], "subido": r[3]}
 
-    # ── enlaces ────────────────────────────────────
+    # ── enlaces ───────────────────────────────────────
     def crear_enlace(self, cliente, modo="cliente", nota=None, caduca=None,
-                     dominios=None) -> dict:
+                     dominios=None, general=False) -> dict:
         tok = nuevo_token()
         with self.pool.connection() as c:
-            c.execute("INSERT INTO enlaces (token,cliente,modo,nota,caduca,dominios) "
-                      "VALUES (%s,%s,%s,%s,%s,%s)",
-                      (tok, cliente, modo, nota, caduca, json.dumps(dominios or [])))
+            c.execute("INSERT INTO enlaces (token,cliente,modo,nota,caduca,dominios,general) "
+                      "VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                      (tok, cliente, modo, nota, caduca, json.dumps(dominios or []),
+                       bool(general)))
         return {"token": tok, "cliente": cliente, "modo": modo, "nota": nota,
-                "caduca": caduca, "dominios": dominios or []}
+                "caduca": caduca, "dominios": dominios or [], "general": bool(general),
+                "accesos": 0, "revocado": False}
 
     def dominios_enlace(self, token, dominios) -> bool:
         with self.pool.connection() as c:
@@ -306,16 +315,16 @@ class AlmacenPostgres:
 
     def enlace(self, token) -> Optional[dict]:
         with self.pool.connection() as c:
-            r = c.execute("SELECT token,cliente,modo,nota,caduca,revocado,creado,accesos,dominios "
-                          "FROM enlaces WHERE token=%s", (token,)).fetchone()
+            r = c.execute("SELECT token,cliente,modo,nota,caduca,revocado,creado,accesos,"
+                          "dominios,general FROM enlaces WHERE token=%s", (token,)).fetchone()
         if not r:
             return None
         return dict(zip(("token", "cliente", "modo", "nota", "caduca", "revocado",
-                         "creado", "accesos", "dominios"), r))
+                         "creado", "accesos", "dominios", "general"), r))
 
     def enlaces(self, cliente=None) -> list[dict]:
-        q = ("SELECT token,cliente,modo,nota,caduca,revocado,creado,accesos,ultimo_acceso,dominios "
-             "FROM enlaces")
+        q = ("SELECT token,cliente,modo,nota,caduca,revocado,creado,accesos,ultimo_acceso,"
+             "dominios,general FROM enlaces")
         p: tuple = ()
         if cliente:
             q += " WHERE cliente=%s"
@@ -324,7 +333,7 @@ class AlmacenPostgres:
         with self.pool.connection() as c:
             rs = c.execute(q, p).fetchall()
         cols = ("token", "cliente", "modo", "nota", "caduca", "revocado", "creado",
-                "accesos", "ultimo_acceso", "dominios")
+                "accesos", "ultimo_acceso", "dominios", "general")
         return [dict(zip(cols, r)) for r in rs]
 
     def revocar_enlace(self, token) -> bool:
@@ -542,15 +551,24 @@ class AlmacenFicheros:
                 "app": (d / "app.js").read_text(encoding="utf-8"),
                 "hash": m["hash"], "subido": m["subido"]}
 
-    def crear_enlace(self, cliente, modo="cliente", nota=None, caduca=None, dominios=None):
+    def crear_enlace(self, cliente, modo="cliente", nota=None, caduca=None, dominios=None,
+                     general=False):
         tok = nuevo_token()
         with self._lock:
             d = self._leer()
+            # Aqui no hay indice unico que lo impida, asi que se comprueba: el enlace
+            # general se crea desde un solo sitio (enlace_general.asegura) y ese ya mira
+            # antes, pero un segundo enlace general dejaria sin saber cual esta pegado en
+            # la web del cliente, y eso no se arregla luego.
+            if general:
+                for e in d["enlaces"].values():
+                    if e["cliente"] == cliente and e.get("general") and not e.get("revocado"):
+                        return e
             d["enlaces"][tok] = {"token": tok, "cliente": cliente, "modo": modo, "nota": nota,
                                  "caduca": caduca.isoformat() if hasattr(caduca, "isoformat") else caduca,
                                  "revocado": False, "creado": ahora().isoformat(),
                                  "accesos": 0, "ultimo_acceso": None,
-                                 "dominios": dominios or []}
+                                 "dominios": dominios or [], "general": bool(general)}
             self._escribir(d)
         return d["enlaces"][tok]
 
