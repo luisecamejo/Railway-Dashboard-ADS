@@ -26,7 +26,7 @@
     var d=new Date(s); if(isNaN(d))return esc(s);
     return d.toLocaleString('es-ES',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}) }
 
-  // ── arranque ──────────────────────────────────────────────
+  // ── arranque ──────────────────────────────────
   var guardado=sessionStorage.getItem('tok_reportes');
   if(guardado){ TOK=guardado; entrar() } else { $('login').style.display='block'; $('tok').focus() }
 
@@ -95,7 +95,7 @@
     });
   }
 
-  // ── alta de cliente ──────────────────────────────────────────
+  // ── alta de cliente ────────────────────────────────────
   $('cnom').oninput=function(){
     if($('cslug').dataset.tocado) return;
     $('cslug').value=$('cnom').value.toLowerCase().normalize('NFD')
@@ -163,7 +163,7 @@
       .catch(function(e){ pinta($('mcli'),'err',problema(e)) });
   };
 
-  // ── clientes ──────────────────────────────────────────────
+  // ── clientes ────────────────────────────────────
   function resumen(c){
     // "sin configurar" en rojo: con la cartera entera dada de alta, esto es lo primero
     // que hay que poder ver de un vistazo — un cliente sin cuentas no extrae nada.
@@ -255,11 +255,26 @@
       '<div class="tw"><table class="hist"><thead><tr><th>Publicado</th><th>Ventana</th>'+
       '<th>Oportunidades</th><th>Tamaño</th></tr></thead><tbody></tbody></table></div></div>'+
 
-      '<div class="bloque"><h2>Enlaces</h2>'+
-      '<p class="sub"><b>interno</b>: para el equipo. <b>cliente</b>: para el cliente, ve sus datos completos. '+
-      '<b>demo</b>: nombres de pacientes enmascarados y negocio oculto, para casos de éxito.<br>'+
-      'Un enlace <b>no se crea si el cliente todavía no tiene reporte</b>: si lo pides antes, '+
-      'arranco la extracción y lo creo cuando los datos ya estén.</p>'+
+      // El de arriba es el que se usa el 95% del tiempo, así que va primero y lo otro
+      // pasa a ser «adicionales». Antes cada reporte nuevo invitaba a crear otro enlace y
+      // el iframe ya pegado en la web del cliente competía con uno más nuevo.
+      '<div class="bloque"><h2>Enlace general</h2>'+
+      '<p class="sub">Uno por cliente y <b>el mismo para siempre</b>. Nace solo al publicarse '+
+      'su primer reporte, ya empotrable en GoHighLevel, y sirve a la vez para compartirlo con '+
+      'el cliente y para mirarlo el equipo.<br>'+
+      '<b>Todo lo de dentro se actualiza solo</b>: si añades otra cuenta de Meta o de Google, '+
+      'si entran más leads o si cambia el diseño del dashboard, este enlace ya lo enseña. '+
+      'No hay que rehacerlo, ni regenerarlo, ni revocarlo.</p>'+
+      '<div class="general"></div>'+
+      '<div class="msg mgen"></div></div>'+
+
+      '<div class="bloque"><h2>Enlaces adicionales</h2>'+
+      '<p class="sub">Solo cuando hace falta un acceso <b>distinto</b> del general: un '+
+      '<b>demo</b> para un caso de éxito (nombres de pacientes enmascarados y negocio oculto), '+
+      'o uno para una persona concreta que quieras poder revocar después. Para el día a día '+
+      'con el cliente no hace falta ninguno: está el de arriba.<br>'+
+      '<b>interno</b> y <b>cliente</b> ven hoy exactamente lo mismo; el único modo que cambia '+
+      'los datos es <b>demo</b>.</p>'+
       '<div class="fila"><div><label>Modo</label><select class="emodo">'+
       '<option value="cliente">cliente</option><option value="interno">interno</option>'+
       '<option value="demo">demo</option></select></div>'+
