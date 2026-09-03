@@ -55,7 +55,7 @@
       }).catch(function(e){ pinta(menlace,'err',problema(e)) });
     };
 
-    // ── el enlace general ───────────────────────────────────────
+    // ── el enlace general ──────────────────────────────────────
     // Se pide al abrir la ficha y, si el cliente ya tiene reporte pero todavía no tiene
     // enlace general (los dados de alta antes de que esto existiera), se crea aquí mismo.
     // La ruta es idempotente, así que llamarla de más no duplica nada.
@@ -279,18 +279,31 @@
     cuerpo.querySelector('.bbaja').onclick=function(){
       var b=this; b.disabled=true;
       pinta(mbaja,'cargando','Mirando qué hay guardado de este cliente…');
-      api('/admin/clientes/'+encodeURIComponent(slug)+'/borrado').then(function(d){
+      // El enlace general se pide APARTE y se nombra en su propia línea. De los enlaces
+      // activos es el único que sabemos SEGURO que está empotrado en la web del cliente,
+      // así que un «si alguno está empotrado» se queda corto: este lo está.
+      Promise.all([
+        api('/admin/clientes/'+encodeURIComponent(slug)+'/borrado'),
+        api('/admin/enlaces/general/'+encodeURIComponent(slug)).catch(function(){ return {} })
+      ]).then(function(r){
+        var d=r[0], g=r[1]||{};
         pinta(mbaja,null,'');
         var lineas=[
           '<b>'+esc(d.snapshots)+'</b> reporte'+(d.snapshots===1?'':'s')+' publicado'+
             (d.snapshots===1?'':'s')+(d.leads?' (el último con <b>'+esc(d.leads)+
             '</b> oportunidades)':''),
           '<b>'+esc(d.crudos)+'</b> trozo'+(d.crudos===1?'':'s')+' de datos crudos',
+          (g.token
+            ? '<span class="grave">el <b>ENLACE GENERAL</b>'+
+              (g.accesos?' ('+esc(g.accesos)+' visitas)':'')+' — es el que está '+
+              'empotrado en GoHighLevel: al borrar, ese iframe deja de mostrar el reporte '+
+              'y el cliente pierde el acceso</span>'
+            : 'no hay enlace general'),
           (d.enlacesActivos
-            ? '<span class="grave"><b>'+esc(d.enlacesActivos)+'</b> enlace'+
-              (d.enlacesActivos===1?'':'s')+' EN USO'+
-              (d.accesos?' ('+esc(d.accesos)+' visitas hasta hoy)':'')+
-              ' — si alguno está empotrado en la web del cliente, deja de funcionar</span>'
+            ? '<b>'+esc(d.enlacesActivos)+'</b> enlace'+(d.enlacesActivos===1?'':'s')+
+              ' activo'+(d.enlacesActivos===1?'':'s')+' en total'+
+              (d.accesos?', con '+esc(d.accesos)+' visitas acumuladas':'')+
+              (g.token?' (el general incluido)':'')
             : 'ningún enlace activo')
         ];
         if(d.enlaces>d.enlacesActivos)
@@ -321,7 +334,9 @@
               // donde sí va a seguir existiendo algo que lo muestre.
               olvidaCuentas(); pintaLocAlta('');
               pinta($('mcli'),'ok','Cliente <b>'+esc(slug)+'</b> dado de baja. Se borraron '+
-                'sus datos, su historial y sus enlaces.');
+                'sus datos, su historial y <b>todos sus enlaces, el general incluido</b>: '+
+                'ya no tiene acceso al dashboard. Si tenía el iframe puesto en su '+
+                'GoHighLevel, ahí ya no se muestra nada.');
               cargar();
             })
             .catch(function(e){ pinta(mbaja,'err',problema(e)); bya.disabled=false });
