@@ -124,15 +124,18 @@ tr:last-child td{border-bottom:0}
     <!-- La zona horaria ya NO se pregunta. Se lee de la sub-cuenta de GoHighLevel, que es
          quien sella la hora de cada lead: pedirla era pedir un dato que el sistema ya
          sabe, y equivocarse no daba ningún error, daba fechas corridas. -->
-    <p class="sub">El identificador se usa en las rutas y no se puede cambiar después. La zona
-    horaria y la moneda <b>se leen del CRM</b> en cuanto pegas el location: no hay que elegirlas.</p>
+    <p class="sub">Elige la sub-cuenta de GoHighLevel <b>por su nombre</b>: el identificador lo
+    pone el sistema. La zona horaria y la moneda también se leen del CRM. El identificador del
+    cliente se usa en las rutas y no se puede cambiar después.</p>
     <div class="fila">
+      <div style="flex:2 1 280px"><label for="cloc">Sub-cuenta de GoHighLevel</label>
+        <select id="cloc"></select>
+        <input type="text" id="clocman" placeholder="pega aquí el id de la sub-cuenta" style="display:none;margin-top:6px"></div>
       <div><label for="cnom">Nombre</label><input type="text" id="cnom" placeholder="Clínica Ejemplo"></div>
       <div><label for="cslug">Identificador</label><input type="text" id="cslug" placeholder="clinica-ejemplo"></div>
-      <div><label for="cloc">Location de GHL</label><input type="text" id="cloc" placeholder="id de la sub-cuenta"></div>
       <button id="bcli">Guardar</button>
     </div>
-    <p class="nota" id="cficha">Pega el location de GoHighLevel y leo del CRM la zona horaria y la moneda.</p>
+    <p class="nota" id="cficha">Cargando las sub-cuentas del CRM…</p>
     <div id="ctzman" style="display:none;max-width:420px">
       <label for="ctz">Zona horaria (el CRM no la dice, elígela a mano)</label>
       <select id="ctz"></select>
@@ -186,7 +189,7 @@ tr:last-child td{border-bottom:0}
   }
   function esc(s){return String(s).replace(/[<>&]/g,function(c){return{'<':'&lt;','>':'&gt;','&':'&amp;'}[c]})}
 
-  // ── zonas horarias ─────────────────────────────────────────────
+  // ── zonas horarias ──────────────────────────────────────────────
   // La zona se LEE DEL CRM (ver rutas_ficha.py). Este desplegable es el camino de escape
   // para cuando la sub-cuenta no la declara o el CRM no contesta — y para corregir a mano
   // una sub-cuenta mal configurada.
@@ -234,11 +237,74 @@ tr:last-child td{border-bottom:0}
            '<option value="'+esc(sel)+'" selected>'+esc(sel)+' · no reconocida</option></optgroup>';
     return out;
   }
+  // ── las cuentas disponibles ───────────────────────────────────
+  // Un identificador tecleado a mano no falla: extrae de OTRA cuenta. Un dígito cambiado
+  // en una cuenta de Meta da un reporte con el gasto de otro negocio y nadie lo nota,
+  // porque el número tiene toda la pinta de ser bueno. Aquí se elige por NOMBRE.
+  var CUENTAS=null, pCuentas=null;
+  function cargaCuentas(forzar){
+    if(pCuentas && !forzar) return pCuentas;
+    pCuentas=api('/admin/cuentas'+(forzar?'?refrescar=1':''))
+      .then(function(d){ CUENTAS=d; return d })
+      .catch(function(e){ pCuentas=null; throw e });
+    return pCuentas;
+  }
+  // Guardar un cliente cambia el «ya en uso» de la lista, así que la siguiente vez se
+  // vuelve a pedir. El servidor la cachea igual, o sea que no cuesta una llamada a la API.
+  function olvidaCuentas(){ pCuentas=null }
+
+  var MANUAL='__a_mano__';
+  function opcionesCuenta(lista, sel, vacio){
+    var out='<option value="">'+esc(vacio)+'</option>', esta=false;
+    (lista||[]).forEach(function(c){
+      if(c.id===sel) esta=true;
+      var notas=[];
+      // Que una cuenta ya esté en otro cliente NO la esconde: a veces es correcto (dos
+      // marcas del mismo negocio). Pero ponerla dos veces sin querer suma su gasto dos
+      // veces y deja los dos CPL a la mitad, así que tiene que verse antes de elegir.
+      if(c.usadaPor) notas.push('YA EN '+c.usadaPor);
+      if(c.activa===false) notas.push('pausada');
+      if(c.moneda) notas.push(c.moneda);
+      out+='<option value="'+esc(c.id)+'"'+(c.id===sel?' selected':'')+'>'+
+           esc(c.nombre)+' · '+esc(c.id)+(notas.length?'  ['+esc(notas.join(' · '))+']':'')+
+           '</option>';
+    });
+    // Lo que ya estaba guardado y no aparece en la lista se muestra marcado, no se pierde:
+    // suele significar que el token perdió el acceso a esa cuenta, y eso hay que verlo.
+    if(sel && !esta)
+      out+='<option value="'+esc(sel)+'" selected>'+esc(sel)+'  [guardada, pero no está en la lista]</option>';
+    out+='<option value="'+MANUAL+'">— escribir el id a mano —</option>';
+    return out;
+  }
+  // Un desplegable con su casilla de repuesto detrás. Si la lista no trae la cuenta
+  // (permisos, una cuenta recién creada), siempre queda el camino de escribirla.
+  function combo(sel, inp, lista, valor, vacio){
+    sel.innerHTML=opcionesCuenta(lista, valor||'', vacio);
+    function sync(){
+      var aMano=sel.value===MANUAL;
+      inp.style.display=aMano?'block':'none';
+      if(aMano) inp.focus();
+    }
+    // Al cambiar de plataforma este mismo <select> se vuelve a pintar, así que hay que
+    // quitar el manejador anterior o se acumulan uno por repintado.
+    if(sel._sync) sel.removeEventListener('change',sel._sync);
+    sel._sync=sync;
+    sel.addEventListener('change',sync);
+    sync();
+    return function(){ return (sel.value===MANUAL ? inp.value : sel.value).trim() };
+  }
+  function avisoLista(bloque){
+    // Si una fuente no contesta se dice POR QUÉ y se deja la casilla de texto. Un
+    // desplegable vacío sin explicación es peor que no tenerlo.
+    return (bloque && bloque.error)
+      ? '<br>No pude leer la lista: '+esc(bloque.error)+' Usa «escribir el id a mano».' : '';
+  }
+
   function fecha(s){ if(!s||s==='None')return '—';
     var d=new Date(s); if(isNaN(d))return esc(s);
     return d.toLocaleString('es-ES',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}) }
 
-  // ── arranque ─────────────────────────────────────────────────
+  // ── arranque ────────────────────────────────────────────────
   var guardado=sessionStorage.getItem('tok_reportes');
   if(guardado){ TOK=guardado; entrar() } else { $('login').style.display='block'; $('tok').focus() }
 
@@ -256,7 +322,34 @@ tr:last-child td{border-bottom:0}
   function entrar(){
     $('app').style.display='block';
     $('ctz').innerHTML=opcionesZona('');
+    pintaLocAlta();
     cargar();
+  }
+
+  var locAlta=null;   // devuelve el location elegido (del desplegable o escrito a mano)
+  // pintaLocAlta se vuelve a llamar tras cada alta, así que el manejador se pone UNA vez:
+  // si no, cada cliente creado dejaría otra llamada al CRM colgando del mismo campo.
+  function engancha(el,evento){
+    if(el.dataset.enganchado===evento) return;
+    el.dataset.enganchado=evento;
+    el.addEventListener(evento,miraFicha);
+  }
+  function pintaLocAlta(valor){
+    var sel=$('cloc'), inp=$('clocman');
+    sel.innerHTML='<option value="">Cargando las sub-cuentas del CRM…</option>';
+    cargaCuentas().then(function(d){
+      locAlta=combo(sel,inp,(d.ghl||{}).cuentas,valor||'','— elige la sub-cuenta —');
+      $('cficha').innerHTML='Elige la sub-cuenta y leo del CRM su zona horaria y su moneda.'+
+        avisoLista(d.ghl);
+      engancha(sel,'change'); engancha(inp,'input');
+    }).catch(function(e){
+      // Sin lista, el alta NO se bloquea: vuelve a ser la casilla de texto de siempre.
+      sel.style.display='none'; inp.style.display='block';
+      locAlta=function(){ return inp.value.trim() };
+      engancha(inp,'input');
+      $('cficha').innerHTML='No pude leer la lista de sub-cuentas ('+problema(e)+'). '+
+        'Pega el id a mano y sigo leyendo del CRM su zona horaria.';
+    });
   }
 
   function cargar(){
@@ -288,14 +381,14 @@ tr:last-child td{border-bottom:0}
   };
   $('cslug').oninput=function(){ $('cslug').dataset.tocado='1' };
 
-  // Se lee del CRM en cuanto hay un location con pinta de serlo. Con retardo, para no
-  // llamar una vez por tecla mientras se pega o se escribe.
+  // Se lee del CRM en cuanto hay un location. Con retardo, porque en el camino de
+  // escribir a mano si no se llamaría una vez por tecla.
   var FICHA={}, tficha=null;
-  $('cloc').oninput=function(){
-    var loc=$('cloc').value.trim();
+  function miraFicha(){
+    var loc=locAlta?locAlta():'';
     FICHA={}; clearTimeout(tficha);
     $('ctzman').style.display='none';
-    if(loc.length<6){ $('cficha').innerHTML='Pega el location de GoHighLevel y leo del CRM la zona horaria y la moneda.'; return }
+    if(loc.length<6){ $('cficha').innerHTML='Elige la sub-cuenta y leo del CRM su zona horaria y su moneda.'; return }
     $('cficha').innerHTML='Preguntando al CRM…';
     tficha=setTimeout(function(){
       api('/admin/ficha?location='+encodeURIComponent(loc)).then(function(d){
@@ -317,18 +410,18 @@ tr:last-child td{border-bottom:0}
         $('cficha').innerHTML='No pude leer el CRM: '+problema(e)+'<br>Elige la zona horaria a mano.';
         $('ctzman').style.display='block';
       });
-    },450);
-  };
+    },300);
+  }
 
   $('bcli').onclick=function(){
     var cuerpo={nombre:$('cnom').value.trim(),slug:$('cslug').value.trim(),
-                ghl_location_id:$('cloc').value.trim()||null,
+                ghl_location_id:(locAlta?locAlta():'')||null,
                 tz:(FICHA.tz||$('ctz').value||'').trim()||null,
                 moneda:FICHA.moneda||null,
                 fuentes:['crm','meta','google']};
     if(!cuerpo.nombre||!cuerpo.slug) return pinta($('mcli'),'err','Hacen falta nombre e identificador.');
     if(!cuerpo.ghl_location_id&&!cuerpo.tz) return pinta($('mcli'),'err',
-      'Pon el location de GoHighLevel: de ahí sale la zona horaria, y sin zona las fechas no cuadran con el CRM.');
+      'Elige la sub-cuenta de GoHighLevel: de ahí sale la zona horaria, y sin zona las fechas no cuadran con el CRM.');
     pinta($('mcli'),'cargando','Guardando…');
     api('/admin/clientes',{method:'POST',body:JSON.stringify(cuerpo),
                            headers:{'Content-Type':'application/json'}})
@@ -338,9 +431,11 @@ tr:last-child td{border-bottom:0}
           (d.moneda?' · moneda <b>'+esc(d.moneda)+'</b>':'')+
           '.<br>Ábrelo abajo y pulsa <b>Preparar el reporte</b> para extraer sus datos.'+
           (d.aviso?'<br>'+esc(d.aviso):''));
-        ['cnom','cslug','cloc','ctz'].forEach(function(k){$(k).value=''});
+        ['cnom','cslug','ctz','clocman'].forEach(function(k){$(k).value=''});
         FICHA={}; $('ctzman').style.display='none';
-        $('cficha').innerHTML='Pega el location de GoHighLevel y leo del CRM la zona horaria y la moneda.';
+        // Se vuelve a pintar la lista: la sub-cuenta que se acaba de usar ahora sale
+        // marcada como ocupada, que es justo lo que hay que ver en el alta siguiente.
+        olvidaCuentas(); pintaLocAlta('');
         delete $('cslug').dataset.tocado; cargar();
       })
       .catch(function(e){ pinta($('mcli'),'err',problema(e)) });
@@ -398,7 +493,9 @@ tr:last-child td{border-bottom:0}
       'moneda salen del CRM; el location de GoHighLevel es obligatorio. De cuentas de '+
       'anuncios puedes poner <b>tantas como tenga</b>: varias de Meta, varias de Google, o ninguna.</p>'+
       '<div class="fila">'+
-      '<div><label>Location de GoHighLevel</label><input type="text" class="kloc" placeholder="id de la sub-cuenta"></div>'+
+      '<div style="flex:2 1 260px"><label>Sub-cuenta de GoHighLevel</label>'+
+      '<select class="klocsel"></select>'+
+      '<input type="text" class="kloc" placeholder="id de la sub-cuenta" style="display:none;margin-top:6px"></div>'+
       // El select va DESACTIVADO: el valor se ve, pero para cambiarlo hay que pulsar
       // "corregir a mano". Así lo normal es lo que dice el CRM, y lo excepcional cuesta
       // un clic — al revés de antes, que lo normal era teclearlo y equivocarse.
@@ -410,7 +507,9 @@ tr:last-child td{border-bottom:0}
       '</div>'+
       '<div style="margin-top:15px"><label>Cuentas de anuncios</label>'+
       '<div class="cuentas"></div>'+
-      '<div class="preset"><button class="kmas">+ añadir cuenta</button></div></div>'+
+      '<div class="preset"><button class="kmas">+ añadir cuenta</button>'+
+      '<button class="krelistas" type="button">releer las listas</button></div>'+
+      '<p class="nota klistas"></p></div>'+
       '<div class="fila" style="margin-top:15px">'+
       '<button class="kguardar">Guardar configuración</button>'+
       '<button class="sec kensayo">Construir sin publicar</button>'+
@@ -461,7 +560,7 @@ tr:last-child td{border-bottom:0}
     // CFG se guarda entero y se vuelve a mandar entero al guardar: la ruta reemplaza
     // toda la configuración, así que si mandáramos solo estos campos borraríamos los
     // productos, los roles y el SOP del cliente sin avisar.
-    var CFG={}, mconf=cuerpo.querySelector('.mconf');
+    var CFG={}, mconf=cuerpo.querySelector('.mconf'), leerLoc=null;
     var HUECO={Meta:'1003698104483915',Google:'580-642-2100'};
 
     function filaCuenta(plataforma,id){
@@ -469,21 +568,45 @@ tr:last-child td{border-bottom:0}
       var f=document.createElement('div');
       f.className='cuenta fila';
       f.style.marginTop='7px';
-      f.innerHTML='<div style="flex:0 0 120px"><select class="kplat">'+
+      f.innerHTML='<div style="flex:0 0 110px"><select class="kplat">'+
         '<option value="Meta">Meta</option><option value="Google">Google</option></select></div>'+
-        '<div><input type="text" class="kid"></div>'+
+        '<div><select class="kidsel"></select>'+
+        '<input type="text" class="kid" style="display:none;margin-top:6px"></div>'+
         '<button class="dgr kquitar" type="button">quitar</button>';
       cont.appendChild(f);
-      var sel=f.querySelector('.kplat'), inp=f.querySelector('.kid');
+      var sel=f.querySelector('.kplat'), idsel=f.querySelector('.kidsel'),
+          inp=f.querySelector('.kid');
       sel.value=plataforma==='Google'?'Google':'Meta';
-      inp.value=id||'';
-      function hueco(){ inp.placeholder=HUECO[sel.value] }
-      sel.onchange=hueco; hueco();
+
+      // El desplegable se rehace al cambiar de plataforma: las cuentas de Meta y las de
+      // Google no son la misma lista, y dejar la anterior invitaría a guardar un id de
+      // Meta declarado como Google, que extraería de la nada sin dar error.
+      function pintaId(valor){
+        var b=(CUENTAS||{})[sel.value==='Google'?'google':'meta']||{};
+        inp.placeholder=HUECO[sel.value];
+        f.leer=combo(idsel,inp,b.cuentas,valor||'',
+                     '— elige la cuenta de '+sel.value+' —');
+      }
+      sel.addEventListener('change',function(){ pintaId('') });
+      pintaId(id||'');
       f.querySelector('.kquitar').onclick=function(){ f.remove() };
       return f;
     }
 
-    cuerpo.querySelector('.kmas').onclick=function(){ filaCuenta('Meta','').querySelector('.kid').focus() };
+    cuerpo.querySelector('.kmas').onclick=function(){ filaCuenta('Meta','') };
+
+    // Para cuando se acaba de crear la cuenta en Meta o la sub-cuenta en el CRM: el
+    // servidor las cachea diez minutos y esto le dice que vuelva a preguntar.
+    cuerpo.querySelector('.krelistas').onclick=function(){
+      var b=this; b.disabled=true;
+      pinta(mconf,'cargando','Volviendo a preguntar al CRM, a Meta y a Google…');
+      cargaCuentas(true).then(function(){
+        pintaConfig();
+        pinta(mconf,'ok','Listas al día. Ojo: al repintarse, las cuentas de esta ficha '+
+          'vuelven a lo último GUARDADO; si habías cambiado algo sin guardar, se ha perdido.');
+      }).catch(function(e){ pinta(mconf,'err',problema(e)) })
+        .then(function(){ b.disabled=false });
+    };
 
     cuerpo.querySelector('.ktzed').onclick=function(){
       cuerpo.querySelector('.ktz').disabled=false;
@@ -521,7 +644,14 @@ tr:last-child td{border-bottom:0}
         cuerpo.querySelector('.ktz').disabled=false;
         cuerpo.querySelector('.kmon').disabled=false;
       }
-      cuerpo.querySelector('.kloc').value=CFG.ghlLocationId||det.dataset.loc||'';
+      var locAct=CFG.ghlLocationId||det.dataset.loc||'';
+      leerLoc=combo(cuerpo.querySelector('.klocsel'), cuerpo.querySelector('.kloc'),
+                    ((CUENTAS||{}).ghl||{}).cuentas, locAct, '— elige la sub-cuenta —');
+      var avisos=[avisoLista((CUENTAS||{}).ghl), avisoLista((CUENTAS||{}).meta),
+                  avisoLista((CUENTAS||{}).google)].filter(Boolean).join('');
+      cuerpo.querySelector('.klistas').innerHTML=avisos
+        ? '<b style="color:var(--yl)">Alguna lista no se pudo leer.</b>'+avisos
+        : '';
       cuerpo.querySelector('.cuentas').innerHTML='';
       var cs=CFG.cuentas||[];
       if(!cs.length) filaCuenta('Meta','');
@@ -529,19 +659,24 @@ tr:last-child td{border-bottom:0}
     }
 
     function cargaConfig(){
-      return api('/admin/config/'+encodeURIComponent(slug)).then(function(d){
-        CFG=d.config||{}; pintaConfig();
-      }).catch(function(){ CFG={}; pintaConfig() });
+      // Las dos cosas a la vez: la config del cliente y las listas de cuentas. Si las
+      // listas fallan, `combo` se queda con el valor guardado y la casilla de texto, así
+      // que la ficha se puede seguir editando igual que antes.
+      return Promise.all([
+        api('/admin/config/'+encodeURIComponent(slug)).then(function(d){ return d.config||{} })
+                                                      .catch(function(){ return {} }),
+        cargaCuentas().catch(function(){ return null })
+      ]).then(function(r){ CFG=r[0]; pintaConfig() });
     }
 
     cuerpo.querySelector('.kguardar').onclick=function(){
       var tz=cuerpo.querySelector('.ktz').value.trim();
-      var loc=cuerpo.querySelector('.kloc').value.trim();
+      var loc=leerLoc?leerLoc():'';
       if(!tz) return pinta(mconf,'err','Elige la zona horaria del negocio: es lo que hace que '+
         'las fechas cuadren con el CRM. Sin ella los extractores se saltan a este cliente.');
       var cuentas=[], vistas={}, malas=[], repetidas=[];
       Array.prototype.forEach.call(cuerpo.querySelectorAll('.cuenta'),function(f){
-        var p=f.querySelector('.kplat').value, id=f.querySelector('.kid').value.trim();
+        var p=f.querySelector('.kplat').value, id=f.leer?f.leer():'';
         if(!id) return;
         // La MISMA cuenta dos veces sumaría su gasto dos veces y el CPL saldría a la
         // mitad. Se avisa en vez de quitarla en silencio, que esconde la errata.
@@ -575,6 +710,8 @@ tr:last-child td{border-bottom:0}
             ' de Meta y '+goo+' de Google.'+
             (loc?'':'<br>Sin location de GoHighLevel este cliente <b>no</b> entra en la '+
                  'extracción del CRM, así que su reporte saldría sin leads.'));
+          // La lista lleva escrito quién usa cada cuenta, y eso acaba de cambiar.
+          olvidaCuentas();
           cargar();   // quita el "sin configurar" del resumen de arriba
         })
         .catch(function(e){ pinta(mconf,'err',problema(e)) })
@@ -616,7 +753,7 @@ tr:last-child td{border-bottom:0}
       }).catch(function(){});
     }
 
-    // ── preparar el reporte ───────────────────────────────────────
+    // ── preparar el reporte ──────────────────────────────────────
     // Es la MISMA pasada que hacen los tres crones de la madrugada, pero para un cliente
     // y ahora. Corre en el servidor, en un solo hilo y en cola, así que la página no
     // tiene que quedarse abierta: solo sondea para contar por dónde va.
