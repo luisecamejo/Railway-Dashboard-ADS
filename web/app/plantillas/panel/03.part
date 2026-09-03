@@ -55,6 +55,124 @@
       }).catch(function(e){ pinta(menlace,'err',problema(e)) });
     };
 
+    // ── el enlace general ───────────────────────────────────────
+    // Se pide al abrir la ficha y, si el cliente ya tiene reporte pero todavía no tiene
+    // enlace general (los dados de alta antes de que esto existiera), se crea aquí mismo.
+    // La ruta es idempotente, así que llamarla de más no duplica nada.
+    var mgen=cuerpo.querySelector('.mgen'), cajaGen=cuerpo.querySelector('.general');
+
+    function pintaGeneral(d){
+      if(!d || !d.token){
+        cajaGen.innerHTML='<p class="nota">Todavía no hay enlace general porque este cliente '+
+          'no tiene reporte publicado. Pulsa <b>Preparar el reporte</b> más arriba: al '+
+          'terminar aparece aquí solo, y ya no cambia.</p>';
+        return;
+      }
+      var url=location.origin+d.ruta;
+      cajaGen.innerHTML=
+        '<div class="fila"><div><input type="text" class="gurl mono" readonly value="'+esc(url)+'"></div>'+
+        '<button class="gcopiar">copiar enlace</button>'+
+        (d.rutaEmbed?'<button class="sec gifr">copiar iframe</button>':'')+
+        '<a class="probar" href="'+esc(url)+'" target="_blank" rel="noreferrer">probar</a></div>'+
+        (d.dominios&&d.dominios.length
+          ? '<p class="nota">Se puede empotrar en: <span class="doms">'+
+            d.dominios.map(esc).join(' · ')+'</span> — para añadir el dominio propio del '+
+            'cliente, «cambiar dominios».</p>'
+          : '<p class="nota grave">Sin dominios permitidos: así <b>no se puede empotrar</b> '+
+            'en GoHighLevel. Pulsa «cambiar dominios».</p>')+
+        '<p class="nota">'+esc(d.accesos)+' visita'+(String(d.accesos)==='1'?'':'s')+
+        ' · creado '+fecha(d.creado)+' · modo '+esc(d.modo)+'</p>'+
+        '<div class="preset"><button class="gdoms">cambiar dominios</button>'+
+        '<button class="grotar">rotar el enlace…</button></div>'+
+        '<div class="grot" style="display:none"></div>';
+
+      cajaGen.querySelector('.gcopiar').onclick=function(){
+        var b=this;
+        copia(url).then(function(){
+          var t=b.textContent; b.textContent='copiado';
+          setTimeout(function(){b.textContent=t},1400);
+        },function(){ pinta(mgen,'ok','Enlace: '+esc(url)) });
+      };
+      var bifr=cajaGen.querySelector('.gifr');
+      if(bifr) bifr.onclick=function(){
+        var code=iframeSnippet(d.token);
+        snip.style.display='block'; snip.textContent=code;
+        copia(code).then(function(){
+          pinta(mgen,'ok','<b>Iframe copiado.</b> Pégalo en GoHighLevel como código '+
+            'personalizado. <b>Se pega una vez y ya está</b>: este enlace no cambia, así que '+
+            'no hay que volver aquí cuando se añadan cuentas o cambie el dashboard.');
+        },function(){ pinta(mgen,'ok','Copia el código de abajo a mano.') });
+      };
+
+      // Los dominios se cambian sin cambiar la URL: es lo que permite que el iframe ya
+      // pegado siga funcionando cuando el cliente estrena dominio propio.
+      cajaGen.querySelector('.gdoms').onclick=function(){
+        var actual=(d.dominios||[]).join(', ');
+        var caja=cajaGen.querySelector('.grot');
+        caja.style.display='block';
+        caja.innerHTML='<label>Dominios permitidos (la URL del enlace NO cambia)</label>'+
+          '<input type="text" class="gedoms" value="'+esc(actual)+'">'+
+          '<div class="preset"><button class="gghl">+ dominios de GoHighLevel</button>'+
+          '<button class="gguardar">guardar dominios</button></div>';
+        caja.querySelector('.gghl').onclick=function(){
+          var i=caja.querySelector('.gedoms');
+          i.value=i.value.trim()?i.value.replace(/,\s*$/,'')+', '+GHL:GHL;
+        };
+        caja.querySelector('.gguardar').onclick=function(){
+          var b=this; b.disabled=true;
+          api('/admin/enlaces/'+encodeURIComponent(d.token)+'/dominios',
+              {method:'POST',headers:{'Content-Type':'application/json'},
+               body:JSON.stringify({dominios:caja.querySelector('.gedoms').value.trim()})})
+            .then(function(){ pinta(mgen,'ok','Dominios guardados. La URL es la misma, así '+
+              'que el iframe que ya esté pegado sigue funcionando.'); general(); })
+            .catch(function(e){ pinta(mgen,'err',problema(e)); b.disabled=false });
+        };
+      };
+
+      // Rotar es lo contrario de lo que este enlace quiere ser, así que cuesta: hay que
+      // escribir el identificador. Existe para el día que un cliente se va.
+      cajaGen.querySelector('.grotar').onclick=function(){
+        var caja=cajaGen.querySelector('.grot');
+        caja.style.display='block';
+        caja.innerHTML='<p class="nota grave">Rotar crea otro enlace y <b>apaga el de '+
+          'ahora</b>: el iframe que esté pegado en la web del cliente deja de funcionar y '+
+          'hay que pegar el nuevo. Solo tiene sentido si hay que cortarle el acceso a '+
+          'alguien.</p>'+
+          '<label>Escribe <code>'+esc(slug)+'</code> para confirmar</label>'+
+          '<div class="fila"><div><input type="text" class="gconf" autocomplete="off" '+
+          'placeholder="'+esc(slug)+'"></div>'+
+          '<button class="rojo gya" disabled>Rotar el enlace general</button></div>';
+        var conf=caja.querySelector('.gconf'), bya=caja.querySelector('.gya');
+        conf.oninput=function(){ bya.disabled = conf.value.trim()!==slug };
+        bya.onclick=function(){
+          bya.disabled=true;
+          pinta(mgen,'cargando','Rotando…');
+          api('/admin/enlaces/general/'+encodeURIComponent(slug)+
+              '/rotar?confirmar='+encodeURIComponent(conf.value.trim()),{method:'POST'})
+            .then(function(){
+              pinta(mgen,'ok','<b>Enlace general rotado.</b> Copia el iframe de arriba y '+
+                'vuelve a pegarlo en GoHighLevel: el anterior ya no funciona.');
+              general(); enlaces();
+            })
+            .catch(function(e){ pinta(mgen,'err',problema(e)); bya.disabled=false });
+        };
+      };
+    }
+
+    function general(){
+      return api('/admin/enlaces/general/'+encodeURIComponent(slug)).then(function(d){
+        if(d.token || !d.hayReporte) return pintaGeneral(d);
+        // Hay reporte y no hay enlace: se crea. Pasa con los clientes dados de alta antes
+        // de que el enlace general existiera, y con el primer reporte de uno nuevo.
+        return api('/admin/enlaces/general/'+encodeURIComponent(slug),{method:'POST'})
+          .then(function(n){
+            pintaGeneral(n);
+            if(n.nuevo) pinta(mgen,'ok','<b>Enlace general creado.</b> Este es el que se pega '+
+              'en GoHighLevel, y ya no hay que volver a crearlo.');
+          });
+      }).catch(function(e){ pinta(mgen,'err',problema(e)) });
+    }
+
     function historial(){
       api('/admin/snapshots/'+encodeURIComponent(slug)).then(function(d){
         var tb=cuerpo.querySelector('.hist tbody'), h=d.historial||[];
@@ -74,7 +192,13 @@
 
     function enlaces(){
       api('/admin/enlaces?cliente='+encodeURIComponent(slug)).then(function(d){
-        var tb=cuerpo.querySelector('.tenlaces tbody'), es=d.enlaces||[];
+        var tb=cuerpo.querySelector('.tenlaces tbody');
+        // El general se pinta arriba, con su iframe y sus dominios. Aquí abajo solo van
+        // los adicionales: si saliera en las dos, la fila de abajo tendría un «revocar»
+        // que el servidor rechaza, y eso parece un fallo del panel.
+        var es=(d.enlaces||[]).filter(function(e){
+          return !(e.general===true||e.general==='True');
+        });
         tb.innerHTML=es.length?es.map(function(e){
           var revocado=(e.revocado==='True'||e.revocado===true);
           var url=location.origin+'/r/'+e.token+'/';
@@ -92,14 +216,15 @@
             '<td>'+celdaEmbed+'</td>'+
             '<td>'+esc(e.accesos)+'</td><td>'+fecha(e.creado)+'</td>'+
             '<td>'+(revocado?'':'<button class="dgr rev" data-token="'+esc(e.token)+'">revocar</button>')+'</td></tr>';
-        }).join(''):'<tr><td colspan="7" class="nada">Sin enlaces todavía.</td></tr>';
+        }).join(''):'<tr><td colspan="7" class="nada">Sin enlaces adicionales. '+
+          'Para el día a día no hacen falta: está el enlace general de arriba.</td></tr>';
 
         Array.prototype.forEach.call(tb.querySelectorAll('.ifr'),function(b){
           b.onclick=function(){
             var code=iframeSnippet(b.dataset.token);
             snip.style.display='block';
             snip.textContent=code;
-            navigator.clipboard.writeText(code).then(function(){
+            copia(code).then(function(){
               pinta(menlace,'ok','<b>Iframe copiado.</b> Pégalo en GoHighLevel como código '+
                 'personalizado. La altura (1400px) la puedes ajustar.<ul>'+
                 '<li>Apunta a <code>/embed</code>, no al enlace normal.</li>'+
@@ -128,7 +253,7 @@
 
         Array.prototype.forEach.call(tb.querySelectorAll('.copiar'),function(b){
           b.onclick=function(){
-            navigator.clipboard.writeText(b.dataset.url).then(function(){
+            copia(b.dataset.url).then(function(){
               var t=b.textContent; b.textContent='copiado';
               setTimeout(function(){b.textContent=t},1400);
             },function(){ pinta(menlace,'ok','Enlace: '+esc(b.dataset.url)) });
@@ -205,7 +330,7 @@
         .then(function(){ b.disabled=false });
     };
 
-    cargaConfig(); crudos(); historial(); enlaces();
+    cargaConfig(); crudos(); historial(); enlaces(); general();
   }
 })();
 </script>
