@@ -1,0 +1,212 @@
+    // Qué fuentes se ESPERABAN de este cliente y no llegaron. No se puede usar el
+    // 'faltan' de /admin/crudo tal cual: ahí falta todo lo que no ha llegado, incluido
+    // Google en un cliente que no anuncia en Google. Lo que decide es qué cuentas tiene
+    // declaradas, y eso el panel ya lo sabe.
+    function fuentesQueFaltan(){
+      return api('/admin/crudo/'+encodeURIComponent(slug)).then(function(d){
+        var hay=d.fuentes||{}, cs=CFG.cuentas||[], esperadas=['ghl'];
+        if(cs.some(function(c){return c.plataforma==='Meta'}))   esperadas.push('meta');
+        if(cs.some(function(c){return c.plataforma==='Google'})) esperadas.push('google');
+        var nom={ghl:'los datos del CRM',meta:'el gasto de Meta',google:'el gasto de Google'};
+        return esperadas.filter(function(f){ return !hay[f] }).map(function(f){ return nom[f] });
+      }).catch(function(){ return [] });
+    }
+
+    var avisado=false;   // el aviso de fuente que falta se da una vez; el segundo clic crea
+
+    function creaEnlace(){
+      var modo=cuerpo.querySelector('.emodo').value,
+          nota=cuerpo.querySelector('.enota').value.trim(),
+          doms=cuerpo.querySelector('.edoms').value.trim();
+      return fuentesQueFaltan().then(function(fal){
+        if(fal.length && !avisado){
+          avisado=true;
+          return pinta(menlace,'err','<b>El reporte se construyó sin '+fal.join(' ni ')+'.</b>'+
+            '<ul><li>Sin ese gasto, el CPL y el ROAS salen <b>mejores de lo que son</b>.</li>'+
+            '<li>El propio dashboard lo avisa arriba, así que el cliente ve el hueco.</li></ul>'+
+            'Si te vale así, vuelve a pulsar <b>Crear enlace</b>.');
+        }
+        pinta(menlace,'cargando','Creando…');
+        return api('/admin/enlaces',{method:'POST',headers:{'Content-Type':'application/json'},
+              body:JSON.stringify({cliente:slug,modo:modo,nota:nota||null,dominios:doms||null})})
+          .then(function(d){
+            avisado=false;
+            pinta(menlace,'ok','Enlace creado'+(d.dominios&&d.dominios.length
+              ?' y autorizado para empotrarse en '+d.dominios.length+' dominio'+(d.dominios.length===1?'':'s')+'.'
+              :'. No es empotrable: sirve para compartir el enlace, no para meterlo en una web.'));
+            cuerpo.querySelector('.enota').value=''; enlaces(); cargar();
+          })
+          .catch(function(e){ pinta(menlace,'err',problema(e)) });
+      });
+    }
+
+    cuerpo.querySelector('.benlace').onclick=function(){
+      // Primero se mira si HAY reporte. Antes se creaba el enlace igual y quien lo abría
+      // leía "Este reporte no existe", que sonaba a enlace roto cuando lo que faltaba
+      // eran los datos. Ahora, si no hay, se arranca la extracción y el enlace se crea
+      // solo cuando el reporte ya existe.
+      pinta(menlace,'cargando','Comprobando si este cliente ya tiene reporte…');
+      estadoRefresco().then(function(est){
+        if(est.generado) return creaEnlace();
+        pinta(menlace,'cargando','<b>Este cliente todavía no tiene reporte.</b> Arranco la '+
+          'extracción y creo el enlace en cuanto haya datos. Mira el progreso en '+
+          '«Datos del reporte», más arriba.');
+        return prepara(function(){ creaEnlace() });
+      }).catch(function(e){ pinta(menlace,'err',problema(e)) });
+    };
+
+    function historial(){
+      api('/admin/snapshots/'+encodeURIComponent(slug)).then(function(d){
+        var tb=cuerpo.querySelector('.hist tbody'), h=d.historial||[];
+        tb.innerHTML=h.length?h.map(function(r){
+          return '<tr><td>'+fecha(r.generado)+'</td><td class="mono">'+esc(r.desde)+' → '+esc(r.hasta)+
+            '</td><td>'+esc(r.n_leads)+'</td><td>'+Math.round(Number(r.bytes)/1024)+' KB</td></tr>';
+        }).join(''):'<tr><td colspan="4" class="nada">Todavía no hay datos publicados.</td></tr>';
+      });
+    }
+
+    function iframeSnippet(token){
+      return '<iframe src="'+location.origin+'/r/'+token+'/embed"\n'+
+             '        title="Reporte de adquisición"\n'+
+             '        style="width:100%;height:1400px;border:0;display:block"\n'+
+             '        loading="lazy" referrerpolicy="no-referrer"></iframe>';
+    }
+
+    function enlaces(){
+      api('/admin/enlaces?cliente='+encodeURIComponent(slug)).then(function(d){
+        var tb=cuerpo.querySelector('.tenlaces tbody'), es=d.enlaces||[];
+        tb.innerHTML=es.length?es.map(function(e){
+          var revocado=(e.revocado==='True'||e.revocado===true);
+          var url=location.origin+'/r/'+e.token+'/';
+          var doms=e.dominios||[];
+          var celdaEmbed = revocado ? '—'
+            : (doms.length
+                ? '<button class="mini ifr" data-token="'+esc(e.token)+'">copiar iframe</button>'+
+                  '<div class="doms">'+doms.map(esc).join('<br>')+'</div>'
+                : '<button class="mini abrir" data-token="'+esc(e.token)+'">permitir</button>');
+          return '<tr><td>'+(revocado?'<span class="tag t-off">revocado</span>':
+              '<button class="copiar" data-url="'+esc(url)+'">copiar enlace</button>'+
+              ' <a class="probar" href="'+esc(url)+'" target="_blank" rel="noreferrer">probar</a>')+'</td>'+
+            '<td><span class="tag t-'+esc(e.modo)+'">'+esc(e.modo)+'</span></td>'+
+            '<td>'+esc(e.nota&&e.nota!=='None'?e.nota:'—')+'</td>'+
+            '<td>'+celdaEmbed+'</td>'+
+            '<td>'+esc(e.accesos)+'</td><td>'+fecha(e.creado)+'</td>'+
+            '<td>'+(revocado?'':'<button class="dgr rev" data-token="'+esc(e.token)+'">revocar</button>')+'</td></tr>';
+        }).join(''):'<tr><td colspan="7" class="nada">Sin enlaces todavía.</td></tr>';
+
+        Array.prototype.forEach.call(tb.querySelectorAll('.ifr'),function(b){
+          b.onclick=function(){
+            var code=iframeSnippet(b.dataset.token);
+            snip.style.display='block';
+            snip.textContent=code;
+            navigator.clipboard.writeText(code).then(function(){
+              pinta(menlace,'ok','<b>Iframe copiado.</b> Pégalo en GoHighLevel como código '+
+                'personalizado. La altura (1400px) la puedes ajustar.<ul>'+
+                '<li>Apunta a <code>/embed</code>, no al enlace normal.</li>'+
+                '<li>Si revocas este enlace, el iframe deja de funcionar: habría que pegar el nuevo.</li>'+
+                '</ul>');
+            },function(){ pinta(menlace,'ok','Copia el código de abajo a mano.') });
+          };
+        });
+        Array.prototype.forEach.call(tb.querySelectorAll('.abrir'),function(b){
+          b.onclick=function(){
+            var doms=cuerpo.querySelector('.edoms').value.trim();
+            if(!doms) return pinta(menlace,'err','Escribe arriba los dominios permitidos '+
+              '(el botón «+ dominios de GoHighLevel» los rellena) y vuelve a pulsar.');
+            b.disabled=true;
+            api('/admin/enlaces/'+encodeURIComponent(b.dataset.token)+'/dominios',
+                {method:'POST',headers:{'Content-Type':'application/json'},
+                 body:JSON.stringify({dominios:doms})})
+              .then(function(r){
+                pinta(menlace,'ok','Enlace autorizado en '+r.dominios.length+' dominio'+
+                  (r.dominios.length===1?'':'s')+'. Ya puedes copiar su iframe.');
+                enlaces();
+              })
+              .catch(function(e){ pinta(menlace,'err',problema(e)); b.disabled=false });
+          };
+        });
+
+        Array.prototype.forEach.call(tb.querySelectorAll('.copiar'),function(b){
+          b.onclick=function(){
+            navigator.clipboard.writeText(b.dataset.url).then(function(){
+              var t=b.textContent; b.textContent='copiado';
+              setTimeout(function(){b.textContent=t},1400);
+            },function(){ pinta(menlace,'ok','Enlace: '+esc(b.dataset.url)) });
+          };
+        });
+        Array.prototype.forEach.call(tb.querySelectorAll('.rev'),function(b){
+          b.onclick=function(){
+            b.disabled=true;
+            api('/admin/enlaces/'+encodeURIComponent(b.dataset.token)+'/revocar',{method:'POST'})
+              .then(function(){ enlaces(); cargar() })
+              .catch(function(e){ pinta(menlace,'err',problema(e)); b.disabled=false });
+          };
+        });
+      });
+    }
+    // ── dar de baja ────────────────────────────────────────────
+    // Dos pasos: primero se ve QUÉ se destruye, y solo después se borra repitiendo el
+    // identificador. No es burocracia: lo que decide si borrar es seguro no es acordarse
+    // del nombre del cliente, es ver cuántos ENLACES VIVOS se van con él. Uno de ellos
+    // puede estar empotrado ahora mismo en la web del cliente.
+    var mbaja=cuerpo.querySelector('.mbaja'), caja=cuerpo.querySelector('.cuenta-atras');
+
+    cuerpo.querySelector('.bbaja').onclick=function(){
+      var b=this; b.disabled=true;
+      pinta(mbaja,'cargando','Mirando qué hay guardado de este cliente…');
+      api('/admin/clientes/'+encodeURIComponent(slug)+'/borrado').then(function(d){
+        pinta(mbaja,null,'');
+        var lineas=[
+          '<b>'+esc(d.snapshots)+'</b> reporte'+(d.snapshots===1?'':'s')+' publicado'+
+            (d.snapshots===1?'':'s')+(d.leads?' (el último con <b>'+esc(d.leads)+
+            '</b> oportunidades)':''),
+          '<b>'+esc(d.crudos)+'</b> trozo'+(d.crudos===1?'':'s')+' de datos crudos',
+          (d.enlacesActivos
+            ? '<span class="grave"><b>'+esc(d.enlacesActivos)+'</b> enlace'+
+              (d.enlacesActivos===1?'':'s')+' EN USO'+
+              (d.accesos?' ('+esc(d.accesos)+' visitas hasta hoy)':'')+
+              ' — si alguno está empotrado en la web del cliente, deja de funcionar</span>'
+            : 'ningún enlace activo')
+        ];
+        if(d.enlaces>d.enlacesActivos)
+          lineas.push('y '+esc(d.enlaces-d.enlacesActivos)+' enlace'+
+                      (d.enlaces-d.enlacesActivos===1?'':'s')+' ya revocado'+
+                      (d.enlaces-d.enlacesActivos===1?'':'s'));
+        caja.innerHTML='<b>Se borra para siempre:</b><ul><li>'+lineas.join('</li><li>')+
+          '</li></ul>'+
+          (d.enCurso
+            ? '<b class="grave">Hay una extracción en marcha para este cliente.</b> '+
+              'Espera a que termine: si se borra a mitad, el extractor falla al entregar '+
+              'sus datos y deja un error falso en el log.'
+            : '<label>Escribe <code>'+esc(slug)+'</code> para confirmar</label>'+
+              '<div class="fila"><div><input type="text" class="bconf" '+
+              'placeholder="'+esc(slug)+'" autocomplete="off"></div>'+
+              '<button class="rojo bya" disabled>Borrar definitivamente</button></div>');
+        caja.style.display='block';
+        var conf=caja.querySelector('.bconf'), bya=caja.querySelector('.bya');
+        if(!conf) return;
+        conf.oninput=function(){ bya.disabled = conf.value.trim()!==slug };
+        bya.onclick=function(){
+          bya.disabled=true;
+          pinta(mbaja,'cargando','Borrando…');
+          api('/admin/clientes/'+encodeURIComponent(slug)+
+              '?confirmar='+encodeURIComponent(conf.value.trim()),{method:'DELETE'})
+            .then(function(){
+              // La tarjeta se va con el repintado de la lista; el aviso se pone arriba,
+              // donde sí va a seguir existiendo algo que lo muestre.
+              olvidaCuentas(); pintaLocAlta('');
+              pinta($('mcli'),'ok','Cliente <b>'+esc(slug)+'</b> dado de baja. Se borraron '+
+                'sus datos, su historial y sus enlaces.');
+              cargar();
+            })
+            .catch(function(e){ pinta(mbaja,'err',problema(e)); bya.disabled=false });
+        };
+      }).catch(function(e){ pinta(mbaja,'err',problema(e)) })
+        .then(function(){ b.disabled=false });
+    };
+
+    cargaConfig(); crudos(); historial(); enlaces();
+  }
+})();
+</script>
+</body></html>
