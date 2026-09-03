@@ -40,6 +40,11 @@ Rutas de extracción (Fase 1, en rutas_extraccion.py)
     GET  /admin/crudo/{slug}          → qué trozos hay y de cuándo
     POST /admin/construir/{slug}      → junta, valida y publica el snapshot
 
+Enlace general (en enlace_general.py) — uno por cliente, el que se empotra en GoHighLevel
+    GET  /admin/enlaces/general/{slug}       → cuál es, y si el cliente ya tiene reporte
+    POST /admin/enlaces/general/{slug}       → lo crea si falta; idempotente
+    POST /admin/enlaces/general/{slug}/rotar → revoca el de ahora y crea otro
+
 Refresco a demanda (en rutas_refrescar.py)
     GET  /r/{token}/refrescar         → ¿se puede refrescar? ¿hay uno en marcha?
     POST /r/{token}/refrescar         → lo pide el botón del dashboard
@@ -68,6 +73,7 @@ from .rutas_panel import router as router_panel
 from . import rutas_extraccion
 from . import rutas_refrescar
 from . import rutas_ficha
+from . import enlace_general
 from .privacidad import MODOS, aplicar
 from . import seguridad as seg
 from .visor import partir_html
@@ -94,7 +100,7 @@ app.include_router(router_panel)
 
 almacen = abrir_almacen()
 
-# ── el dashboard se versiona en el repositorio ───────────────────────
+# ── el dashboard se versiona en el repositorio ─────────────────────
 # `web/visor/dashboard.html` es la FUENTE DE VERDAD del dashboard: el código, sin datos.
 # Cada despliegue lo parte y lo guarda, así que mejorar el dashboard es un commit y nada
 # más. POST /admin/visor sigue existiendo como atajo de emergencia (cambiar el dashboard
@@ -172,9 +178,9 @@ log.info("servicio arriba · almacén %s · visor %s",
          almacen.tipo, _cache["hash"] or "SIN CARGAR")
 
 
-# ═════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 #  Utilidades
-# ═════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 def exige_admin(peticion: Request, x_admin_token: str = Header(default="")) -> None:
     """
     El token CORRECTO pasa siempre, incluso si desde esa IP hubo muchos fallos antes.
@@ -312,9 +318,9 @@ async def errores(peticion: Request, exc: ErrorHTTP):
                         headers=getattr(exc, "headers", None) or CABECERAS_PRIVADAS)
 
 
-# ═════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 #  Público
-# ═════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 @app.get("/salud")
 def salud():
     # Público a propósito (lo usa el healthcheck de Railway), así que no cuenta nada más:
@@ -416,9 +422,9 @@ def snapshot(token: str, peticion: Request):
                         headers=seg.cabeceras({"Cache-Control": "private, no-store"}))
 
 
-# ═════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 #  Administración
-# ═════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 @app.get("/admin/estado", dependencies=[Depends(exige_admin)])
 def admin_estado():
     v = _cargar_visor()
@@ -536,7 +542,7 @@ def admin_cliente(cuerpo: dict = Body(...)):
     return out
 
 
-# ═════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 #  Borrar un cliente
 #
 #  Se hace en DOS pasos y no en uno: primero se pregunta qué se destruiría y solo
@@ -545,7 +551,7 @@ def admin_cliente(cuerpo: dict = Body(...)):
 #  ENLACES VIVOS se van con él. Uno de esos enlaces puede estar empotrado ahora mismo
 #  en la web del cliente, y al borrarlo deja de funcionar sin que nadie se entere hasta
 #  que alguien lo abre.
-# ═════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 def _extraccion_en_curso(slug: str) -> bool:
     """
     ¿Hay una extracción pendiente o corriendo para este cliente?
@@ -629,6 +635,7 @@ async def admin_publicar(slug: str, peticion: Request):
                                   "problemas": problemas})
     reg = almacen.publicar_snapshot(slug, datos)
     almacen.purgar_snapshots(slug, conservar=30)
+    enlace_general.tras_publicar(almacen, slug)
     log.info("snapshot publicado · %s · %s leads · %.0f KB",
              slug, reg.get("n_leads"), (reg.get("bytes") or 0) / 1024)
     return {"ok": True, **{k: str(v) for k, v in reg.items()}}
@@ -716,6 +723,18 @@ def admin_enlaces(cliente: Optional[str] = None):
 @app.post("/admin/enlaces/{token}/revocar", dependencies=[Depends(exige_admin)])
 def admin_revocar(token: str):
     e = almacen.enlace(token)
+    if not e:
+        raise HTTPException(404, "Ese enlace no existe.")
+    # EL ENLACE GENERAL NO SE REVOCA POR AQUÍ. Es el que está empotrado en la web del
+    # cliente, y revocarlo la deja en blanco sin que nada avise desde el panel. Para el
+    # día que haya que cortarlo de verdad está «rotar», que pide el identificador escrito
+    # y dice qué rompe.
+    if e.get("general"):
+        raise HTTPException(409,
+            f"Ese es el enlace general de '{e.get('cliente')}': el que está empotrado en "
+            "GoHighLevel y el que se comparte. No se revoca desde aquí porque dejaría su "
+            "web en blanco. Si de verdad hay que invalidarlo, usa «rotar el enlace "
+            "general» en su ficha, que crea otro en el mismo paso.")
     if not almacen.revocar_enlace(token):
         raise HTTPException(404, "Ese enlace no existe.")
     log.info("enlace revocado · cliente %s · modo %s",
@@ -723,11 +742,11 @@ def admin_revocar(token: str):
     return {"ok": True, "revocado": token}
 
 
-# ═════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 #  Comprobaciones de cuadre — un snapshot que no las pasa NO se publica.
 #  Es la respuesta al hallazgo H-9 de la auditoría: la verificación deja de depender
 #  de que alguien se acuerde de correrla a mano.
-# ═════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 def validar(d: Any) -> list[str]:
     p: list[str] = []
     if not isinstance(d, dict):
@@ -747,7 +766,7 @@ def validar(d: Any) -> list[str]:
         p.append("El cliente no declara zona horaria ('cliente.tz'): sin ella las fechas "
                  "no son comparables con el CRM.")
 
-    # ── fechas coherentes ─────────────────────────────
+    # ── fechas coherentes ───────────────────────────────
     try:
         datetime.fromisoformat(d["desde"])
         datetime.fromisoformat(d["hasta"])
@@ -757,7 +776,7 @@ def validar(d: Any) -> list[str]:
         p.append("'desde' y 'hasta' tienen que ser fechas ISO (2026-05-03).")
         return p
 
-    # ── los leads caen dentro de la ventana ─────────────────────
+    # ── los leads caen dentro de la ventana ────────────────────────
     # El criterio de extracción es la CREACIÓN DE LA OPORTUNIDAD ('fo'): eso sí tiene que
     # caer siempre dentro. El alta del contacto ('f') puede ser anterior — son los clientes
     # recurrentes — y en ese caso el lead tiene que venir marcado con rec=1. Si un lead
@@ -808,10 +827,10 @@ def validar(d: Any) -> list[str]:
     return p
 
 
-# ═════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 #  Rutas de la Fase 1 (extracción) — se montan al final porque necesitan
 #  exige_admin y validar, que se definen arriba.
-# ═════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 rutas_extraccion.montar(app, almacen=almacen, exige_admin=exige_admin,
                         validar=validar, leer_cuerpo=seg.leer_cuerpo,
                         tope_mb=TOPE_SNAPSHOT_MB)
@@ -825,3 +844,4 @@ rutas_refrescar.montar(app, almacen=almacen, exige_admin=exige_admin,
 # La zona horaria y la moneda las lee del CRM, para no pedírselas a nadie.
 rutas_ficha.montar(app, almacen=almacen, exige_admin=exige_admin,
                    config_de=lambda s: (almacen.cliente(s) or {}).get("config") or {})
+enlace_general.montar(app, almacen=almacen, exige_admin=exige_admin)
