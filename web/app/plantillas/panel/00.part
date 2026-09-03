@@ -199,7 +199,19 @@ button.rojo:disabled{opacity:.45}
   }
   function esc(s){return String(s).replace(/[<>&]/g,function(c){return{'<':'&lt;','>':'&gt;','&':'&amp;'}[c]})}
 
-  // ── zonas horarias ─────────────────────────────────────────────
+  // Copiar al portapapeles falla de dos maneras distintas y hay que tratarlas igual:
+  // `navigator.clipboard` NO EXISTE si la página no se sirve por https (o por localhost),
+  // y existiendo puede rechazar si el navegador no da permiso. Sin esto, lo primero es un
+  // TypeError que se lleva por delante el resto del manejador.
+  function copia(texto){
+    try{
+      if(navigator.clipboard && navigator.clipboard.writeText)
+        return navigator.clipboard.writeText(texto);
+    }catch(e){}
+    return Promise.reject(new Error('sin portapapeles'));
+  }
+
+  // ── zonas horarias ───────────────────────────────────
   // La zona se LEE DEL CRM (ver rutas_ficha.py). Este desplegable es el camino de escape
   // para cuando la sub-cuenta no la declara o el CRM no contesta — y para corregir a mano
   // una sub-cuenta mal configurada.
@@ -247,7 +259,7 @@ button.rojo:disabled{opacity:.45}
            '<option value="'+esc(sel)+'" selected>'+esc(sel)+' · no reconocida</option></optgroup>';
     return out;
   }
-  // ── las cuentas disponibles ───────────────────────────────────
+  // ── las cuentas disponibles ──────────────────────────────
   // Un identificador tecleado a mano no falla: extrae de OTRA cuenta. Un dígito cambiado
   // en una cuenta de Meta da un reporte con el gasto de otro negocio y nadie lo nota,
   // porque el número tiene toda la pinta de ser bueno. Aquí se elige por NOMBRE.
