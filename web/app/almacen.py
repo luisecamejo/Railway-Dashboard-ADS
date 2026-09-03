@@ -14,6 +14,7 @@ import os
 import pathlib
 import re
 import secrets
+import shutil
 import threading
 from datetime import datetime, timezone
 from typing import Optional
@@ -40,9 +41,9 @@ def slug_valido(v) -> bool:
     return bool(_SLUG.match(str(v or "")))
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════
 #  Postgres
-# ══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════
 ESQUEMA = """
 CREATE TABLE IF NOT EXISTS clientes (
   slug              TEXT PRIMARY KEY,
@@ -135,7 +136,7 @@ class AlmacenPostgres:
         with self.pool.connection() as c:
             c.execute(ESQUEMA)
 
-    # ── clientes ──────────────────────────────────────────────
+    # ── clientes ────────────────────────────────────────────
     def guardar_cliente(self, slug, nombre, ghl_location_id=None, tz=None, fuentes=None):
         with self.pool.connection() as c:
             c.execute(
@@ -157,6 +158,44 @@ class AlmacenPostgres:
             return None
         return dict(zip(("slug", "nombre", "ghl_location_id", "tz", "fuentes",
                          "activo", "creado", "config"), r))
+
+    def resumen_borrado(self, slug) -> Optional[dict]:
+        """
+        Qué se destruiría al borrar este cliente. Se mira ANTES de borrar.
+
+        No es cosmético: lo que decide si borrar es seguro no es el nombre del cliente,
+        es cuántos enlaces vivos hay (uno empotrado en su web deja de funcionar) y
+        cuántas oportunidades se van con él.
+        """
+        if not self.cliente(slug):
+            return None
+        with self.pool.connection() as c:
+            r = c.execute(
+                """SELECT (SELECT count(*) FROM snapshots WHERE cliente=%s),
+                          (SELECT count(*) FROM enlaces   WHERE cliente=%s),
+                          (SELECT count(*) FROM enlaces   WHERE cliente=%s AND NOT revocado),
+                          (SELECT count(*) FROM crudos    WHERE cliente=%s),
+                          (SELECT coalesce(sum(accesos),0)  FROM enlaces   WHERE cliente=%s),
+                          (SELECT coalesce(max(n_leads),0)  FROM snapshots WHERE cliente=%s)""",
+                (slug,) * 6).fetchone()
+        return dict(zip(("snapshots", "enlaces", "enlacesActivos", "crudos",
+                         "accesos", "leads"), [int(x or 0) for x in r]))
+
+    def borrar_cliente(self, slug) -> dict:
+        """
+        Borra el cliente y TODO lo suyo. No hay deshacer.
+
+        Los snapshots, los enlaces y los trozos crudos se van por el ON DELETE CASCADE
+        del esquema, así que no hay forma de dejarse una tabla a medias. La tabla
+        `extracciones` NO tiene esa clave a propósito: es la bitácora de qué se extrajo y
+        cuándo, y sobrevive al cliente igual que un log.
+        """
+        res = self.resumen_borrado(slug)
+        if res is None:
+            raise KeyError(slug)
+        with self.pool.connection() as c:
+            c.execute("DELETE FROM clientes WHERE slug=%s", (slug,))
+        return res
 
     def clientes(self) -> list[dict]:
         with self.pool.connection() as c:
@@ -197,7 +236,7 @@ class AlmacenPostgres:
                            "WHERE cliente=%s", (cliente,)).fetchall()
         return {r[0]: {"datos": r[1], "recibido": r[2], "bytes": r[3]} for r in rs}
 
-    # ── snapshots ────────────────────────────────────────
+    # ── snapshots ───────────────────────────────────
     def publicar_snapshot(self, cliente, datos: dict) -> dict:
         crudo = json.dumps(datos, ensure_ascii=False, separators=(",", ":"))
         with self.pool.connection() as c:
@@ -230,7 +269,7 @@ class AlmacenPostgres:
                           (cliente, cliente, conservar))
             return r.rowcount
 
-    # ── visor ────────────────────────────────────────────
+    # ── visor ──────────────────────────────────────
     def guardar_visor(self, index_html, app_js, hash_) -> dict:
         with self.pool.connection() as c:
             c.execute("""INSERT INTO visor (id,index_html,app_js,hash,subido)
@@ -248,7 +287,7 @@ class AlmacenPostgres:
             return None
         return {"index": r[0], "app": r[1], "hash": r[2], "subido": r[3]}
 
-    # ── enlaces ──────────────────────────────────────────
+    # ── enlaces ────────────────────────────────────
     def crear_enlace(self, cliente, modo="cliente", nota=None, caduca=None,
                      dominios=None) -> dict:
         tok = nuevo_token()
@@ -302,9 +341,9 @@ class AlmacenPostgres:
             pass  # contar accesos nunca debe tumbar una visita
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════
 #  Ficheros (desarrollo, pruebas y despliegue con volumen)
-# ══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════
 class AlmacenFicheros:
     tipo = "ficheros"
 
@@ -386,6 +425,61 @@ class AlmacenFicheros:
             fuera[fuente] = {"datos": json.loads(f.read_text(encoding="utf-8")),
                              "recibido": m.get("recibido"), "bytes": m.get("bytes")}
         return fuera
+
+    def resumen_borrado(self, slug) -> Optional[dict]:
+        """Qué se destruiría al borrar este cliente. Ver la versión de Postgres."""
+        d = self._leer()
+        if slug not in d["clientes"]:
+            return None
+        es = [e for e in d["enlaces"].values() if e["cliente"] == slug]
+        h = d["historial"].get(slug) or []
+        snap = self.snapshot(slug) or {}
+        return {"snapshots": len(h),
+                "enlaces": len(es),
+                "enlacesActivos": sum(1 for e in es if not e["revocado"]),
+                "crudos": len(d["crudos"].get(slug) or {}),
+                "accesos": sum(int(e.get("accesos") or 0) for e in es),
+                "leads": len(snap.get("leads") or [])}
+
+    def borrar_cliente(self, slug) -> dict:
+        """
+        Borra el cliente y TODO lo suyo. No hay deshacer.
+
+        Los ficheros se van DE VERDAD, no se mueven a un lado: un snapshot lleva nombres
+        y teléfonos de pacientes, y guardar los datos de un cliente que se dio de baja
+        para siempre es exactamente lo que no hay que hacer.
+
+        Se borra el índice ANTES que los ficheros. Si el proceso se muriera entre las dos
+        cosas, quedaría un fichero huérfano que nadie lee (basura) en vez de un cliente
+        en el índice cuyos datos ya no existen (un reporte que revienta al abrirlo).
+        """
+        with self._lock:
+            d = self._leer()
+            if slug not in d["clientes"]:
+                raise KeyError(slug)
+            res = {"snapshots": len(d["historial"].get(slug) or []),
+                   "enlaces": 0, "enlacesActivos": 0,
+                   "crudos": len(d["crudos"].get(slug) or {}),
+                   "accesos": 0, "leads": 0}
+            snap = self.snapshot(slug) or {}
+            res["leads"] = len(snap.get("leads") or [])
+            for tok in [t for t, e in d["enlaces"].items() if e["cliente"] == slug]:
+                e = d["enlaces"].pop(tok)
+                res["enlaces"] += 1
+                res["accesos"] += int(e.get("accesos") or 0)
+                if not e.get("revocado"):
+                    res["enlacesActivos"] += 1
+            d["clientes"].pop(slug, None)
+            d["historial"].pop(slug, None)
+            d["crudos"].pop(slug, None)
+            self._escribir(d)
+
+            if slug_valido(slug):
+                f = self.raiz / "snapshots" / f"{slug}.json"
+                if f.exists():
+                    f.unlink()
+                shutil.rmtree(self.raiz / "crudos" / slug, ignore_errors=True)
+        return res
 
     def clientes(self):
         d = self._leer()
