@@ -11,11 +11,14 @@ siquiera, y que la petición que sale lleve el `confirmar` correcto.
 
 `enCurso` se prueba con un segundo cliente en vez de recargando la página: así queda
 claro que el estado es POR CLIENTE y no una bandera global del panel.
+
+El panel se pide a `rutas_panel._html()`, que es lo que sirve el servicio de verdad.
 """
 import asyncio, json, pathlib, sys
 
 RAIZ = pathlib.Path(__file__).resolve().parent.parent
-PANEL = RAIZ / "web" / "app" / "plantillas" / "admin.html"
+sys.path.insert(0, str(RAIZ / "web"))
+from app.rutas_panel import _html as panel_html          # noqa: E402
 fallos = []
 
 
@@ -82,7 +85,7 @@ async def main() -> int:
         await pg.route("**/admin/**", enruta)
         await pg.route("http://panel.local/", lambda r: r.fulfill(
             status=200, content_type="text/html; charset=utf-8",
-            body=PANEL.read_text(encoding="utf-8")))
+            body=panel_html()))
         await pg.add_init_script("sessionStorage.setItem('tok_reportes','x')")
         await pg.goto("http://panel.local/", wait_until="domcontentloaded")
         await pg.wait_for_timeout(900)
@@ -90,7 +93,7 @@ async def main() -> int:
         CLIFF = ".cli[data-slug=cliff]"
         OCUP = ".cli[data-slug=ocupado]"
 
-        print("\n── la vista previa dice qué se destruye ───────────────────")
+        print("\n── la vista previa dice qué se destruye ──────────────────────")
         await pg.click(CLIFF + " > summary")
         await pg.wait_for_timeout(700)
         ok(len(errs) == 0, "abrir la ficha no rompe nada", "; ".join(errs[:2]))
@@ -100,7 +103,7 @@ async def main() -> int:
         await pg.click(CLIFF + " .bbaja")
         await pg.wait_for_timeout(500)
         txt = await pg.inner_text(CLIFF + " .cuenta-atras")
-        ok("12" in txt, "cuenta los reportes publicados")
+        ok("12" in txt, "cuenta los reportes publicados", txt.split("\n")[1][:50] if "\n" in txt else "")
         ok("1083" in txt, "y las oportunidades del último")
         ok("2" in txt and "EN USO" in txt, "y avisa de los enlaces EN USO en mayúsculas")
         ok("47" in txt, "con las visitas que han tenido")
@@ -121,7 +124,7 @@ async def main() -> int:
         await pg.wait_for_timeout(120)
         ok(not await pg.is_disabled(CLIFF + " .bya"), "solo se activa con el slug exacto")
 
-        print("\n── con una extracción en marcha no se ofrece ───────────────")
+        print("\n── con una extracción en marcha no se ofrece ──────────────")
         await pg.click(OCUP + " > summary")
         await pg.wait_for_timeout(700)
         await pg.click(OCUP + " .bbaja")
@@ -131,7 +134,7 @@ async def main() -> int:
         ok(await pg.eval_on_selector_all(OCUP + " .bya", "e=>e.length") == 0,
            "y NO pinta el botón de borrar: no hay nada que pulsar")
 
-        print("\n── lo que se manda al borrar ────────────────────────────")
+        print("\n── lo que se manda al borrar ─────────────────────────────")
         await pg.click(CLIFF + " .bya")
         await pg.wait_for_timeout(700)
         ok(len(borrados) == 1, "sale UNA petición de borrado", str(len(borrados)))
