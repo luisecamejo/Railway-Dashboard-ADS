@@ -12,11 +12,15 @@ la lista no se pierda. Nada de eso se ve leyendo el archivo.
 
 El servidor está falseado: se interceptan las llamadas a /admin/* y se responde con
 datos fijos. Lo que se prueba es el panel, no el servicio.
+
+El panel se pide a `rutas_panel._html()`, que es lo que sirve el servicio de verdad:
+así se prueba también que las partes de `plantillas/panel/` se concatenan bien.
 """
 import asyncio, json, pathlib, sys
 
 RAIZ = pathlib.Path(__file__).resolve().parent.parent
-PANEL = RAIZ / "web" / "app" / "plantillas" / "admin.html"
+sys.path.insert(0, str(RAIZ / "web"))
+from app.rutas_panel import _html as panel_html          # noqa: E402
 fallos = []
 
 
@@ -99,12 +103,12 @@ async def main() -> int:
         # ('/admin/...') resuelvan igual que en producción y los intercepte la ruta.
         await pg.route("http://panel.local/", lambda r: r.fulfill(
             status=200, content_type="text/html; charset=utf-8",
-            body=PANEL.read_text(encoding="utf-8")))
+            body=panel_html()))
         await pg.add_init_script("sessionStorage.setItem('tok_reportes','x')")
         await pg.goto("http://panel.local/", wait_until="domcontentloaded")
         await pg.wait_for_timeout(1200)
 
-        print("\n── el alta ────────────────────────────────────────────")
+        print("\n── el alta ──────────────────────────────────────────")
         ok(len(errs) == 0, "la página carga sin errores de JS", "; ".join(errs[:2]))
         ops = await pg.eval_on_selector_all("#cloc option", "e=>e.map(o=>o.textContent)")
         ok(any("Clínica Libre" in o for o in ops), "el desplegable trae los nombres del CRM")
@@ -128,7 +132,7 @@ async def main() -> int:
         await pg.wait_for_timeout(200)
         ok(await pg.is_visible("#clocman"), "«a mano» descubre la casilla de texto")
 
-        print("\n── la ficha del cliente ─────────────────────────────────")
+        print("\n── la ficha del cliente ──────────────────────────────────")
         await pg.click(".cli > summary")
         await pg.wait_for_timeout(900)
         ok(len(errs) == 0, "abrir la ficha no rompe nada", "; ".join(errs[:2]))
