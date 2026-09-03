@@ -55,7 +55,7 @@ def main() -> int:
     c = TestClient(app)
     H = {"X-Admin-Token": "token-de-prueba"}
 
-    # ── dos clientes, uno con todo puesto ──────────────────────
+    # ── dos clientes, uno con todo puesto ──────────────────────────
     for slug, nombre in (("victima", "La Víctima"), ("vecino", "El Vecino")):
         almacen.guardar_cliente(slug, nombre, "LOC-" + slug, "America/Denver", None)
         almacen.guardar_config(slug, {"nombre": nombre, "slug": slug,
@@ -69,18 +69,28 @@ def main() -> int:
     almacen.marcar_acceso(e1["token"])
     almacen.crear_enlace("vecino", "cliente", "el del vecino")
 
+    # El ENLACE GENERAL es el que de verdad decide si el cliente pierde el acceso: es el
+    # que está empotrado en su GoHighLevel. Se mete en el escenario a propósito, porque
+    # es el que no se puede revocar por la vía normal (la ruta devuelve 409) y por eso
+    # hay que demostrar que el BORRADO sí se lo lleva.
+    from app import enlace_general
+    gen = enlace_general.asegura(almacen, "victima")["token"]
+    gen_vecino = enlace_general.asegura(almacen, "vecino")["token"]
+    almacen.marcar_acceso(gen)
+
     print("\n── primero se ve QUÉ se va a destruir ─────────────────────")
     r = c.get("/admin/clientes/victima/borrado", headers=H)
     ok(r.status_code == 200, "la vista previa contesta", r.status_code)
     d = r.json()
     ok(d.get("nombre") == "La Víctima", "dice de quién es", str(d.get("nombre")))
-    ok(d.get("enlaces") == 2 and d.get("enlacesActivos") == 1,
+    # 3 enlaces: el de cliente, el demo (revocado) y el GENERAL. Vivos: 2.
+    ok(d.get("enlaces") == 3 and d.get("enlacesActivos") == 2,
        "cuenta los enlaces y CUÁNTOS SIGUEN VIVOS (los empotrados dejan de funcionar)",
        f"{d.get('enlaces')} / {d.get('enlacesActivos')} activos")
     ok(d.get("snapshots") == 1, "cuenta los snapshots", str(d.get("snapshots")))
     ok(d.get("crudos") == 1, "y los trozos crudos", str(d.get("crudos")))
     ok(d.get("leads") == 3, "y las oportunidades que se van con él", str(d.get("leads")))
-    ok(d.get("accesos") == 1, "y las visitas acumuladas", str(d.get("accesos")))
+    ok(d.get("accesos") == 2, "y las visitas acumuladas", str(d.get("accesos")))
     ok(almacen.cliente("victima") is not None, "la vista previa NO ha borrado nada")
 
     print("\n── sin repetir el identificador NO se borra ─────────────────")
@@ -109,7 +119,8 @@ def main() -> int:
 
     r = c.delete("/admin/clientes/victima?confirmar=victima", headers=H)
     ok(r.status_code == 200, "el borrado contesta 200", r.status_code)
-    ok((r.json() or {}).get("enlaces") == 2, "y dice qué se llevó por delante")
+    ok((r.json() or {}).get("enlaces") == 3, "y dice qué se llevó por delante",
+       str((r.json() or {}).get("enlaces")))
 
     ok(almacen.cliente("victima") is None, "el cliente ya no existe")
     ok(almacen.snapshot("victima") is None, "su snapshot ya no existe")
@@ -125,13 +136,27 @@ def main() -> int:
     ok(c.get(f"/r/{e1['token']}/snapshot.json").status_code == 404,
        "y abrirlo da 404 (enlace que no existe), no un 409 de 'preparándose'")
 
+    print("\n── y el ENLACE GENERAL se va con él ───────────────────────")
+    # Es la regla: al dar de baja a un cliente pierde el acceso al dashboard, y el
+    # camino por el que lo tenía era este enlace. Si sobreviviera, el iframe de su web
+    # seguiría enseñando sus datos después de haberlo dado de baja.
+    ok(almacen.enlace(gen) is None, "el token del general ya no existe")
+    ok(enlace_general.buscar(almacen, "victima") is None, "y no queda ninguno vivo")
+    ok(c.get(f"/r/{gen}/").status_code == 404, "abrirlo da 404")
+    ok(c.get(f"/r/{gen}/embed").status_code == 404,
+       "y su ruta de iframe también: eso es lo que ve la web del cliente")
+    ok(c.get(f"/r/{gen}/snapshot.json").status_code == 404, "y sus datos no se sirven")
+
     print("\n── el vecino sigue intacto ──────────────────────────────")
     ok(almacen.cliente("vecino") is not None, "el cliente")
     ok(almacen.snapshot("vecino") is not None, "su snapshot")
-    ok(len(almacen.enlaces("vecino")) == 1, "su enlace")
+    ok(len(almacen.enlaces("vecino")) == 2, "sus enlaces (el suyo y su general)",
+       str(len(almacen.enlaces("vecino"))))
     ok(list((almacen.crudos("vecino") or {}).keys()) == ["ghl"], "y su trozo crudo")
     ok((almacen.cliente("vecino") or {}).get("config", {}).get("tz") == "America/Denver",
        "y su configuración")
+    ok(c.get(f"/r/{gen_vecino}/").status_code == 200,
+       "y SU enlace general sigue abriendo: borrar a uno no apaga la web del otro")
 
     print("\n── borrar dos veces no revienta ───────────────────────────")
     ok(c.delete("/admin/clientes/victima?confirmar=victima", headers=H).status_code == 404,
@@ -145,6 +170,10 @@ def main() -> int:
     ok(r.status_code == 200, "se puede volver a dar de alta el mismo identificador",
        r.status_code)
     ok(almacen.snapshot("victima") is None, "y arranca SIN los datos del anterior")
+    ok(c.get(f"/r/{gen}/").status_code == 404,
+       "y el enlace general del anterior NO revive al reutilizar el identificador")
+    ok(enlace_general.buscar(almacen, "victima") is None,
+       "el nuevo tendrá el suyo cuando publique su primer reporte")
 
     print("\n── sigue protegido por el token ───────────────────────────")
     ok(c.delete("/admin/clientes/vecino?confirmar=vecino").status_code == 401,
