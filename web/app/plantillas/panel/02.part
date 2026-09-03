@@ -1,0 +1,271 @@
+      // Al final y en rojo a propósito: no es un botón que se pulse a diario, y es el
+      // único del panel sin deshacer.
+      '<div class="bloque peligro"><h2>Dar de baja este cliente</h2>'+
+      '<p class="sub">Borra el cliente y <b>todo lo suyo</b>: sus datos, su historial, su '+
+      'configuración y sus enlaces. <b>No hay deshacer</b> y no queda copia — los snapshots '+
+      'llevan nombres y teléfonos de pacientes, así que se borran de verdad.</p>'+
+      '<button class="sec bbaja">Ver qué se borraría…</button>'+
+      '<div class="cuenta-atras" style="display:none"></div>'+
+      '<div class="msg mbaja"></div></div>';
+
+    // ── cuentas y extracción ───────────────────────────────────
+    // CFG se guarda entero y se vuelve a mandar entero al guardar: la ruta reemplaza
+    // toda la configuración, así que si mandáramos solo estos campos borraríamos los
+    // productos, los roles y el SOP del cliente sin avisar.
+    var CFG={}, mconf=cuerpo.querySelector('.mconf'), leerLoc=null;
+    var HUECO={Meta:'1003698104483915',Google:'580-642-2100'};
+
+    function filaCuenta(plataforma,id){
+      var cont=cuerpo.querySelector('.cuentas');
+      var f=document.createElement('div');
+      f.className='cuenta fila';
+      f.style.marginTop='7px';
+      f.innerHTML='<div style="flex:0 0 110px"><select class="kplat">'+
+        '<option value="Meta">Meta</option><option value="Google">Google</option></select></div>'+
+        '<div><select class="kidsel"></select>'+
+        '<input type="text" class="kid" style="display:none;margin-top:6px"></div>'+
+        '<button class="dgr kquitar" type="button">quitar</button>';
+      cont.appendChild(f);
+      var sel=f.querySelector('.kplat'), idsel=f.querySelector('.kidsel'),
+          inp=f.querySelector('.kid');
+      sel.value=plataforma==='Google'?'Google':'Meta';
+
+      // El desplegable se rehace al cambiar de plataforma: las cuentas de Meta y las de
+      // Google no son la misma lista, y dejar la anterior invitaría a guardar un id de
+      // Meta declarado como Google, que extraería de la nada sin dar error.
+      function pintaId(valor){
+        var b=(CUENTAS||{})[sel.value==='Google'?'google':'meta']||{};
+        inp.placeholder=HUECO[sel.value];
+        f.leer=combo(idsel,inp,b.cuentas,valor||'',
+                     '— elige la cuenta de '+sel.value+' —');
+      }
+      sel.addEventListener('change',function(){ pintaId('') });
+      pintaId(id||'');
+      f.querySelector('.kquitar').onclick=function(){ f.remove() };
+      return f;
+    }
+
+    cuerpo.querySelector('.kmas').onclick=function(){ filaCuenta('Meta','') };
+
+    // Para cuando se acaba de crear la cuenta en Meta o la sub-cuenta en el CRM: el
+    // servidor las cachea diez minutos y esto le dice que vuelva a preguntar.
+    cuerpo.querySelector('.krelistas').onclick=function(){
+      var b=this; b.disabled=true;
+      pinta(mconf,'cargando','Volviendo a preguntar al CRM, a Meta y a Google…');
+      cargaCuentas(true).then(function(){
+        pintaConfig();
+        pinta(mconf,'ok','Listas al día. Ojo: al repintarse, las cuentas de esta ficha '+
+          'vuelven a lo último GUARDADO; si habías cambiado algo sin guardar, se ha perdido.');
+      }).catch(function(e){ pinta(mconf,'err',problema(e)) })
+        .then(function(){ b.disabled=false });
+    };
+
+    cuerpo.querySelector('.ktzed').onclick=function(){
+      cuerpo.querySelector('.ktz').disabled=false;
+      cuerpo.querySelector('.kmon').disabled=false;
+      pinta(mconf,'ok','Zona y moneda desbloqueadas. Lo que guardes aquí gana sobre lo que '+
+        'diga el CRM — úsalo solo si la sub-cuenta está mal configurada en GoHighLevel.');
+    };
+
+    // Para los clientes dados de alta antes de que esto se leyera del CRM, y para cuando
+    // alguien corrige la sub-cuenta en GoHighLevel.
+    cuerpo.querySelector('.krel').onclick=function(){
+      var b=this; b.disabled=true;
+      pinta(mconf,'cargando','Preguntando al CRM…');
+      api('/admin/ficha/'+encodeURIComponent(slug)).then(function(d){
+        var puestos=[];
+        if(d.tz){ cuerpo.querySelector('.ktz').innerHTML=opcionesZona(d.tz); puestos.push('zona <b>'+esc(d.tz)+'</b>') }
+        if(d.moneda){ cuerpo.querySelector('.kmon').value=d.moneda; puestos.push('moneda <b>'+esc(d.moneda)+'</b>') }
+        pinta(mconf, puestos.length?'ok':'err', puestos.length
+          ? ('Leído del CRM: '+puestos.join(' · ')+'. Pulsa <b>Guardar configuración</b> para fijarlo.')
+          : 'El CRM no declara zona horaria ni moneda para esta sub-cuenta. Corrígelo allí o pon la zona a mano.');
+      }).catch(function(e){ pinta(mconf,'err',problema(e)) })
+        .then(function(){ b.disabled=false });
+    };
+
+    function pintaConfig(){
+      // Si el cliente aún no tiene configuración, se parte de lo que ya se escribió en
+      // su alta. Volver a teclearlo es como acaban la ficha y la configuración diciendo
+      // zonas horarias distintas, y entonces las fechas no cuadran con el CRM.
+      var tzAct=CFG.tz||det.dataset.tz||'';
+      cuerpo.querySelector('.ktz').innerHTML=opcionesZona(tzAct);
+      cuerpo.querySelector('.kmon').value=CFG.moneda||'';
+      // Si NO hay zona, el select no puede quedarse bloqueado: sería un campo obligatorio
+      // imposible de rellenar. Bloqueado solo cuando ya hay un valor bueno que proteger.
+      if(!tzAct){
+        cuerpo.querySelector('.ktz').disabled=false;
+        cuerpo.querySelector('.kmon').disabled=false;
+      }
+      var locAct=CFG.ghlLocationId||det.dataset.loc||'';
+      leerLoc=combo(cuerpo.querySelector('.klocsel'), cuerpo.querySelector('.kloc'),
+                    ((CUENTAS||{}).ghl||{}).cuentas, locAct, '— elige la sub-cuenta —');
+      var avisos=[avisoLista((CUENTAS||{}).ghl), avisoLista((CUENTAS||{}).meta),
+                  avisoLista((CUENTAS||{}).google)].filter(Boolean).join('');
+      cuerpo.querySelector('.klistas').innerHTML=avisos
+        ? '<b style="color:var(--yl)">Alguna lista no se pudo leer.</b>'+avisos
+        : '';
+      cuerpo.querySelector('.cuentas').innerHTML='';
+      var cs=CFG.cuentas||[];
+      if(!cs.length) filaCuenta('Meta','');
+      else cs.forEach(function(c){ filaCuenta(c.plataforma,c.id) });
+    }
+
+    function cargaConfig(){
+      // Las dos cosas a la vez: la config del cliente y las listas de cuentas. Si las
+      // listas fallan, `combo` se queda con el valor guardado y la casilla de texto, así
+      // que la ficha se puede seguir editando igual que antes.
+      return Promise.all([
+        api('/admin/config/'+encodeURIComponent(slug)).then(function(d){ return d.config||{} })
+                                                      .catch(function(){ return {} }),
+        cargaCuentas().catch(function(){ return null })
+      ]).then(function(r){ CFG=r[0]; pintaConfig() });
+    }
+
+    cuerpo.querySelector('.kguardar').onclick=function(){
+      var tz=cuerpo.querySelector('.ktz').value.trim();
+      var loc=leerLoc?leerLoc():'';
+      if(!tz) return pinta(mconf,'err','Elige la zona horaria del negocio: es lo que hace que '+
+        'las fechas cuadren con el CRM. Sin ella los extractores se saltan a este cliente.');
+      var cuentas=[], vistas={}, malas=[], repetidas=[];
+      Array.prototype.forEach.call(cuerpo.querySelectorAll('.cuenta'),function(f){
+        var p=f.querySelector('.kplat').value, id=f.leer?f.leer():'';
+        if(!id) return;
+        // La MISMA cuenta dos veces sumaría su gasto dos veces y el CPL saldría a la
+        // mitad. Se avisa en vez de quitarla en silencio, que esconde la errata.
+        if(vistas[p+'|'+id]) { repetidas.push(p+' '+id); return }
+        vistas[p+'|'+id]=1;
+        if(p==='Meta' && !/^\d{6,}$/.test(id.replace(/^act_/,'')))
+          malas.push('Meta <code>'+esc(id)+'</code> — se esperan solo dígitos');
+        if(p==='Google' && !/^\d{3}-?\d{3}-?\d{4}$/.test(id))
+          malas.push('Google <code>'+esc(id)+'</code> — se espera <code>123-456-7890</code>');
+        cuentas.push({plataforma:p,id:id});
+      });
+      if(repetidas.length) return pinta(mconf,'err','<b>Hay cuentas repetidas:</b><ul>'+
+        repetidas.map(function(r){return '<li>'+esc(r)+'</li>'}).join('')+
+        '</ul>La misma cuenta dos veces sumaría su gasto dos veces.');
+      if(malas.length) return pinta(mconf,'err','<b>Revisa estos ids:</b><ul>'+
+        malas.map(function(m){return '<li>'+m+'</li>'}).join('')+'</ul>');
+
+      var b=this; b.disabled=true;
+      pinta(mconf,'cargando','Guardando…');
+      var mon=(cuerpo.querySelector('.kmon').value||'').trim().toUpperCase();
+      var nueva=Object.assign({},CFG,{nombre:CFG.nombre||det.dataset.nombre,slug:slug,
+                                      tz:tz,ghlLocationId:loc,cuentas:cuentas});
+      if(mon) nueva.moneda=mon;
+      api('/admin/config/'+encodeURIComponent(slug),
+          {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(nueva)})
+        .then(function(){
+          CFG=nueva;
+          var meta=cuentas.filter(function(c){return c.plataforma==='Meta'}).length;
+          var goo=cuentas.filter(function(c){return c.plataforma==='Google'}).length;
+          pinta(mconf,'ok','Configuración guardada: '+meta+' cuenta'+(meta===1?'':'s')+
+            ' de Meta y '+goo+' de Google.'+
+            (loc?'':'<br>Sin location de GoHighLevel este cliente <b>no</b> entra en la '+
+                 'extracción del CRM, así que su reporte saldría sin leads.'));
+          // La lista lleva escrito quién usa cada cuenta, y eso acaba de cambiar.
+          olvidaCuentas();
+          cargar();   // quita el "sin configurar" del resumen de arriba
+        })
+        .catch(function(e){ pinta(mconf,'err',problema(e)) })
+        .then(function(){ b.disabled=false });
+    };
+
+    function construir(ensayo){
+      var bs=[cuerpo.querySelector('.kensayo'),cuerpo.querySelector('.kconstruir')];
+      bs.forEach(function(b){b.disabled=true});
+      pinta(mconf,'cargando',ensayo?'Construyendo sin publicar… (puede tardar unos segundos)'
+                                   :'Construyendo y publicando…');
+      api('/admin/construir/'+encodeURIComponent(slug),
+          {method:'POST',headers:{'Content-Type':'application/json'},
+           body:JSON.stringify({publicar:!ensayo})})
+        .then(function(d){
+          var lineas=(d.resumen||'').split('\n').filter(function(l){return l.trim()});
+          pinta(mconf,'ok','<b>'+(d.publicado?'Publicado. Los enlaces ya muestran esto.'
+                                             :'Ensayo: NO se publicó nada.')+'</b><ul>'+
+            lineas.map(function(l){return '<li>'+esc(l.trim())+'</li>'}).join('')+'</ul>'+
+            ((d.avisos||[]).length?'<b>Avisos:</b><ul>'+
+               d.avisos.map(function(a){return '<li>'+esc(a)+'</li>'}).join('')+'</ul>':''));
+          historial(); crudos(); cargar();
+        })
+        .catch(function(e){ pinta(mconf,'err',problema(e)) })
+        .then(function(){ bs.forEach(function(b){b.disabled=false}) });
+    }
+    cuerpo.querySelector('.kensayo').onclick=function(){ construir(true) };
+    cuerpo.querySelector('.kconstruir').onclick=function(){ construir(false) };
+
+    function crudos(){
+      return api('/admin/crudo/'+encodeURIComponent(slug)).then(function(d){
+        var f=d.fuentes||{}, ks=Object.keys(f).sort(), out;
+        out = ks.length
+          ? 'Datos recibidos: '+ks.map(function(k){
+              return '<b>'+esc(k)+'</b> '+fecha(f[k].recibido)+' ('+f[k].kb+' KB)' }).join(' · ')
+          : 'Todavía no ha llegado ningún dato de los extractores.';
+        if((d.faltan||[]).length) out+='<br>Sin datos de: '+d.faltan.map(esc).join(', ')+'.';
+        cuerpo.querySelector('.kcrudos').innerHTML=out;
+      }).catch(function(){});
+    }
+
+    // ── preparar el reporte ──────────────────────────────────────
+    // Es la MISMA pasada que hacen los tres crones de la madrugada, pero para un cliente
+    // y ahora. Corre en el servidor, en un solo hilo y en cola, así que la página no
+    // tiene que quedarse abierta: solo sondea para contar por dónde va.
+    var mprep=cuerpo.querySelector('.mprep'), tprep=null;
+
+    function estadoRefresco(){ return api('/admin/refrescar/'+encodeURIComponent(slug)) }
+
+    function sondeaPrep(gen0, alTerminar){
+      clearTimeout(tprep);
+      return estadoRefresco().then(function(est){
+        if(est.enCurso){
+          pinta(mprep,'cargando','<b>Extrayendo…</b> GoHighLevel, Meta y Google, en ese orden. '+
+            (est.motivo?esc(est.motivo):'Suele tardar unos '+esc(est.duracionMin)+' minutos.')+
+            '<br>Puedes cerrar esta página: el trabajo sigue en el servidor.');
+          tprep=setTimeout(function(){ sondeaPrep(gen0,alTerminar) },20000);
+          return;
+        }
+        historial(); crudos(); cargar();
+        if(est.generado && est.generado!==gen0){
+          pinta(mprep,'ok','<b>Reporte preparado.</b> Datos del '+fecha(est.generado)+
+            '. Ya puedes crear el enlace.');
+          if(alTerminar) alTerminar(est);
+        }else{
+          pinta(mprep,'err','La extracción terminó pero <b>no se publicó ningún reporte</b>. '+
+            'Lo más habitual es que falte el trozo del CRM: mira la línea de abajo y prueba '+
+            '<b>Construir sin publicar</b>, que dice exactamente qué falla.');
+        }
+      }).catch(function(e){ pinta(mprep,'err',problema(e)) });
+    }
+
+    function prepara(alTerminar){
+      var b=cuerpo.querySelector('.bprep');
+      b.disabled=true;
+      pinta(mprep,'cargando','Arrancando la extracción…');
+      return estadoRefresco().then(function(antes){
+        var gen0=antes.generado||null;
+        return api('/admin/refrescar/'+encodeURIComponent(slug),{method:'POST'})
+          .catch(function(e){
+            // 409 = ya había una en marcha para este cliente. No es un error: es
+            // justamente lo que queremos, así que se sigue sondeando la que hay.
+            if(e.codigo!==409) throw e;
+          })
+          .then(function(){ return sondeaPrep(gen0,alTerminar) });
+      }).catch(function(e){ pinta(mprep,'err',problema(e)) })
+        .then(function(){ b.disabled=false });
+    }
+
+    cuerpo.querySelector('.bprep').onclick=function(){ prepara(null) };
+
+    // Si al abrir la ficha ya hay una extracción en marcha, se engancha al sondeo en vez
+    // de dejar la pantalla muda.
+    estadoRefresco().then(function(est){
+      if(est.enCurso) sondeaPrep(est.generado||null,null);
+    }).catch(function(){});
+
+    var menlace=cuerpo.querySelector('.menlace');
+    var snip=cuerpo.querySelector('.snip');
+    var GHL='app.gohighlevel.com, *.gohighlevel.com, *.msgsndr.com, *.leadconnectorhq.com';
+    cuerpo.querySelector('.pghl').onclick=function(){
+      var i=cuerpo.querySelector('.edoms');
+      i.value=i.value.trim()?i.value.replace(/,\s*$/,'')+', '+GHL:GHL;
+    };
+    cuerpo.querySelector('.pvacio').onclick=function(){ cuerpo.querySelector('.edoms').value='' };
