@@ -1,0 +1,279 @@
+  // Un desplegable con su casilla de repuesto detrás. Si la lista no trae la cuenta
+  // (permisos, una cuenta recién creada), siempre queda el camino de escribirla.
+  function combo(sel, inp, lista, valor, vacio){
+    sel.innerHTML=opcionesCuenta(lista, valor||'', vacio);
+    function sync(){
+      var aMano=sel.value===MANUAL;
+      inp.style.display=aMano?'block':'none';
+      if(aMano) inp.focus();
+    }
+    // Al cambiar de plataforma este mismo <select> se vuelve a pintar, así que hay que
+    // quitar el manejador anterior o se acumulan uno por repintado.
+    if(sel._sync) sel.removeEventListener('change',sel._sync);
+    sel._sync=sync;
+    sel.addEventListener('change',sync);
+    sync();
+    return function(){ return (sel.value===MANUAL ? inp.value : sel.value).trim() };
+  }
+  function avisoLista(bloque){
+    // Si una fuente no contesta se dice POR QUÉ y se deja la casilla de texto. Un
+    // desplegable vacío sin explicación es peor que no tenerlo.
+    return (bloque && bloque.error)
+      ? '<br>No pude leer la lista: '+esc(bloque.error)+' Usa «escribir el id a mano».' : '';
+  }
+
+  function fecha(s){ if(!s||s==='None')return '—';
+    var d=new Date(s); if(isNaN(d))return esc(s);
+    return d.toLocaleString('es-ES',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}) }
+
+  // ── arranque ──────────────────────────────────────────────
+  var guardado=sessionStorage.getItem('tok_reportes');
+  if(guardado){ TOK=guardado; entrar() } else { $('login').style.display='block'; $('tok').focus() }
+
+  $('entrar').onclick=function(){
+    TOK=$('tok').value.trim();
+    if(!TOK) return pinta($('mlogin'),'err','Escribe el token.');
+    pinta($('mlogin'),'cargando','Comprobando…');
+    api('/admin/estado').then(function(){
+      sessionStorage.setItem('tok_reportes',TOK);
+      $('login').style.display='none'; entrar();
+    }).catch(function(e){ pinta($('mlogin'),'err',problema(e)) });
+  };
+  $('tok').onkeydown=function(e){ if(e.key==='Enter') $('entrar').click() };
+
+  function entrar(){
+    $('app').style.display='block';
+    $('ctz').innerHTML=opcionesZona('');
+    pintaLocAlta();
+    cargar();
+  }
+
+  var locAlta=null;   // devuelve el location elegido (del desplegable o escrito a mano)
+  // pintaLocAlta se vuelve a llamar tras cada alta, así que el manejador se pone UNA vez:
+  // si no, cada cliente creado dejaría otra llamada al CRM colgando del mismo campo.
+  function engancha(el,evento){
+    if(el.dataset.enganchado===evento) return;
+    el.dataset.enganchado=evento;
+    el.addEventListener(evento,miraFicha);
+  }
+  function pintaLocAlta(valor){
+    var sel=$('cloc'), inp=$('clocman');
+    sel.innerHTML='<option value="">Cargando las sub-cuentas del CRM…</option>';
+    cargaCuentas().then(function(d){
+      locAlta=combo(sel,inp,(d.ghl||{}).cuentas,valor||'','— elige la sub-cuenta —');
+      $('cficha').innerHTML='Elige la sub-cuenta y leo del CRM su zona horaria y su moneda.'+
+        avisoLista(d.ghl);
+      engancha(sel,'change'); engancha(inp,'input');
+    }).catch(function(e){
+      // Sin lista, el alta NO se bloquea: vuelve a ser la casilla de texto de siempre.
+      sel.style.display='none'; inp.style.display='block';
+      locAlta=function(){ return inp.value.trim() };
+      engancha(inp,'input');
+      $('cficha').innerHTML='No pude leer la lista de sub-cuentas ('+problema(e)+'). '+
+        'Pega el id a mano y sigo leyendo del CRM su zona horaria.';
+    });
+  }
+
+  function cargar(){
+    return api('/admin/estado').then(function(d){
+      var v=d.visor||{};
+      $('estado').innerHTML='almacén <b>'+esc(d.almacen)+'</b> · versión <b>'+esc(d.version)+'</b>'+
+        ' · visor '+(v.hash?('<b>'+esc(v.hash)+'</b> ('+Math.round((v.bytes||0)/1024)+' KB, '+fecha(v.subido)+')')
+                            :'<b style="color:var(--rd)">sin cargar</b>');
+      pintaClientes(d.clientes||[]);
+      // El hash es la huella del dashboard que se está sirviendo. Sirve para una sola
+      // pregunta, pero es LA pregunta: "¿el cambio que acabo de subir al repositorio ya
+      // está en producción?". Si cambia, sí.
+      pinta($('mvisor'),v.hash?'ok':'err', v.hash
+        ? ('Sirviendo la versión <b>'+esc(v.hash)+'</b> · '+Math.round((v.bytes||0)/1024)+
+           ' KB · sembrada el '+fecha(v.subido)+'. Cuando cambies el dashboard en el '+
+           'repositorio, este código cambia en el despliegue siguiente.')
+        : 'No hay dashboard cargado. Revisa que <code>web/visor/partes/</code> llegó en el despliegue.');
+    }).catch(function(e){
+      if(e.codigo===401){ sessionStorage.removeItem('tok_reportes'); location.reload(); return }
+      $('estado').innerHTML='<span style="color:var(--rd)">no se pudo leer el estado</span>';
+    });
+  }
+
+  // ── alta de cliente ──────────────────────────────────────────
+  $('cnom').oninput=function(){
+    if($('cslug').dataset.tocado) return;
+    $('cslug').value=$('cnom').value.toLowerCase().normalize('NFD')
+      .replace(/[̀-ͯ]/g,'').replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'');
+  };
+  $('cslug').oninput=function(){ $('cslug').dataset.tocado='1' };
+
+  // Se lee del CRM en cuanto hay un location. Con retardo, porque en el camino de
+  // escribir a mano si no se llamaría una vez por tecla.
+  var FICHA={}, tficha=null;
+  function miraFicha(){
+    var loc=locAlta?locAlta():'';
+    FICHA={}; clearTimeout(tficha);
+    $('ctzman').style.display='none';
+    if(loc.length<6){ $('cficha').innerHTML='Elige la sub-cuenta y leo del CRM su zona horaria y su moneda.'; return }
+    $('cficha').innerHTML='Preguntando al CRM…';
+    tficha=setTimeout(function(){
+      api('/admin/ficha?location='+encodeURIComponent(loc)).then(function(d){
+        FICHA=d||{};
+        var trozos=[];
+        if(d.nombre) trozos.push('<b>'+esc(d.nombre)+'</b>');
+        if(d.ciudad||d.pais) trozos.push(esc([d.ciudad,d.pais].filter(Boolean).join(', ')));
+        if(d.tz) trozos.push('zona <b>'+esc(d.tz)+'</b> ('+esc(husoDe(d.tz))+')');
+        if(d.moneda) trozos.push('moneda <b>'+esc(d.moneda)+'</b>');
+        $('cficha').innerHTML='Leído del CRM: '+trozos.join(' · ');
+        if(!d.tz){
+          $('cficha').innerHTML+='<br>Esta sub-cuenta <b>no declara zona horaria</b> en GoHighLevel. Elígela a mano.';
+          $('ctzman').style.display='block';
+        }
+        if(d.nombre && !$('cnom').value.trim()){
+          $('cnom').value=d.nombre; $('cnom').oninput();
+        }
+      }).catch(function(e){
+        $('cficha').innerHTML='No pude leer el CRM: '+problema(e)+'<br>Elige la zona horaria a mano.';
+        $('ctzman').style.display='block';
+      });
+    },300);
+  }
+
+  $('bcli').onclick=function(){
+    var cuerpo={nombre:$('cnom').value.trim(),slug:$('cslug').value.trim(),
+                ghl_location_id:(locAlta?locAlta():'')||null,
+                tz:(FICHA.tz||$('ctz').value||'').trim()||null,
+                moneda:FICHA.moneda||null,
+                fuentes:['crm','meta','google']};
+    if(!cuerpo.nombre||!cuerpo.slug) return pinta($('mcli'),'err','Hacen falta nombre e identificador.');
+    if(!cuerpo.ghl_location_id&&!cuerpo.tz) return pinta($('mcli'),'err',
+      'Elige la sub-cuenta de GoHighLevel: de ahí sale la zona horaria, y sin zona las fechas no cuadran con el CRM.');
+    pinta($('mcli'),'cargando','Guardando…');
+    api('/admin/clientes',{method:'POST',body:JSON.stringify(cuerpo),
+                           headers:{'Content-Type':'application/json'}})
+      .then(function(d){
+        pinta($('mcli'),'ok','Cliente <b>'+esc(d.nombre)+'</b> guardado'+
+          (d.tz?' · zona <b>'+esc(d.tz)+'</b>'+(d.tzDetectada?' (leída del CRM)':' (a mano)'):'')+
+          (d.moneda?' · moneda <b>'+esc(d.moneda)+'</b>':'')+
+          '.<br>Ábrelo abajo y pulsa <b>Preparar el reporte</b> para extraer sus datos.'+
+          (d.aviso?'<br>'+esc(d.aviso):''));
+        ['cnom','cslug','ctz','clocman'].forEach(function(k){$(k).value=''});
+        FICHA={}; $('ctzman').style.display='none';
+        // Se vuelve a pintar la lista: la sub-cuenta que se acaba de usar ahora sale
+        // marcada como ocupada, que es justo lo que hay que ver en el alta siguiente.
+        olvidaCuentas(); pintaLocAlta('');
+        delete $('cslug').dataset.tocado; cargar();
+      })
+      .catch(function(e){ pinta($('mcli'),'err',problema(e)) });
+  };
+
+  // ── clientes ──────────────────────────────────────────────
+  function resumen(c){
+    // "sin configurar" en rojo: con la cartera entera dada de alta, esto es lo primero
+    // que hay que poder ver de un vistazo — un cliente sin cuentas no extrae nada.
+    return esc(c.slug)+
+      (c.configurado===false?' · <b style="color:var(--rd)">sin configurar</b>':'')+
+      ' · datos: '+fecha(c.ultimo_snapshot)+
+      ' · '+(c.enlaces||0)+' enlace'+(c.enlaces===1?'':'s');
+  }
+
+  // Se actualiza en el sitio: si se volviera a pintar la lista entera, la tarjeta abierta se
+  // cerraría y se perdería el mensaje que el usuario tiene que leer.
+  function pintaClientes(cs){
+    var cont=$('clientes');
+    if(!cs.length){
+      cont.innerHTML='<div class="panel nada">Todavía no hay clientes. Crea el primero arriba.</div>';
+      return;
+    }
+    var previos={};
+    Array.prototype.forEach.call(cont.querySelectorAll('.cli'),function(d){ previos[d.dataset.slug]=d });
+    var mismos = cs.length===Object.keys(previos).length &&
+                 cs.every(function(c){ return previos[c.slug] });
+
+    if(mismos){
+      cs.forEach(function(c){
+        var m=previos[c.slug].querySelector('.met');
+        if(m) m.innerHTML=resumen(c);
+      });
+      return;
+    }
+
+    cont.innerHTML=cs.map(function(c){
+      return '<details class="cli" data-slug="'+esc(c.slug)+'" data-nombre="'+esc(c.nombre)+'"'+
+        ' data-tz="'+esc(c.tz||'')+'" data-loc="'+esc(c.ghl_location_id||'')+'">'+
+        '<summary><span class="nm">'+esc(c.nombre)+'</span>'+
+        '<span class="met">'+resumen(c)+'</span></summary>'+
+        '<div class="cuerpo"><div class="nada">Abriendo…</div></div></details>';
+    }).join('');
+    Array.prototype.forEach.call(cont.querySelectorAll('.cli'),function(d){
+      d.addEventListener('toggle',function(){ if(d.open && !d.dataset.listo) cuerpoCliente(d) });
+    });
+  }
+
+  function cuerpoCliente(det){
+    var slug=det.dataset.slug, cuerpo=det.querySelector('.cuerpo');
+    det.dataset.listo='1';
+    cuerpo.innerHTML=
+      '<div class="bloque"><h2>Cuentas y extracción</h2>'+
+      '<p class="sub">Esto es lo que leen los extractores cada noche. La zona horaria y la '+
+      'moneda salen del CRM; el location de GoHighLevel es obligatorio. De cuentas de '+
+      'anuncios puedes poner <b>tantas como tenga</b>: varias de Meta, varias de Google, o ninguna.</p>'+
+      '<div class="fila">'+
+      '<div style="flex:2 1 260px"><label>Sub-cuenta de GoHighLevel</label>'+
+      '<select class="klocsel"></select>'+
+      '<input type="text" class="kloc" placeholder="id de la sub-cuenta" style="display:none;margin-top:6px"></div>'+
+      // El select va DESACTIVADO: el valor se ve, pero para cambiarlo hay que pulsar
+      // "corregir a mano". Así lo normal es lo que dice el CRM, y lo excepcional cuesta
+      // un clic — al revés de antes, que lo normal era teclearlo y equivocarse.
+      '<div><label>Zona horaria (del CRM)</label><select class="ktz" disabled></select>'+
+      '<div class="preset"><button class="krel" type="button">releer del CRM</button>'+
+      '<button class="ktzed" type="button">corregir a mano</button></div></div>'+
+      '<div style="flex:0 0 110px"><label>Moneda</label>'+
+      '<input type="text" class="kmon" placeholder="USD" maxlength="3" disabled></div>'+
+      '</div>'+
+      '<div style="margin-top:15px"><label>Cuentas de anuncios</label>'+
+      '<div class="cuentas"></div>'+
+      '<div class="preset"><button class="kmas">+ añadir cuenta</button>'+
+      '<button class="krelistas" type="button">releer las listas</button></div>'+
+      '<p class="nota klistas"></p></div>'+
+      '<div class="fila" style="margin-top:15px">'+
+      '<button class="kguardar">Guardar configuración</button>'+
+      '<button class="sec kensayo">Construir sin publicar</button>'+
+      '<button class="sec kconstruir">Construir y publicar</button></div>'+
+      '<div class="msg mconf"></div>'+
+      '<p class="nota kcrudos"></p></div>'+
+
+      // Aquí había un formulario para subir el snapshot.json a mano. Se quitó a
+      // propósito: los datos los traen los extractores y el snapshot lo construye el
+      // servicio con la configuración de ESTE cliente. Una subida manual competía con
+      // eso — el cron de la madrugada la sobrescribía — y hacía creer que publicar un
+      // reporte era un paso manual. Este bloque ahora solo INFORMA de lo publicado.
+      '<div class="bloque"><h2>Datos del reporte</h2>'+
+      '<p class="sub">Los datos <b>ya no se suben desde aquí</b>: los traen los extractores '+
+      '(el CRM, Meta y Google) y el snapshot lo construye el servicio con la configuración de '+
+      'arriba. Cada noche se hace solo. Para hacerlo <b>ahora</b>, el botón de abajo.</p>'+
+      '<div class="fila"><button class="bprep">Preparar el reporte (extraer ahora)</button>'+
+      '<span class="nota kprepn" style="margin-top:0">Extrae de GoHighLevel, Meta y Google y '+
+      'construye el reporte. Tarda entre 15 y 25 minutos; puedes cerrar la página.</span></div>'+
+      '<div class="msg mprep"></div>'+
+      '<div class="tw"><table class="hist"><thead><tr><th>Publicado</th><th>Ventana</th>'+
+      '<th>Oportunidades</th><th>Tamaño</th></tr></thead><tbody></tbody></table></div></div>'+
+
+      '<div class="bloque"><h2>Enlaces</h2>'+
+      '<p class="sub"><b>interno</b>: para el equipo. <b>cliente</b>: para el cliente, ve sus datos completos. '+
+      '<b>demo</b>: nombres de pacientes enmascarados y negocio oculto, para casos de éxito.<br>'+
+      'Un enlace <b>no se crea si el cliente todavía no tiene reporte</b>: si lo pides antes, '+
+      'arranco la extracción y lo creo cuando los datos ya estén.</p>'+
+      '<div class="fila"><div><label>Modo</label><select class="emodo">'+
+      '<option value="cliente">cliente</option><option value="interno">interno</option>'+
+      '<option value="demo">demo</option></select></div>'+
+      '<div><label>Nota (para acordarte a quién es)</label><input type="text" class="enota" placeholder="para quién es este enlace"></div></div>'+
+      '<div style="margin-top:12px"><label>¿Se va a empotrar en un iframe? Dominios permitidos</label>'+
+      '<input type="text" class="edoms" placeholder="vacío = solo enlace para compartir, NO se puede empotrar">'+
+      '<div class="preset">'+
+      '<button class="pghl">+ dominios de GoHighLevel</button>'+
+      '<button class="pvacio">vaciar</button></div>'+
+      '<p class="nota">Para meterlo en GoHighLevel hace falta rellenar esto <b>antes</b> de crear '+
+      'el enlace (o pulsar «permitir» en su fila después). Solo esos dominios podrán mostrar el '+
+      'reporte; cualquier otra web lo verá bloqueado. Si el cliente tiene dominio propio, añádelo.</p></div>'+
+      '<div style="margin-top:12px"><button class="benlace">Crear enlace</button></div>'+
+      '<div class="msg menlace"></div>'+
+      '<div class="tw"><table class="tenlaces"><thead><tr><th>Enlace</th><th>Modo</th><th>Nota</th>'+
+      '<th>Empotrar</th><th>Visitas</th><th>Creado</th><th></th></tr></thead><tbody></tbody></table></div>'+
+      '<div class="snip" style="display:none"></div></div>'+
