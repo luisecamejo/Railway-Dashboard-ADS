@@ -21,8 +21,11 @@ Rutas de administración (cabecera X-Admin-Token)
     GET  /admin/estado
     POST /admin/visor                → atajo de emergencia; el despliegue vuelve al del repo
     POST /admin/clientes             → detecta zona horaria y moneda en el CRM
+    GET  /admin/clientes/{slug}/borrado  → qué se destruiría (no borra nada)
+    DEL  /admin/clientes/{slug}      → borra el cliente y TODO lo suyo; sin deshacer
     GET  /admin/ficha?location=…     → lo que el CRM sabe de una sub-cuenta
     GET  /admin/ficha/{slug}
+    GET  /admin/cuentas              → sub-cuentas del CRM y cuentas de anuncios
     POST /admin/snapshots/{slug}    → atajo de emergencia; ya no hay puerta en el panel
     GET  /admin/snapshots/{slug}
     POST /admin/enlaces              → 409 si el cliente todavía no tiene datos
@@ -531,6 +534,75 @@ def admin_cliente(cuerpo: dict = Body(...)):
     if aviso:
         out["aviso"] = aviso
     return out
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Borrar un cliente
+#
+#  Se hace en DOS pasos y no en uno: primero se pregunta qué se destruiría y solo
+#  después se borra, repitiendo el slug. No es burocracia — no hay deshacer, y lo que
+#  decide si borrar es seguro no es acordarse del nombre del cliente, es ver cuántos
+#  ENLACES VIVOS se van con él. Uno de esos enlaces puede estar empotrado ahora mismo
+#  en la web del cliente, y al borrarlo deja de funcionar sin que nadie se entere hasta
+#  que alguien lo abre.
+# ═════════════════════════════════════════════════════════════════════════════
+def _extraccion_en_curso(slug: str) -> bool:
+    """
+    ¿Hay una extracción pendiente o corriendo para este cliente?
+
+    Importa porque el obrero de refresco escribe el trozo crudo AL TERMINAR. Si el
+    cliente desaparece a mitad, ese POST se encuentra un cliente que no existe, el
+    extractor sale con error y en el log queda un fallo que no es un fallo. Es más
+    limpio negarse y decir que se espere.
+    """
+    try:
+        return bool(rutas_refrescar._pendiente(slug))
+    except Exception:                            # noqa: BLE001
+        return False
+
+
+@app.get("/admin/clientes/{slug}/borrado", dependencies=[Depends(exige_admin)])
+def admin_borrado_previo(slug: str):
+    """Qué se llevaría por delante el borrado. NO borra nada."""
+    res = almacen.resumen_borrado(slug)
+    if res is None:
+        raise HTTPException(404, f"El cliente '{slug}' no existe.")
+    c = almacen.cliente(slug) or {}
+    return {"cliente": slug, "nombre": c.get("nombre"),
+            "enCurso": _extraccion_en_curso(slug), **res}
+
+
+@app.delete("/admin/clientes/{slug}", dependencies=[Depends(exige_admin)])
+def admin_borrar_cliente(slug: str, confirmar: str = Query(default="")):
+    """
+    Borra el cliente y todo lo suyo: snapshots, trozos crudos, enlaces y configuración.
+
+    `confirmar` tiene que venir con el slug EXACTO. Es lo único que separa un clic
+    accidental de perder el historial de un cliente, así que se comprueba en el servidor
+    y no solo en el panel.
+    """
+    res = almacen.resumen_borrado(slug)
+    if res is None:
+        raise HTTPException(404, f"El cliente '{slug}' no existe.")
+    if confirmar != slug:
+        raise HTTPException(400,
+            f"Para borrar hay que repetir el identificador exacto del cliente: "
+            f"manda ?confirmar={slug}. No hay deshacer.")
+    if _extraccion_en_curso(slug):
+        raise HTTPException(409,
+            "Este cliente tiene una extracción en marcha. Espera a que termine (o a que "
+            "caduque, unos 45 minutos) y vuelve a intentarlo: si se borra a mitad, el "
+            "extractor falla al entregar sus datos y ensucia el log con un error falso.")
+
+    borrado = almacen.borrar_cliente(slug)
+    # Se registra con detalle A PROPÓSITO: es la única huella que queda de que estos
+    # datos existieron, y la primera pregunta cuando alguien no encuentre un reporte va
+    # a ser "¿esto se borró, y cuándo?".
+    log.warning("CLIENTE BORRADO · %s · %s snapshots · %s enlaces (%s activos) · "
+                "%s trozos crudos · %s visitas acumuladas",
+                slug, borrado["snapshots"], borrado["enlaces"],
+                borrado["enlacesActivos"], borrado["crudos"], borrado["accesos"])
+    return {"ok": True, "borrado": slug, **borrado}
 
 
 # El panel ya no ofrece subir el snapshot a mano: los datos los traen los extractores y el
