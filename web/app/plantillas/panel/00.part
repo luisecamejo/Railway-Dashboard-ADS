@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="es"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Panel · Reportes Sentinel</title>
+<style>
+:root{
+  --bg:#0b0f14; --pn:#121821; --pn2:#171f2a; --line:#212c3a; --line2:#1a232f;
+  --tx:#e8edf4; --mut:#93a1b5; --faint:#6b7a8f;
+  --pu:#8b7cf6; --gr:#34d399; --rd:#f87171; --yl:#fbbf24; --bl:#60a5fa;
+  --d:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --m:ui-monospace,SFMono-Regular,"SF Mono",Menlo,monospace;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:14px/1.55 var(--d)}
+.wrap{max-width:1000px;margin:0 auto;padding:28px 22px 80px}
+h1{font-size:19px;font-weight:700;letter-spacing:-.01em;margin:0}
+h1 span{color:var(--pu)}
+h2{font-size:14px;font-weight:600;margin:0 0 4px}
+.sub{color:var(--mut);font-size:12.5px;margin:0 0 16px}
+header.top{display:flex;align-items:baseline;justify-content:space-between;gap:16px;
+  padding-bottom:16px;border-bottom:1px solid var(--line);margin-bottom:24px;flex-wrap:wrap}
+.est{font-family:var(--m);font-size:11.5px;color:var(--faint)}
+.est b{color:var(--mut);font-weight:500}
+.panel{background:var(--pn);border:1px solid var(--line);border-radius:8px;padding:18px 20px;margin-bottom:16px}
+label{display:block;font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;
+  color:var(--faint);margin:0 0 5px}
+input[type=text],input[type=password],select,input[type=file]{
+  width:100%;background:var(--pn2);border:1px solid var(--line);color:var(--tx);
+  border-radius:6px;padding:8px 10px;font:13px var(--d);outline:none}
+input:focus,select:focus{border-color:var(--pu)}
+input[type=file]{font-family:var(--m);font-size:11.5px;padding:7px 9px;cursor:pointer}
+input:disabled,select:disabled{opacity:.72;cursor:default}
+button{background:var(--pu);color:#fff;border:0;border-radius:6px;padding:8px 15px;
+  font:600 13px var(--d);cursor:pointer;white-space:nowrap}
+button:hover{filter:brightness(1.1)}
+button:disabled{opacity:.5;cursor:default;filter:none}
+button.sec{background:var(--pn2);color:var(--tx);border:1px solid var(--line)}
+button.dgr{background:transparent;color:var(--rd);border:1px solid rgba(248,113,113,.35);padding:5px 10px;font-size:11.5px}
+.fila{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap}
+.fila>div{flex:1 1 160px;min-width:0}
+.msg{margin-top:12px;padding:11px 13px;border-radius:6px;font-size:12.8px;line-height:1.5;display:none}
+.msg.ok{display:block;background:rgba(52,211,153,.1);border:1px solid rgba(52,211,153,.3);color:var(--gr)}
+.msg.err{display:block;background:rgba(248,113,113,.09);border:1px solid rgba(248,113,113,.3);color:var(--rd)}
+.msg ul{margin:7px 0 0;padding-left:18px}
+.msg li{margin-bottom:3px}
+.msg code{font-family:var(--m);font-size:11.5px}
+.msg.cargando{display:block;background:var(--pn2);border:1px solid var(--line);color:var(--mut)}
+table{width:100%;border-collapse:collapse;font-size:12.8px;margin-top:6px}
+th{text-align:left;font-size:10.5px;font-weight:600;letter-spacing:.07em;text-transform:uppercase;
+  color:var(--faint);padding:8px 10px;border-bottom:1px solid var(--line)}
+td{padding:9px 10px;border-bottom:1px solid var(--line2);vertical-align:middle;color:var(--mut)}
+td:first-child{color:var(--tx)}
+tr:last-child td{border-bottom:0}
+.tw{overflow-x:auto}
+.mono{font-family:var(--m);font-size:11.5px}
+.tag{display:inline-block;font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;
+  padding:2px 7px;border-radius:4px}
+.t-interno{background:rgba(139,124,246,.16);color:var(--pu)}
+.t-cliente{background:rgba(96,165,250,.14);color:var(--bl)}
+.t-demo{background:rgba(251,191,36,.14);color:var(--yl)}
+.t-off{background:rgba(248,113,113,.13);color:var(--rd)}
+.cli{border:1px solid var(--line);border-radius:8px;margin-bottom:12px;overflow:hidden}
+.cli>summary{padding:13px 16px;cursor:pointer;background:var(--pn2);display:flex;gap:12px;
+  align-items:baseline;justify-content:space-between;flex-wrap:wrap;list-style:none}
+.cli>summary::-webkit-details-marker{display:none}
+.cli>summary:hover{background:#1b2430}
+.cli .nm{font-weight:600;font-size:14px;color:var(--tx)}
+.cli .met{font-family:var(--m);font-size:11px;color:var(--faint)}
+.cli .cuerpo{padding:16px}
+.bloque{padding:14px 0;border-top:1px solid var(--line2)}
+.bloque:first-child{border-top:0;padding-top:0}
+.copiar{background:transparent;border:1px solid var(--line);color:var(--mut);padding:4px 9px;font-size:11px}
+.mini{background:transparent;border:1px solid var(--line);color:var(--mut);padding:3px 8px;font-size:10.5px}
+.probar{font-size:10.5px;color:var(--pu);text-decoration:none;white-space:nowrap}
+.probar:hover{text-decoration:underline}
+.doms{font-family:var(--m);font-size:10.5px;color:var(--faint);line-height:1.5;word-break:break-all}
+.preset{display:flex;gap:6px;margin-top:6px;flex-wrap:wrap}
+.preset button{background:transparent;border:1px dashed var(--line);color:var(--mut);
+  padding:3px 9px;font-size:10.5px;font-weight:500}
+.snip{font-family:var(--m);font-size:11px;background:var(--bg);border:1px solid var(--line);
+  border-radius:6px;padding:11px 13px;margin-top:10px;white-space:pre-wrap;word-break:break-all;
+  color:var(--mut);max-height:150px;overflow:auto}
+#login{max-width:380px;margin:14vh auto 0}
+.nada{color:var(--faint);font-size:12.5px;padding:14px 0;text-align:center}
+.nota{font-size:12px;color:var(--faint);line-height:1.5;margin-top:9px}
+.nota code{font-family:var(--m);font-size:11px;background:var(--pn2);padding:1px 4px;border-radius:3px}
+.nota b{color:var(--mut)}
+.peligro{border-top:1px solid rgba(248,113,113,.25);margin-top:6px}
+.peligro h2{color:var(--rd)}
+button.rojo{background:var(--rd);color:#2a0b0b}
+button.rojo:disabled{opacity:.45}
+.cuenta-atras{background:rgba(248,113,113,.06);border:1px solid rgba(248,113,113,.3);
+  border-radius:6px;padding:13px 15px;margin-top:12px}
+.cuenta-atras ul{margin:8px 0 12px;padding-left:18px;font-size:12.8px;color:var(--mut)}
+.cuenta-atras li{margin-bottom:4px}
+.cuenta-atras b{color:var(--tx)}
+.cuenta-atras .grave{color:var(--rd)}
+</style></head>
+<body>
+<div class="wrap">
+
+<div id="login" class="panel" style="display:none">
+  <h2>Panel de reportes</h2>
+  <p class="sub">Pega el token de administración. Se guarda solo en esta pestaña.</p>
+  <label for="tok">Token</label>
+  <input type="password" id="tok" autocomplete="off" placeholder="ADMIN_TOKEN">
+  <div style="margin-top:12px"><button id="entrar">Entrar</button></div>
+  <div class="msg" id="mlogin"></div>
+</div>
+
+<div id="app" style="display:none">
+  <header class="top">
+    <h1>SENTINEL<span>.</span> &nbsp;Panel de reportes</h1>
+    <div class="est" id="estado"></div>
+  </header>
+
+  <div class="panel">
+    <h2>Dashboard (el visor)</h2>
+    <!-- Aquí había un formulario para subir el dashboard.html a mano. Se quitó a
+         propósito: el dashboard vive en el repositorio y cada despliegue lo vuelve a
+         sembrar, así que una subida manual solo aguantaba hasta el despliegue siguiente
+         y mientras tanto hacía creer que el código del repositorio no era la verdad.
+         Este bloque ahora solo INFORMA de qué versión se está sirviendo. -->
+    <p class="sub">El dashboard <b>ya no se sube desde aquí</b>: vive en el repositorio, en
+    <code>web/visor/partes/</code>, y cada despliegue de Railway lo vuelve a sembrar. Un cambio en
+    el código llega solo a <b>todos</b> los clientes, sin regenerar snapshots y sin tocar este panel.</p>
+    <div class="msg ok" id="mvisor" style="display:block"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Alta de cliente</h2>
+    <!-- La zona horaria ya NO se pregunta. Se lee de la sub-cuenta de GoHighLevel, que es
+         quien sella la hora de cada lead: pedirla era pedir un dato que el sistema ya
+         sabe, y equivocarse no daba ningún error, daba fechas corridas. -->
+    <p class="sub">Elige la sub-cuenta de GoHighLevel <b>por su nombre</b>: el identificador lo
+    pone el sistema. La zona horaria y la moneda también se leen del CRM. El identificador del
+    cliente se usa en las rutas y no se puede cambiar después.</p>
+    <div class="fila">
+      <div style="flex:2 1 280px"><label for="cloc">Sub-cuenta de GoHighLevel</label>
+        <select id="cloc"></select>
+        <input type="text" id="clocman" placeholder="pega aquí el id de la sub-cuenta" style="display:none;margin-top:6px"></div>
+      <div><label for="cnom">Nombre</label><input type="text" id="cnom" placeholder="Clínica Ejemplo"></div>
+      <div><label for="cslug">Identificador</label><input type="text" id="cslug" placeholder="clinica-ejemplo"></div>
+      <button id="bcli">Guardar</button>
+    </div>
+    <p class="nota" id="cficha">Cargando las sub-cuentas del CRM…</p>
+    <div id="ctzman" style="display:none;max-width:420px">
+      <label for="ctz">Zona horaria (el CRM no la dice, elígela a mano)</label>
+      <select id="ctz"></select>
+    </div>
+    <div class="msg" id="mcli"></div>
+  </div>
+
+  <h2 style="margin:26px 0 2px">Clientes</h2>
+  <p class="sub">Cada cliente tiene sus datos y sus enlaces.</p>
+  <div id="clientes"></div>
+</div>
+</div>
+
+<script>
+(function(){
+  var TOK='';
+  var $=function(id){return document.getElementById(id)};
+
+  function api(ruta,opciones){
+    opciones=opciones||{};
+    opciones.headers=Object.assign({'X-Admin-Token':TOK},opciones.headers||{});
+    return fetch(ruta,opciones).then(function(r){
+      return r.text().then(function(t){
+        var d={}; try{d=t?JSON.parse(t):{}}catch(e){d={detail:t}}
+        if(!r.ok){var e=new Error('http'); e.codigo=r.status; e.datos=d; throw e}
+        return d;
+      });
+    });
+  }
+
+  // Ojo: no se puede reescribir className, porque estos elementos se localizan por una clase
+  // propia (.mconf, .menlace…). Solo se cambia la clase de estado.
+  function pinta(el,tipo,html){
+    el.classList.remove('ok','err','cargando');
+    el.classList.add('msg');
+    if(tipo) el.classList.add(tipo);
+    el.innerHTML=html;
+  }
+
+  function problema(e){
+    // Los rechazos del validador vienen con una lista de problemas concretos.
+    var d=(e&&e.datos)||{}, det=d.detail!==undefined?d.detail:d;
+    if(det&&det.problemas&&det.problemas.length){
+      return '<b>'+(det.error||'No se pudo publicar')+'</b><ul>'+
+        det.problemas.map(function(p){return '<li>'+esc(p)+'</li>'}).join('')+'</ul>';
+    }
+    if(typeof det==='string') return esc(det);
+    if(e&&e.codigo===401) return 'Token de administración inválido.';
+    if(e&&e.codigo===429) return 'Demasiados intentos fallidos. Espera unos minutos.';
+    return esc(JSON.stringify(det));
+  }
+  function esc(s){return String(s).replace(/[<>&]/g,function(c){return{'<':'&lt;','>':'&gt;','&':'&amp;'}[c]})}
+
+  // ── zonas horarias ─────────────────────────────────────────────
+  // La zona se LEE DEL CRM (ver rutas_ficha.py). Este desplegable es el camino de escape
+  // para cuando la sub-cuenta no la declara o el CRM no contesta — y para corregir a mano
+  // una sub-cuenta mal configurada.
+  //
+  // Lo que NO puede volver a ser es una casilla de texto libre: un texto que no sea un
+  // identificador IANA exacto ("EST", "Colombia", "GMT-5") no da error, da fechas corridas.
+  // La lista sale del PROPIO navegador (Intl.supportedValuesOf), así que son las zonas que
+  // de verdad existen y se actualiza sola. No una tabla escrita a mano que envejece.
+  var ZONAS=(function(){
+    var l=[];
+    try{ l=Intl.supportedValuesOf('timeZone') }catch(_){}
+    return l.length?l:['America/New_York','America/Chicago','America/Denver','America/Phoenix',
+      'America/Los_Angeles','America/Anchorage','Pacific/Honolulu','America/Bogota',
+      'America/Mexico_City','America/Caracas','America/Santiago','America/Argentina/Buenos_Aires',
+      'Europe/Madrid','Europe/London','UTC'];
+  })();
+  // Las que usa la agencia, arriba: es lo que se elige casi siempre, y evita bajar por
+  // cuatrocientas entradas para volver a poner America/Denver.
+  var ZONAS_FREC=['America/New_York','America/Chicago','America/Denver','America/Phoenix',
+    'America/Los_Angeles','America/Bogota','America/Mexico_City','Europe/Madrid'];
+  function husoDe(tz){
+    // El desplazamiento de HOY, calculado por el navegador, así que respeta el horario de
+    // verano. Va escrito al lado del nombre porque "America/Phoenix" y "America/Denver"
+    // suenan igual de plausibles y en verano difieren en una hora.
+    try{
+      var p=new Intl.DateTimeFormat('es',{timeZone:tz,timeZoneName:'shortOffset'})
+              .formatToParts(new Date()).filter(function(x){return x.type==='timeZoneName'})[0];
+      return p?p.value.replace('GMT','UTC').replace('-','−'):'';
+    }catch(_){ return '' }
+  }
+  function opcionesZona(sel){
+    function op(z){
+      var h=husoDe(z);
+      return '<option value="'+esc(z)+'"'+(z===sel?' selected':'')+'>'+esc(z)+
+             (h?' · '+esc(h):'')+'</option>';
+    }
+    var out='<option value=""'+(sel?'':' selected')+'>— elige la zona horaria —</option>';
+    out+='<optgroup label="Habituales">'+ZONAS_FREC.map(op).join('')+'</optgroup>';
+    out+='<optgroup label="Todas">'+ZONAS.map(op).join('')+'</optgroup>';
+    // Una zona guardada antes de que esto fuese un desplegable puede no estar en la lista
+    // (un texto inventado). No se descarta en silencio: se muestra marcada como no válida,
+    // que es la única forma de que alguien la corrija.
+    if(sel&&ZONAS.indexOf(sel)<0)
+      out+='<optgroup label="Guardada, pero no es una zona válida">'+
+           '<option value="'+esc(sel)+'" selected>'+esc(sel)+' · no reconocida</option></optgroup>';
+    return out;
+  }
+  // ── las cuentas disponibles ───────────────────────────────────
+  // Un identificador tecleado a mano no falla: extrae de OTRA cuenta. Un dígito cambiado
+  // en una cuenta de Meta da un reporte con el gasto de otro negocio y nadie lo nota,
+  // porque el número tiene toda la pinta de ser bueno. Aquí se elige por NOMBRE.
+  var CUENTAS=null, pCuentas=null;
+  function cargaCuentas(forzar){
+    if(pCuentas && !forzar) return pCuentas;
+    pCuentas=api('/admin/cuentas'+(forzar?'?refrescar=1':''))
+      .then(function(d){ CUENTAS=d; return d })
+      .catch(function(e){ pCuentas=null; throw e });
+    return pCuentas;
+  }
+  // Guardar un cliente cambia el «ya en uso» de la lista, así que la siguiente vez se
+  // vuelve a pedir. El servidor la cachea igual, o sea que no cuesta una llamada a la API.
+  function olvidaCuentas(){ pCuentas=null }
+
+  var MANUAL='__a_mano__';
+  function opcionesCuenta(lista, sel, vacio){
+    var out='<option value="">'+esc(vacio)+'</option>', esta=false;
+    (lista||[]).forEach(function(c){
+      if(c.id===sel) esta=true;
+      var notas=[];
+      // Que una cuenta ya esté en otro cliente NO la esconde: a veces es correcto (dos
+      // marcas del mismo negocio). Pero ponerla dos veces sin querer suma su gasto dos
+      // veces y deja los dos CPL a la mitad, así que tiene que verse antes de elegir.
+      if(c.usadaPor) notas.push('YA EN '+c.usadaPor);
+      if(c.activa===false) notas.push('pausada');
+      if(c.moneda) notas.push(c.moneda);
+      out+='<option value="'+esc(c.id)+'"'+(c.id===sel?' selected':'')+'>'+
+           esc(c.nombre)+' · '+esc(c.id)+(notas.length?'  ['+esc(notas.join(' · '))+']':'')+
+           '</option>';
+    });
+    // Lo que ya estaba guardado y no aparece en la lista se muestra marcado, no se pierde:
+    // suele significar que el token perdió el acceso a esa cuenta, y eso hay que verlo.
+    if(sel && !esta)
+      out+='<option value="'+esc(sel)+'" selected>'+esc(sel)+'  [guardada, pero no está en la lista]</option>';
+    out+='<option value="'+MANUAL+'">— escribir el id a mano —</option>';
+    return out;
+  }
