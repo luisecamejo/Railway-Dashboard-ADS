@@ -26,12 +26,49 @@ TODO lo que sigue está comprobado contra el mismo SDK que usa ghl-mcp
 """
 from __future__ import annotations
 
+import itertools
 import json
 import logging
+import random
+import time
 
 from .http import pedir
 
 log = logging.getLogger("extractor.mcp")
+
+# Señales de que el fallo es PASAJERO y otro intento tiene sentido.
+#
+# Por qué se miran aquí y no en comun/http.py: cuando una herramienta del MCP
+# falla, el protocolo responde con HTTP **200** y `isError: true`; el texto del
+# error va dentro del cuerpo. Así que el reintento por código de estado que hay en
+# `pedir()` NO ve estos fallos: para la capa HTTP la petición fue un éxito.
+#
+# El caso que lo motivó: el 11-sep-2026 la extracción de golden-rose murió con
+#   'ghl_export_opportunities_compact' devolvió error:
+#   GET /contacts/ -> 429: {"statusCode":429,"message":"Too Many Requests"}
+# Un 429 de GoHighLevel es, por definición, "vuelve a preguntar en un rato": es el
+# único error del que se sabe con certeza que el reintento es la respuesta correcta,
+# y era justo el que no se reintentaba.
+PASAJEROS = (
+    "429", "too many requests", "rate limit", "ratelimit",
+    "502", "503", "504", "bad gateway", "service unavailable", "gateway timeout",
+    "timeout", "timed out", "etimedout",
+    "econnreset", "socket hang up", "fetch failed", "network error",
+)
+
+
+def _es_pasajero(mensaje: str) -> bool:
+    m = (mensaje or "").lower()
+    return any(s in m for s in PASAJEROS)
+
+
+class RespuestaIlegible(RuntimeError):
+    """
+    El cuerpo llegó pero no contiene una respuesta JSON-RPC.
+
+    Se trata como pasajero: en la práctica es una respuesta truncada, el mismo
+    síntoma que `IncompleteRead` pero con algún byte de más.
+    """
 
 
 def _leer_sse(crudo: bytes) -> dict:
@@ -64,24 +101,26 @@ def _leer_sse(crudo: bytes) -> dict:
                 return obj
         except json.JSONDecodeError:
             pass
-        raise RuntimeError(f"Respuesta MCP ilegible: {texto[:300]}")
+        raise RespuestaIlegible(f"Respuesta MCP ilegible: {texto[:300]!r}")
     return ultimo
 
 
 class ClienteMCP:
-    def __init__(self, base: str, token: str, *, timeout: int = 120):
+    def __init__(self, base: str, token: str, *, timeout: int = 120,
+                 intentos: int = 4, espera_base: float = 3.0):
         if not token:
             raise ValueError("Falta el token del MCP (GHL_MCP_TOKEN).")
         self.base = base.rstrip("/")
         self.token = token
         self.timeout = timeout
-        self._id = 0
+        self.intentos = max(1, intentos)
+        self.espera_base = espera_base
+        # itertools.count() reparte ids sin repetir aunque varios hilos pidan a la vez.
+        # Hace falta desde que los extractores recorren clientes en paralelo: `self._id
+        # += 1` no es una operación atómica y dos hilos podían salir con el mismo id.
+        self._ids = itertools.count(1)
 
-    def llamar(self, herramienta: str, argumentos: dict | None = None):
-        """Invoca una herramienta y devuelve su resultado ya deserializado."""
-        self._id += 1
-        peticion = {"jsonrpc": "2.0", "id": self._id, "method": "tools/call",
-                    "params": {"name": herramienta, "arguments": argumentos or {}}}
+    def _post(self, peticion: dict) -> dict:
         _c, crudo, _h = pedir(
             f"{self.base}/mcp", metodo="POST",
             cuerpo=json.dumps(peticion, ensure_ascii=False).encode("utf-8"),
@@ -92,32 +131,68 @@ class ClienteMCP:
                 "Accept": "application/json, text/event-stream",
             },
             timeout=self.timeout)
-        respuesta = _leer_sse(crudo)
+        return _leer_sse(crudo)
 
-        if "error" in respuesta:
-            e = respuesta["error"] or {}
-            raise RuntimeError(f"El MCP rechazó '{herramienta}': "
-                               f"{e.get('message')} (código {e.get('code')})")
-        res = respuesta.get("result") or {}
-        # isError=true es un fallo de la HERRAMIENTA, no del protocolo: viene con
-        # código 200 y sin "error". Si no se mira, un error se cuela como dato.
-        if res.get("isError"):
-            raise RuntimeError(f"'{herramienta}' devolvió error: "
-                               f"{_texto(res)[:400]}")
-        return _contenido(res)
+    def llamar(self, herramienta: str, argumentos: dict | None = None):
+        """
+        Invoca una herramienta y devuelve su resultado ya deserializado.
+
+        Reintenta cuando el error es pasajero (ver PASAJEROS). La espera arranca
+        más alta que en `pedir()` a propósito: contra un 429 de GoHighLevel lo que
+        hace falta es dejar pasar la ventana del límite, no insistir deprisa.
+
+        Se puede llamar desde varios hilos: el transporte del MCP va sin estado, así
+        que cada POST es independiente y los ids no se pisan.
+        """
+        ultimo = None
+        for n in range(1, self.intentos + 1):
+            peticion = {"jsonrpc": "2.0", "id": next(self._ids), "method": "tools/call",
+                        "params": {"name": herramienta,
+                                   "arguments": argumentos or {}}}
+            try:
+                respuesta = self._post(peticion)
+            except RespuestaIlegible as ex:
+                ultimo = ex
+                if n == self.intentos:
+                    raise
+                self._dormir(herramienta, str(ex), n)
+                continue
+
+            if "error" in respuesta:
+                e = respuesta["error"] or {}
+                msg = f"{e.get('message')} (código {e.get('code')})"
+                ultimo = RuntimeError(f"El MCP rechazó '{herramienta}': {msg}")
+                if n == self.intentos or not _es_pasajero(msg):
+                    raise ultimo
+                self._dormir(herramienta, msg, n)
+                continue
+
+            res = respuesta.get("result") or {}
+            # isError=true es un fallo de la HERRAMIENTA, no del protocolo: viene con
+            # código 200 y sin "error". Si no se mira, un error se cuela como dato.
+            if res.get("isError"):
+                msg = _texto(res)[:400]
+                ultimo = RuntimeError(f"'{herramienta}' devolvió error: {msg}")
+                if n == self.intentos or not _es_pasajero(msg):
+                    raise ultimo
+                self._dormir(herramienta, msg, n)
+                continue
+
+            return _contenido(res)
+        raise ultimo  # pragma: no cover
+
+    def _dormir(self, herramienta: str, motivo: str, intento: int) -> None:
+        pausa = min(self.espera_base * (2 ** (intento - 1)) *
+                    (1 + random.random() * 0.3), 90.0)
+        log.warning("'%s' falló por algo pasajero (%s) · reintento %d/%d en %.0fs",
+                    herramienta, motivo[:160].replace("\n", " "),
+                    intento, self.intentos, pausa)
+        time.sleep(pausa)
 
     def herramientas(self) -> list[str]:
         """Nombres de las herramientas que este token puede ver. Para diagnóstico."""
-        self._id += 1
-        peticion = {"jsonrpc": "2.0", "id": self._id, "method": "tools/list", "params": {}}
-        _c, crudo, _h = pedir(
-            f"{self.base}/mcp", metodo="POST",
-            cuerpo=json.dumps(peticion).encode("utf-8"),
-            cabeceras={"Authorization": f"Bearer {self.token}",
-                       "Content-Type": "application/json",
-                       "Accept": "application/json, text/event-stream"},
-            timeout=self.timeout)
-        r = _leer_sse(crudo)
+        r = self._post({"jsonrpc": "2.0", "id": next(self._ids),
+                        "method": "tools/list", "params": {}})
         if "error" in r:
             raise RuntimeError(f"tools/list falló: {(r['error'] or {}).get('message')}")
         return [t.get("name") for t in (r.get("result") or {}).get("tools") or []]

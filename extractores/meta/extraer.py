@@ -33,6 +33,7 @@ import json
 import logging
 import os
 import sys
+import time
 from collections import Counter
 
 # En Railway el directorio raíz del servicio es /extractores, así que el paquete
@@ -42,7 +43,8 @@ from collections import Counter
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from comun.fechas import ventana
-from comun.http import json_get
+from comun.http import ErrorHTTP, json_get
+from comun.pasadas import ejecutar, partir_por_la_mitad, tramos
 from comun.reportes import Reportes
 
 log = logging.getLogger("extractor.meta")
@@ -60,6 +62,110 @@ TIPOS_LEAD = [t.strip() for t in os.environ.get(
 
 TOPE_PAGINAS = int(os.environ.get("META_TOPE_PAGINAS", "200"))
 
+# Días por petición de insights.
+#
+# ESTA CONSTANTE ES LA DIFERENCIA ENTRE EXTRAER Y NO EXTRAER, así que no se sube sin
+# leer esto. La Marketing API no falla por pedirle 120 días: falla por TARDAR. Cuando
+# su propio tiempo de espera se agota responde un HTTP 400 —no un 500, no un 429— con
+# `error_subcode: 1504018` y un mensaje que dice literalmente qué hacer:
+#
+#   "Se ha agotado el tiempo de espera para la solicitud"
+#   "Prueba con un intervalo de fechas menor, recupera menos datos o usa trabajos
+#    asincrónicos"
+#
+# El 11-sep-2026 aesthetics-by-cliff se quedó sin reporte por eso, con la cuenta
+# act_1003698104483915 y los mismos 120 días que el día anterior habían funcionado.
+# No es un fallo determinista: depende de la carga que tenga Meta en ese momento, lo
+# que lo hace peor, porque aparece sin avisar.
+#
+# La respuesta no es reintentar —insistir con la misma consulta vuelve a agotarse— ni
+# montar trabajos asíncronos, que serían dos viajes y un sondeo. Es sencillamente NO
+# PEDIR TANTO DE GOLPE: cuatro peticiones de 30 días en vez de una de 120. Cuestan lo
+# mismo en cuota (la cuota se mide en llamadas, y la paginación ya hacía varias) y
+# ninguna se acerca al tiempo de espera de Meta.
+DIAS_TRAMO = int(os.environ.get("META_DIAS_TRAMO", "30"))
+# Y si aun así un tramo se agota, se parte por la mitad y se reintentan las dos
+# mitades. Baja hasta un solo día si hace falta: ver _insights_por_tramos.
+TOPE_PARTICIONES = int(os.environ.get("META_TOPE_PARTICIONES", "40"))
+# Esperas cuando Meta dice que se ha pasado de cuota. Sus límites se miden por
+# ventana de tiempo, así que aquí lo único que sirve es esperar.
+ESPERA_CUOTA = float(os.environ.get("META_ESPERA_CUOTA", "60"))
+MAX_ESPERAS = int(os.environ.get("META_MAX_ESPERAS", "4"))
+PAUSA_ENTRE_CLIENTES = float(os.environ.get("META_PAUSA_ENTRE_CLIENTES", "2"))
+# Clientes a la vez. Los límites de la Marketing API se cuentan por cuenta
+# publicitaria, no por token, así que subir esto no acerca el 429: acorta la
+# pasada. Con 8 clientes da igual; con 100 es lo que la hace viable.
+CONCURRENCIA = int(os.environ.get("META_CONCURRENCIA", "4"))
+ENFRIAMIENTO = float(os.environ.get("META_ENFRIAMIENTO", "60"))
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  Qué significa un error de la Marketing API
+# ════════════════════════════════════════════════════════════════════════════
+# Meta manda casi todo con HTTP 400, así que el código de estado no distingue "tu
+# token no vale" de "espera un minuto" de "pide menos datos". Lo que distingue es el
+# cuerpo. Sin mirarlo, el reintento por código de estado de comun/http.py no ve
+# ninguno de estos casos: para él un 400 es un 400 y no se reintenta.
+
+# "Tu consulta es demasiado grande / ha tardado demasiado". La respuesta correcta es
+# pedir menos, nunca insistir con lo mismo.
+SUBCODIGOS_TROCEAR = {1504018, 1504031, 1504033}
+# Cuota agotada. La respuesta correcta es esperar.
+#   4     · límite de la aplicación        17    · límite del usuario
+#   32    · límite de la página            613   · demasiadas llamadas
+#   80000-80014 · límites por caso de uso (Business Use Case)
+CODIGOS_CUOTA = {4, 17, 32, 613} | set(range(80000, 80015))
+# Fallo temporal del lado de Meta, dicho por ellos mismos.
+CODIGOS_TEMPORALES = {1, 2}
+
+_PISTAS_TROCEAR = ("reduce the amount of data", "please reduce the amount",
+                   "smaller date range", "intervalo de fechas menor",
+                   "tiempo de espera", "timed out", "timeout")
+_PISTAS_CUOTA = ("rate limit", "request limit", "too many calls", "límite de solicitudes",
+                 "user request limit", "application request limit")
+
+
+def _error_meta(ex: Exception) -> dict:
+    """El objeto `error` del cuerpo, o {} si esto no venía de Meta."""
+    cuerpo = getattr(ex, "cuerpo", "") or ""
+    try:
+        return (json.loads(cuerpo) or {}).get("error") or {}
+    except (json.JSONDecodeError, TypeError, AttributeError):
+        return {}
+
+
+def clasificar(ex: Exception) -> str:
+    """
+    Qué hacer con un error de Meta: 'trocear', 'esperar' o 'rendirse'.
+
+    El orden de las comprobaciones importa: el error de tiempo de espera viene con
+    `is_transient: false` —Meta considera que el problema es tu consulta, no su
+    servidor— así que si se mirara `is_transient` primero, el caso que más nos
+    interesa acabaría clasificado como definitivo.
+    """
+    e = _error_meta(ex)
+    if not e:
+        return "rendirse"
+    sub = e.get("error_subcode")
+    cod = e.get("code")
+    texto = " ".join(str(e.get(k) or "") for k in
+                     ("message", "error_user_title", "error_user_msg")).lower()
+
+    if sub in SUBCODIGOS_TROCEAR or any(p in texto for p in _PISTAS_TROCEAR):
+        return "trocear"
+    if cod in CODIGOS_CUOTA or any(p in texto for p in _PISTAS_CUOTA):
+        return "esperar"
+    if e.get("is_transient") is True or cod in CODIGOS_TEMPORALES:
+        return "esperar"
+    return "rendirse"
+
+
+def _motivo(ex: Exception) -> str:
+    e = _error_meta(ex)
+    partes = [str(e.get(k)) for k in ("code", "error_subcode") if e.get(k) is not None]
+    titulo = e.get("error_user_title") or e.get("message") or ""
+    return f"{'/'.join(partes)} {titulo}".strip() or str(ex)[:120]
+
 
 def _paginar(url: str, params: dict, token: str, etiqueta: str) -> list[dict]:
     """
@@ -69,21 +175,83 @@ def _paginar(url: str, params: dict, token: str, etiqueta: str) -> list[dict]:
     API que cobra por llamada es una factura sorpresa. Si se alcanza, se levanta en vez
     de devolver datos a medias que parecerían buenos.
     """
-    filas, siguiente, n = [], None, 0
+    filas, siguiente, n, esperas = [], None, 0, 0
     while True:
         n += 1
         if n > TOPE_PAGINAS:
             raise RuntimeError(f"{etiqueta}: más de {TOPE_PAGINAS} páginas. Algo va mal "
                                f"en la paginación; no devuelvo datos incompletos.")
-        if siguiente:
-            r = json_get(siguiente)
-        else:
-            r = json_get(url, {**params, "access_token": token})
+        try:
+            if siguiente:
+                r = json_get(siguiente)
+            else:
+                r = json_get(url, {**params, "access_token": token})
+        except ErrorHTTP as ex:
+            # Meta manda los avisos de cuota con HTTP 400, no con 429: el reintento por
+            # código de estado de comun/http.py no los ve. Aquí sí, porque se mira el
+            # cuerpo. Un 'trocear' se deja pasar a propósito — lo resuelve quien llamó,
+            # partiendo el rango de fechas, no insistiendo con la misma consulta.
+            if clasificar(ex) != "esperar" or esperas >= MAX_ESPERAS:
+                raise
+            esperas += 1
+            pausa = ESPERA_CUOTA * esperas
+            log.warning("%s · Meta pide esperar (%s) · %d/%d, reintento en %.0fs",
+                        etiqueta, _motivo(ex), esperas, MAX_ESPERAS, pausa)
+            time.sleep(pausa)
+            n -= 1                      # no cuenta como página: es la misma
+            continue
         filas.extend(r.get("data") or [])
         siguiente = ((r.get("paging") or {}).get("next")) or None
         if not siguiente:
             break
     log.info("%s · %d filas en %d página(s)", etiqueta, len(filas), n)
+    return filas
+
+
+def _insights_por_tramos(act: str, token: str, campos: dict, desde: str, hasta: str,
+                         etiqueta: str) -> list[dict]:
+    """
+    Pide insights partiendo la ventana, y la parte MÁS si Meta se queja.
+
+    Dos redes, una encima de la otra:
+
+      1. Se empieza ya troceado, en trozos de DIAS_TRAMO. Así la petición que agotó el
+         tiempo de espera de Meta el 11-sep-2026 no se llega a hacer nunca.
+      2. Si aun así un trozo se agota —depende de la carga que tenga Meta, no del
+         tamaño—, se parte por la mitad y se reintentan las dos mitades. Y si una
+         mitad vuelve a fallar, se vuelve a partir, hasta llegar a UN SOLO DÍA. Ahí ya
+         no hay nada que partir y el error sube: un día que Meta no puede servir es un
+         problema suyo del que hay que enterarse, no algo que esconder.
+
+    Las filas se devuelven todas juntas, como si hubiera sido una sola petición: quien
+    llama no tiene que saber nada de esto.
+    """
+    pendientes = [(d, h) for d, h in tramos(desde, hasta, DIAS_TRAMO)]
+    filas, particiones = [], 0
+    while pendientes:
+        d, h = pendientes.pop(0)
+        try:
+            filas.extend(_paginar(
+                f"{BASE}/act_{act}/insights",
+                {**campos, "time_range": json.dumps({"since": d, "until": h})},
+                token, f"{etiqueta} {d}→{h}"))
+        except ErrorHTTP as ex:
+            if clasificar(ex) != "trocear":
+                raise
+            mitades = partir_por_la_mitad(d, h)
+            particiones += 1
+            if not mitades or particiones > TOPE_PARTICIONES:
+                # Un solo día que Meta no sirve, o demasiadas particiones: parar. Antes
+                # que devolver un trozo con un agujero silencioso, que el servicio
+                # publicaría tan contento y nadie miraría, se falla en voz alta.
+                raise RuntimeError(
+                    f"{etiqueta}: Meta no pudo servir {d}→{h} ni partiéndolo "
+                    f"({_motivo(ex)}). No devuelvo un rango con un hueco dentro.") from ex
+            log.warning("%s · Meta no pudo con %s→%s (%s): se parte en %s y %s",
+                        etiqueta, d, h, _motivo(ex),
+                        f"{mitades[0][0]}→{mitades[0][1]}",
+                        f"{mitades[1][0]}→{mitades[1][1]}")
+            pendientes[:0] = mitades
     return filas
 
 
@@ -111,13 +279,12 @@ def cuenta_info(act: str, token: str) -> dict:
 
 def gasto_diario(act: str, token: str, desde: str, hasta: str) -> tuple[list[dict], Counter]:
     tipos = Counter()
-    filas = _paginar(
-        f"{BASE}/act_{act}/insights",
+    filas = _insights_por_tramos(
+        act, token,
         {"level": "campaign", "time_increment": 1,
-         "time_range": json.dumps({"since": desde, "until": hasta}),
          "fields": "campaign_id,campaign_name,spend,impressions,clicks,actions",
          "limit": 500},
-        token, f"gasto diario de act_{act}")
+        desde, hasta, f"gasto diario de act_{act}")
     fuera = []
     for r in filas:
         fuera.append({
@@ -139,14 +306,13 @@ def gasto_diario(act: str, token: str, desde: str, hasta: str) -> tuple[list[dic
 
 def anuncios_diario(act: str, token: str, desde: str, hasta: str) -> list[dict]:
     tipos = Counter()
-    filas = _paginar(
-        f"{BASE}/act_{act}/insights",
+    filas = _insights_por_tramos(
+        act, token,
         {"level": "ad", "time_increment": 1,
-         "time_range": json.dumps({"since": desde, "until": hasta}),
          "fields": ("ad_id,ad_name,campaign_id,campaign_name,spend,impressions,"
                     "clicks,actions"),
          "limit": 500},
-        token, f"anuncios diarios de act_{act}")
+        desde, hasta, f"anuncios diarios de act_{act}")
     return [{
         "fecha": r.get("date_start"), "hasta": r.get("date_stop"),
         "anuncio_id": str(r.get("ad_id") or ""), "anuncio": r.get("ad_name") or "",
@@ -240,23 +406,17 @@ def main() -> int:
                     "Nada que hacer.")
         return 0
 
-    fallos = []
-    for o in objetivos:
-        try:
-            crudo = extraer_cliente(o, token)
-            r = rep.enviar_crudo(o["slug"], "meta", crudo)
-            log.info("%s · enviado · %s", o["slug"], r.get("resumen"))
-        except Exception as ex:
-            # Un cliente que falla no debe impedir los demás: cada uno tiene su propio
-            # trozo y el servicio construye con lo que haya.
-            log.error("%s · FALLÓ: %s", o["slug"], ex)
-            fallos.append(o["slug"])
+    def procesar(o: dict) -> None:
+        crudo = extraer_cliente(o, token)
+        r = rep.enviar_crudo(o["slug"], "meta", crudo)
+        log.info("%s · enviado · %s", o["slug"], r.get("resumen"))
 
-    if fallos:
-        log.error("fallaron %d de %d clientes: %s", len(fallos), len(objetivos), fallos)
-        return 1
-    log.info("listo · %d cliente(s) de Meta", len(objetivos))
-    return 0
+    # Un cliente que falla no impide los demás, y el que falla se reintenta en una
+    # segunda pasada. Los límites de Meta son POR CUENTA PUBLICITARIA, así que varios
+    # clientes a la vez no compiten entre ellos: ver comun/pasadas.py.
+    log.info("%d cliente(s) de Meta · %d en paralelo", len(objetivos), CONCURRENCIA)
+    return ejecutar(objetivos, procesar, concurrencia=CONCURRENCIA,
+                    pausa_entre=PAUSA_ENTRE_CLIENTES, enfriamiento=ENFRIAMIENTO)
 
 
 if __name__ == "__main__":

@@ -30,6 +30,10 @@ Decisiones que costaron una prueba cada una:
 
   · EL TAMAÑO DEL LOTE DEL EXPORT DE VENDEDORES no es un detalle de rendimiento,
     es la diferencia entre extraer y no extraer. Ver LOTE_VENDEDORES más abajo.
+
+  · EL RITMO. GoHighLevel limita por ventana de tiempo y por sub-cuenta. Ir por
+    encima de su techo no da un error distinto: da un 429 que, antes del arreglo
+    del 11-sep-2026, tumbaba al cliente entero. Ver PAUSA y PAUSA_ENTRE_CLIENTES.
 """
 from __future__ import annotations
 
@@ -48,6 +52,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from comun.fechas import dia_de, ventana
 from comun.mcp import ClienteMCP
+from comun.pasadas import ejecutar
 from comun.reportes import Reportes
 
 log = logging.getLogger("extractor.ghl")
@@ -70,7 +75,32 @@ TIMEOUT_MCP = int(os.environ.get("GHL_MCP_TIMEOUT", "240"))
 # tarda lo mismo pero cada petición termina, y un fallo cuesta una página en vez de la
 # extracción completa del cliente.
 LOTE_VENDEDORES = int(os.environ.get("GHL_LOTE_VENDEDORES", "50"))
-PAUSA = float(os.environ.get("GHL_PAUSA_LLAMADAS", "0.05"))
+# Pausa entre peticiones de mensajes. GoHighLevel admite ~100 peticiones por cada
+# 10 segundos y por sub-cuenta: 10 por segundo. Con los 0,05 s que había aquí, el
+# bucle de llamadas iba a ~20/s, el DOBLE del límite, y el 429 no era una mala
+# racha sino la consecuencia. 0,12 s deja el bucle en ~8/s, por debajo del techo,
+# y en un cliente de 880 conversaciones cuesta un minuto más de reloj.
+PAUSA = float(os.environ.get("GHL_PAUSA_LLAMADAS", "0.12"))
+# Descanso entre un cliente y el siguiente. El límite de GoHighLevel es por
+# ventana de tiempo, así que encadenar clientes sin respirar arrastra la cuota
+# gastada por el anterior. El 11-sep-2026 se vio tal cual: aesthetics-by-cliff
+# consumió ~3.700 peticiones y los SEIS clientes siguientes fallaron en cadena.
+PAUSA_ENTRE_CLIENTES = float(os.environ.get("GHL_PAUSA_ENTRE_CLIENTES", "20"))
+# Espera antes de la segunda pasada sobre los clientes que fallaron. Ver main().
+ENFRIAMIENTO = float(os.environ.get("GHL_ENFRIAMIENTO", "120"))
+# Clientes a la vez.
+#
+# El límite de GoHighLevel (~100 peticiones por cada 10 segundos) es POR SUB-CUENTA,
+# no por token de agencia: dos clientes distintos NO se quitan cuota el uno al otro.
+# Recorrerlos de uno en uno, por tanto, no protege de nada — solo alarga la pasada.
+# Cada obrero mantiene su propio ritmo (PAUSA) dentro del cliente que le toca, que es
+# donde sí hay un límite real.
+#
+# Con 8 clientes esto es una comodidad. Con 100 es lo único que hace la pasada viable:
+# en serie serían horas. Se deja en 3 porque es el punto en el que el reparto ya
+# compensa y ghl-mcp sigue holgado (se le han visto 10 peticiones simultáneas de 80 s
+# sin despeinarse, con 0,19 GB de 8 y la CPU casi parada).
+CONCURRENCIA = int(os.environ.get("GHL_CONCURRENCIA", "3"))
 
 
 def _ndjson(texto) -> tuple[dict, list[dict]]:
@@ -366,30 +396,29 @@ def main() -> int:
         return 0
 
     construir = os.environ.get("CONSTRUIR_AL_TERMINAR", "1") not in ("0", "false", "no")
-    fallos = []
-    for o in objetivos:
-        try:
-            crudo = extraer_cliente(o, mcp)
-            r = rep.enviar_crudo(o["slug"], "ghl", crudo)
-            log.info("%s · enviado · %s", o["slug"], r.get("resumen"))
-            if construir:
-                # El CRM es la última fuente en llegar (es la más lenta), así que es el
-                # momento natural de construir. Si Meta o Google fallaron hoy, se
-                # construye con su trozo de ayer en vez de dejar al cliente sin reporte.
-                c = rep.construir(o["slug"])
-                log.info("%s · publicado · %s", o["slug"],
-                         (c.get("resumen") or "").replace("\n", " | "))
-                for a in c.get("avisos") or []:
-                    log.warning("%s · aviso: %s", o["slug"], a)
-        except Exception as ex:
-            log.error("%s · FALLÓ: %s", o["slug"], ex)
-            fallos.append(o["slug"])
 
-    if fallos:
-        log.error("fallaron %d de %d clientes: %s", len(fallos), len(objetivos), fallos)
-        return 1
-    log.info("listo · %d cliente(s)", len(objetivos))
-    return 0
+    def procesar(o: dict) -> None:
+        crudo = extraer_cliente(o, mcp)
+        r = rep.enviar_crudo(o["slug"], "ghl", crudo)
+        log.info("%s · enviado · %s", o["slug"], r.get("resumen"))
+        if construir:
+            # El CRM es la última fuente en llegar (es la más lenta), así que es el
+            # momento natural de construir. Si Meta o Google fallaron hoy, se
+            # construye con su trozo de ayer en vez de dejar al cliente sin reporte.
+            c = rep.construir(o["slug"])
+            log.info("%s · publicado · %s", o["slug"],
+                     (c.get("resumen") or "").replace("\n", " | "))
+            for a in c.get("avisos") or []:
+                log.warning("%s · aviso: %s", o["slug"], a)
+
+    # Dos pasadas y varios clientes a la vez: ver comun/pasadas.py, que explica por
+    # qué. Lo corto: casi todo lo que tumba una extracción de GoHighLevel es pasajero,
+    # y con una sola oportunidad un fallo de segundos dejaba al cliente sin reporte
+    # hasta el día siguiente.
+    log.info("%d cliente(s) de GoHighLevel · %d en paralelo · ventana de vendedores "
+             "%d días", len(objetivos), CONCURRENCIA, DIAS_VENDEDORES)
+    return ejecutar(objetivos, procesar, concurrencia=CONCURRENCIA,
+                    pausa_entre=PAUSA_ENTRE_CLIENTES, enfriamiento=ENFRIAMIENTO)
 
 
 if __name__ == "__main__":
