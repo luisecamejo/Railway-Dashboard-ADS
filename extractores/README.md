@@ -54,6 +54,17 @@ Comunes a los tres:
 | `GHL_DIAS_VENDEDORES` | `120` (por defecto). Cierra el hallazgo H-3. |
 | `CONSTRUIR_AL_TERMINAR` | `1` |
 
+Ajuste fino del ritmo (todas tienen valor por defecto; solo se ponen para desviarse):
+
+| Variable | Por defecto | Para qué |
+|---|---|---|
+| `GHL_PAUSA_LLAMADAS` | `0.12` | Pausa entre peticiones de mensajes. GoHighLevel admite ~10 peticiones/segundo por sub-cuenta; 0,12 s deja el bucle en ~8/s. Con el `0.05` anterior iba a ~20/s, el doble del techo, y el 429 era cuestión de tiempo. |
+| `GHL_PAUSA_ENTRE_CLIENTES` | `20` | Segundos de descanso entre un cliente y el siguiente, para no arrastrar la cuota que gastó el anterior. |
+| `GHL_ENFRIAMIENTO` | `120` | Espera antes de la segunda pasada sobre los clientes que fallaron. |
+| `GHL_MCP_TIMEOUT` | `240` | Lo que se le da al MCP para contestar una página. |
+| `GHL_LOTE_VENDEDORES` | `50` | Conversaciones por página del export de vendedores. Subirlo hace que una página no quepa en el timeout. |
+| `GHL_TOPE_PAGINAS` | `400` | Tope de seguridad: antes que devolver datos a medias, falla. |
+
 `extractor-meta`:
 
 | Variable | Valor |
@@ -122,3 +133,8 @@ Dos cosas que el log dijo y conviene no olvidar:
 `pruebas/test_extractores.py` levanta un Graph API y un ghl-mcp de mentira con las
 formas de respuesta REALES y comprueba que la salida del extractor es la que produjo el
 snapshot ya verificado. No hace falta ningún token.
+
+`pruebas/test_reintentos.py` reproduce los dos fallos que dejaron a 6 de 8 clientes sin
+reporte el 11-sep-2026 — un `IncompleteRead` a media respuesta y un 429 de GoHighLevel
+escondido dentro de un HTTP 200 — y comprueba que ahora se reintentan. Tampoco necesita
+red ni credenciales.
