@@ -26,6 +26,7 @@ TODO lo que sigue está comprobado contra el mismo SDK que usa ghl-mcp
 """
 from __future__ import annotations
 
+import itertools
 import json
 import logging
 import random
@@ -114,7 +115,10 @@ class ClienteMCP:
         self.timeout = timeout
         self.intentos = max(1, intentos)
         self.espera_base = espera_base
-        self._id = 0
+        # itertools.count() reparte ids sin repetir aunque varios hilos pidan a la vez.
+        # Hace falta desde que los extractores recorren clientes en paralelo: `self._id
+        # += 1` no es una operación atómica y dos hilos podían salir con el mismo id.
+        self._ids = itertools.count(1)
 
     def _post(self, peticion: dict) -> dict:
         _c, crudo, _h = pedir(
@@ -136,11 +140,13 @@ class ClienteMCP:
         Reintenta cuando el error es pasajero (ver PASAJEROS). La espera arranca
         más alta que en `pedir()` a propósito: contra un 429 de GoHighLevel lo que
         hace falta es dejar pasar la ventana del límite, no insistir deprisa.
+
+        Se puede llamar desde varios hilos: el transporte del MCP va sin estado, así
+        que cada POST es independiente y los ids no se pisan.
         """
         ultimo = None
         for n in range(1, self.intentos + 1):
-            self._id += 1
-            peticion = {"jsonrpc": "2.0", "id": self._id, "method": "tools/call",
+            peticion = {"jsonrpc": "2.0", "id": next(self._ids), "method": "tools/call",
                         "params": {"name": herramienta,
                                    "arguments": argumentos or {}}}
             try:
@@ -185,8 +191,7 @@ class ClienteMCP:
 
     def herramientas(self) -> list[str]:
         """Nombres de las herramientas que este token puede ver. Para diagnóstico."""
-        self._id += 1
-        r = self._post({"jsonrpc": "2.0", "id": self._id,
+        r = self._post({"jsonrpc": "2.0", "id": next(self._ids),
                         "method": "tools/list", "params": {}})
         if "error" in r:
             raise RuntimeError(f"tools/list falló: {(r['error'] or {}).get('message')}")
