@@ -40,12 +40,15 @@ import json
 import logging
 import os
 import sys
+import threading
+import time
 import urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from comun.fechas import ventana
-from comun.http import pedir
+from comun.http import ErrorHTTP, pedir
+from comun.pasadas import ejecutar
 from comun.reportes import Reportes
 
 log = logging.getLogger("extractor.google")
@@ -53,6 +56,13 @@ log = logging.getLogger("extractor.google")
 VERSION_API = os.environ.get("GOOGLE_API_VERSION", "v25").strip()
 BASE = f"https://googleads.googleapis.com/{VERSION_API}"
 OAUTH = "https://oauth2.googleapis.com/token"
+
+# Clientes a la vez. El límite de Google Ads se cuenta por cuenta de cliente, y el
+# developer token de agencia tiene un tope DIARIO de operaciones, no por segundo, así
+# que la concurrencia no lo acerca: solo acorta la pasada.
+CONCURRENCIA = int(os.environ.get("GOOGLE_CONCURRENCIA", "4"))
+PAUSA_ENTRE_CLIENTES = float(os.environ.get("GOOGLE_PAUSA_ENTRE_CLIENTES", "2"))
+ENFRIAMIENTO = float(os.environ.get("GOOGLE_ENFRIAMIENTO", "60"))
 
 
 def solo_digitos(cid) -> str:
@@ -73,9 +83,9 @@ def _decimal(v) -> float:
     return float(v)
 
 
-# ═════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 #  Credenciales
-# ═════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 class Credenciales:
     """
     Cambia el refresh token por un access token y lo reutiliza.
@@ -85,6 +95,8 @@ class Credenciales:
     """
 
     def __init__(self):
+        self._candado = threading.Lock()
+        self._caduca = 0.0
         self.client_id = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
         self.client_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "").strip()
         self.refresh_token = os.environ.get("GOOGLE_REFRESH_TOKEN", "").strip()
@@ -103,20 +115,40 @@ class Credenciales:
                              ". El developer token sale del API Center de una cuenta MCC; "
                              "el resto, del consentimiento OAuth. Ver extractores/google/README.md.")
 
-    def access_token(self) -> str:
-        if self._access:
+    def access_token(self, *, forzar: bool = False) -> str:
+        """
+        Devuelve un access token vivo, pidiendo uno nuevo si el anterior va a caducar.
+
+        Antes se pedía UNO y se guardaba para siempre, con el razonamiento de que una
+        extracción entera cabe en la hora que dura. Eso era cierto con 8 clientes y
+        deja de serlo en cuanto la lista crece: a mitad de la pasada el token caduca y
+        todos los clientes que queden fallan con un 401, que además no se reintenta
+        porque un 401 es, normalmente, "tus credenciales no valen".
+
+        Así que se guarda también CUÁNDO caduca y se renueva 5 minutos antes. El
+        refresh token no caduca, de modo que pedir uno nuevo no cuesta nada más que
+        una llamada.
+        """
+        with self._candado:
+            if self._access and not forzar and time.time() < self._caduca:
+                return self._access
+            cuerpo = urllib.parse.urlencode({
+                "client_id": self.client_id, "client_secret": self.client_secret,
+                "refresh_token": self.refresh_token, "grant_type": "refresh_token",
+            }).encode()
+            _c, datos, _h = pedir(
+                OAUTH, metodo="POST", cuerpo=cuerpo,
+                cabeceras={"Content-Type": "application/x-www-form-urlencoded"})
+            r = json.loads(datos or b"{}")
+            self._access = r.get("access_token") or ""
+            if not self._access:
+                raise RuntimeError(f"Google no devolvió access_token: {str(r)[:200]}")
+            # Google manda expires_in (segundos). Si algún día dejara de mandarlo, una
+            # hora es su valor de siempre; el margen de 5 minutos cubre la diferencia
+            # entre pedir el token y usarlo en la última petición de un cliente lento.
+            dura = float(r.get("expires_in") or 3600)
+            self._caduca = time.time() + max(60.0, dura - 300.0)
             return self._access
-        cuerpo = urllib.parse.urlencode({
-            "client_id": self.client_id, "client_secret": self.client_secret,
-            "refresh_token": self.refresh_token, "grant_type": "refresh_token",
-        }).encode()
-        _c, datos, _h = pedir(OAUTH, metodo="POST", cuerpo=cuerpo,
-                              cabeceras={"Content-Type": "application/x-www-form-urlencoded"})
-        r = json.loads(datos or b"{}")
-        self._access = r.get("access_token") or ""
-        if not self._access:
-            raise RuntimeError(f"Google no devolvió access_token: {str(r)[:200]}")
-        return self._access
 
     def cabeceras(self) -> dict:
         h = {"Authorization": "Bearer " + self.access_token(),
@@ -128,9 +160,9 @@ class Credenciales:
         return h
 
 
-# ═════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 #  Consulta
-# ═════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 def consultar(cred: Credenciales, cid: str, gaql: str) -> list[dict]:
     """
     Ejecuta un GAQL y devuelve las filas.
@@ -141,7 +173,7 @@ def consultar(cred: Credenciales, cid: str, gaql: str) -> list[dict]:
     una a otra en una versión futura, esto no se rompe.
     """
     url = f"{BASE}/customers/{cid}/googleAds:searchStream"
-    filas, token, vueltas = [], None, 0
+    filas, token, vueltas, renovado = [], None, 0, False
     while True:
         vueltas += 1
         if vueltas > 200:
@@ -150,9 +182,23 @@ def consultar(cred: Credenciales, cid: str, gaql: str) -> list[dict]:
         peticion = {"query": gaql}
         if token:
             peticion["pageToken"] = token
-        _c, datos, _h = pedir(url, metodo="POST",
-                              cuerpo=json.dumps(peticion).encode("utf-8"),
-                              cabeceras=cred.cabeceras())
+        try:
+            _c, datos, _h = pedir(url, metodo="POST",
+                                  cuerpo=json.dumps(peticion).encode("utf-8"),
+                                  cabeceras=cred.cabeceras())
+        except ErrorHTTP as ex:
+            # Un 401 suele ser "tus credenciales no valen" y no se reintenta. Pero hay
+            # un caso en el que sí: que el access token haya caducado a mitad de la
+            # pasada. Se pide uno nuevo y se repite UNA vez; si vuelve a dar 401, el
+            # problema son de verdad las credenciales y hay que enterarse.
+            if ex.codigo != 401 or renovado:
+                raise
+            renovado = True
+            vueltas -= 1
+            log.warning("401 de Google Ads en %s: se renueva el access token y se "
+                        "repite la consulta", cid)
+            cred.access_token(forzar=True)
+            continue
         r = json.loads(datos or b"[]")
         if isinstance(r, list):
             for trozo in r:
@@ -227,7 +273,7 @@ def cuenta_info(cred: Credenciales, cid: str) -> dict:
             "moneda": c.get("currencyCode") or ""}
 
 
-# ═════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 def extraer_cliente(objetivo: dict, cred: Credenciales) -> dict:
     tz = objetivo["tz"]
     desde, hasta = ventana(tz)
@@ -271,22 +317,18 @@ def main() -> int:
         return 0
 
     cred = Credenciales()          # falla aquí si falta alguna credencial
-    fallos = []
-    for o in objetivos:
-        try:
-            crudo = extraer_cliente(o, cred)
-            r = rep.enviar_crudo(o["slug"], "google", crudo)
-            log.info("%s · enviado · %s", o["slug"], r.get("resumen"))
-        except Exception as ex:
-            # Un cliente que falla no debe dejar sin datos a los demás.
-            log.error("%s · FALLÓ: %s", o["slug"], ex)
-            fallos.append(o["slug"])
 
-    if fallos:
-        log.error("fallaron %d de %d clientes: %s", len(fallos), len(objetivos), fallos)
-        return 1
-    log.info("listo · %d cliente(s) de Google", len(objetivos))
-    return 0
+    def procesar(o: dict) -> None:
+        crudo = extraer_cliente(o, cred)
+        r = rep.enviar_crudo(o["slug"], "google", crudo)
+        log.info("%s · enviado · %s", o["slug"], r.get("resumen"))
+
+    # Un cliente que falla no deja sin datos a los demás, y se reintenta en una
+    # segunda pasada. `cred` se comparte entre hilos a propósito: así se pide UN
+    # access token para toda la pasada en vez de uno por hilo (ver access_token).
+    log.info("%d cliente(s) de Google · %d en paralelo", len(objetivos), CONCURRENCIA)
+    return ejecutar(objetivos, procesar, concurrencia=CONCURRENCIA,
+                    pausa_entre=PAUSA_ENTRE_CLIENTES, enfriamiento=ENFRIAMIENTO)
 
 
 if __name__ == "__main__":
