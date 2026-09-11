@@ -52,6 +52,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from comun.fechas import dia_de, ventana
 from comun.mcp import ClienteMCP
+from comun.pasadas import ejecutar
 from comun.reportes import Reportes
 
 log = logging.getLogger("extractor.ghl")
@@ -87,6 +88,19 @@ PAUSA = float(os.environ.get("GHL_PAUSA_LLAMADAS", "0.12"))
 PAUSA_ENTRE_CLIENTES = float(os.environ.get("GHL_PAUSA_ENTRE_CLIENTES", "20"))
 # Espera antes de la segunda pasada sobre los clientes que fallaron. Ver main().
 ENFRIAMIENTO = float(os.environ.get("GHL_ENFRIAMIENTO", "120"))
+# Clientes a la vez.
+#
+# El límite de GoHighLevel (~100 peticiones por cada 10 segundos) es POR SUB-CUENTA,
+# no por token de agencia: dos clientes distintos NO se quitan cuota el uno al otro.
+# Recorrerlos de uno en uno, por tanto, no protege de nada — solo alarga la pasada.
+# Cada obrero mantiene su propio ritmo (PAUSA) dentro del cliente que le toca, que es
+# donde sí hay un límite real.
+#
+# Con 8 clientes esto es una comodidad. Con 100 es lo único que hace la pasada viable:
+# en serie serían horas. Se deja en 3 porque es el punto en el que el reparto ya
+# compensa y ghl-mcp sigue holgado (se le han visto 10 peticiones simultáneas de 80 s
+# sin despeinarse, con 0,19 GB de 8 y la CPU casi parada).
+CONCURRENCIA = int(os.environ.get("GHL_CONCURRENCIA", "3"))
 
 
 def _ndjson(texto) -> tuple[dict, list[dict]]:
@@ -397,44 +411,14 @@ def main() -> int:
             for a in c.get("avisos") or []:
                 log.warning("%s · aviso: %s", o["slug"], a)
 
-    def pasada(lista: list[dict], etiqueta: str) -> list[dict]:
-        fallidos = []
-        for i, o in enumerate(lista):
-            if i and PAUSA_ENTRE_CLIENTES:
-                time.sleep(PAUSA_ENTRE_CLIENTES)
-            try:
-                procesar(o)
-            except Exception as ex:
-                log.error("%s · FALLÓ%s: %s", o["slug"], etiqueta, ex)
-                fallidos.append(o)
-        return fallidos
-
-    # DOS PASADAS, no una.
-    #
-    # Casi todo lo que tumba una extracción de GoHighLevel es pasajero: un 429 por
-    # haber agotado la ventana del límite, o una conexión que se corta a media
-    # respuesta. Con una sola pasada, ese fallo de unos segundos dejaba al cliente
-    # SIN REPORTE hasta el día siguiente — y el dashboard no miente, pero enseña
-    # datos de ayer mientras el CRM ya enseña los de hoy, que es exactamente el
-    # desajuste que se ve desde fuera.
-    #
-    # La segunda pasada solo repite los que fallaron, y espera antes: si la causa
-    # fue la cuota, reintentar en caliente vuelve a chocar con el mismo límite.
-    fallidos = pasada(objetivos, "")
-    if fallidos:
-        log.warning("%d cliente(s) fallaron en la primera pasada; se reintentan en "
-                    "%.0fs: %s", len(fallidos), ENFRIAMIENTO,
-                    [o["slug"] for o in fallidos])
-        time.sleep(ENFRIAMIENTO)
-        fallidos = pasada(fallidos, " (2ª pasada)")
-
-    if fallidos:
-        slugs = [o["slug"] for o in fallidos]
-        log.error("fallaron %d de %d clientes tras dos pasadas: %s",
-                  len(slugs), len(objetivos), slugs)
-        return 1
-    log.info("listo · %d cliente(s)", len(objetivos))
-    return 0
+    # Dos pasadas y varios clientes a la vez: ver comun/pasadas.py, que explica por
+    # qué. Lo corto: casi todo lo que tumba una extracción de GoHighLevel es pasajero,
+    # y con una sola oportunidad un fallo de segundos dejaba al cliente sin reporte
+    # hasta el día siguiente.
+    log.info("%d cliente(s) de GoHighLevel · %d en paralelo · ventana de vendedores "
+             "%d días", len(objetivos), CONCURRENCIA, DIAS_VENDEDORES)
+    return ejecutar(objetivos, procesar, concurrencia=CONCURRENCIA,
+                    pausa_entre=PAUSA_ENTRE_CLIENTES, enfriamiento=ENFRIAMIENTO)
 
 
 if __name__ == "__main__":
