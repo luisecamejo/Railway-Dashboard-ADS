@@ -15,3 +15,5 @@ fastapi==0.115.6
 uvicorn[standard]==0.34.0
 psycopg[binary]==3.2.3
 psycopg-pool==3.2.4
+# Verificación del inicio de sesión de Sentinel Suite (JWT EdDSA): ver web/app/suite.py
+PyJWT[crypto]==2.10.1

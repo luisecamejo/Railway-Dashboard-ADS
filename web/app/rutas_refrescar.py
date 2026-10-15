@@ -181,8 +181,12 @@ def _pendiente(slug: str) -> Optional[dict]:
         return {**p, "delante": delante}
 
 
-def montar(app, *, almacen, exige_admin, resolver_enlace):
-    """Se monta desde main.py con lo que ya existe allí."""
+def montar(app, *, almacen, exige_admin, resolver_enlace, exige_equipo=None):
+    """Se monta desde main.py con lo que ya existe allí.
+
+    `exige_equipo(peticion, slug)` autoriza al equipo que entra por Sentinel Suite al
+    dashboard de /s/{slug}/; el botón de actualizar de ese dashboard llama aquí.
+    """
 
     def _edad_min(slug: str) -> tuple[Optional[str], Optional[int]]:
         """(generado, minutos de antigüedad) del snapshot publicado."""
@@ -249,6 +253,25 @@ def montar(app, *, almacen, exige_admin, resolver_enlace):
         if not est["puede"]:
             raise HTTPException(429, est["motivo"])
         return _encolar(slug, "enlace")
+
+    # ── desde el dashboard del equipo (/s/{slug}/, entrando por Sentinel Suite) ──
+    if exige_equipo:
+        @router.get("/s/{slug}/refrescar")
+        def estado_equipo(slug: str, peticion: Request):
+            exige_equipo(peticion, slug)
+            if not almacen.cliente(slug):
+                raise HTTPException(404, f"El cliente '{slug}' no existe.")
+            return _estado(slug)
+
+        @router.post("/s/{slug}/refrescar")
+        def pedir_equipo(slug: str, peticion: Request):
+            """Como el panel: sin límite por antigüedad, pero sin encolar dos veces."""
+            exige_equipo(peticion, slug)
+            if not almacen.cliente(slug):
+                raise HTTPException(404, f"El cliente '{slug}' no existe.")
+            if _pendiente(slug):
+                raise HTTPException(409, _estado(slug)["motivo"])
+            return _encolar(slug, "equipo")
 
     # ── desde el panel ───────────────────────────────────────
     @router.get("/admin/refrescar/{slug}", dependencies=[Depends(exige_admin)])
