@@ -27,8 +27,10 @@
     return d.toLocaleString('es-ES',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}) }
 
   // ── arranque ──────────────────────────────────
-  var guardado=sessionStorage.getItem('tok_reportes');
-  if(guardado){ TOK=guardado; entrar() } else { $('login').style.display='block'; $('tok').focus() }
+  // Entrando por Sentinel Suite no hay token: manda la cookie de la suite (ver suite.py)
+  var guardado=window.SUITE?null:sessionStorage.getItem('tok_reportes');
+  if(window.SUITE){ entrar() }
+  else if(guardado){ TOK=guardado; entrar() } else { $('login').style.display='block'; $('tok').focus() }
 
   $('entrar').onclick=function(){
     TOK=$('tok').value.trim();
@@ -90,7 +92,9 @@
            'repositorio, este código cambia en el despliegue siguiente.')
         : 'No hay dashboard cargado. Revisa que <code>web/visor/partes/</code> llegó en el despliegue.');
     }).catch(function(e){
-      if(e.codigo===401){ sessionStorage.removeItem('tok_reportes'); location.reload(); return }
+      if(e.codigo===401){
+        if(window.SUITE){ location.href=window.SUITE.login; return }  // la sesión de la suite caducó
+        sessionStorage.removeItem('tok_reportes'); location.reload(); return }
       $('estado').innerHTML='<span style="color:var(--rd)">no se pudo leer el estado</span>';
     });
   }

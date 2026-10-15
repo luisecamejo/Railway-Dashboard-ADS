@@ -166,7 +166,9 @@ button.rojo:disabled{opacity:.45}
 
   function api(ruta,opciones){
     opciones=opciones||{};
-    opciones.headers=Object.assign({'X-Admin-Token':TOK},opciones.headers||{});
+    // Con la sesión de Sentinel Suite no hay token: va la cookie, y esta cabecera dice que la
+    // petición sale de este panel (defensa extra contra peticiones desde otro subdominio)
+    opciones.headers=Object.assign(TOK?{'X-Admin-Token':TOK}:{'X-Requested-With':'panel-reportes'},opciones.headers||{});
     return fetch(ruta,opciones).then(function(r){
       return r.text().then(function(t){
         var d={}; try{d=t?JSON.parse(t):{}}catch(e){d={detail:t}}

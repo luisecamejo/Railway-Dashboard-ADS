@@ -76,6 +76,7 @@ from . import rutas_ficha
 from . import enlace_general
 from .privacidad import MODOS, aplicar
 from . import seguridad as seg
+from . import suite
 from .visor import partir_html
 
 log = logging.getLogger("reportes")
@@ -191,6 +192,28 @@ def exige_admin(peticion: Request, x_admin_token: str = Header(default="")) -> N
     equivocarse tecleando dejaría al operador fuera de su propio panel, y una IP
     compartida (una oficina detrás de un NAT) permitiría que un tercero se lo tirara.
     """
+    # El equipo entra por Sentinel Suite (cookie firmada); las máquinas, con X-Admin-Token.
+    if not x_admin_token and suite.activa():
+        p = suite.persona(peticion)
+        if p:
+            if not suite.escritura_segura(peticion):
+                raise HTTPException(403, "Petición desde otro origen.")
+            # De qué cliente es la petición: /…/{slug}, ?cliente= o el dueño de /…/{token}
+            slug = peticion.path_params.get("slug") or peticion.query_params.get("cliente")
+            tok = peticion.path_params.get("token")
+            if not slug and tok:
+                slug = (almacen.enlace(tok) or {}).get("cliente")
+            if slug and not p.llega(slug):
+                raise HTTPException(403, "No tienes acceso a este cliente en Sentinel Suite.")
+            # Borrar un cliente (y sus enlaces empotrados) queda para el rol admin
+            if peticion.method == "DELETE" and p.rol != "admin":
+                raise HTTPException(403, "Solo un administrador de reportes puede borrar clientes.")
+            peticion.state.persona = p
+            return
+        if suite.hay_cookie(peticion):
+            # Cookie caducada o sin la herramienta: el panel manda a renovarla a la suite
+            raise HTTPException(401, "Tu sesión de Sentinel Suite caducó o no tienes acceso a reportes.",
+                                headers={"X-Suite-Login": suite.login(peticion)})
     if not ADMIN_TOKEN:
         raise HTTPException(503, "El servicio no tiene ADMIN_TOKEN configurado.")
     ip = seg.ip_cliente(peticion)
@@ -334,7 +357,10 @@ def robots():
 
 
 @app.get("/", response_class=HTMLResponse)
-def raiz():
+def raiz(peticion: Request):
+    # Quien llega desde Sentinel Suite (la tarjeta "Reportes" de la agencia) va al panel
+    if suite.persona(peticion):
+        return RedirectResponse("/admin", status_code=302)
     return HTMLResponse(
         "<!doctype html><meta charset=utf-8><title>Reportes</title>"
         "<style>body{font:15px/1.6 system-ui;background:#0b0f14;color:#93a1b5;"
@@ -405,6 +431,69 @@ def visor(token: str, peticion: Request):
         csp_reporte=True, empotrable_en=doms))
 
 
+# ════════════════════════════════════════════════════════════════════════════
+#  Vista del equipo — el dashboard de cada cliente, entrando por Sentinel Suite.
+#
+#  /s/{slug}/ es la misma URL que usa la suite para abrir "Reportes" dentro de una
+#  subcuenta. No sustituye a los enlaces /r/…: esos siguen siendo lo que ve el cliente
+#  empotrado en GoHighLevel. Aquí los datos van sin enmascarar (modo interno).
+# ════════════════════════════════════════════════════════════════════════════
+def equipo(peticion: Request, slug: str, *, navegacion: bool):
+    """La persona de la suite que puede ver este cliente, o la respuesta para quien no."""
+    if not suite.activa():
+        raise HTTPException(404, "No encontrado.")
+    p = suite.persona(peticion)
+    if not p:
+        if navegacion:
+            return RedirectResponse(suite.login(peticion), status_code=302)
+        raise HTTPException(401, "Inicia sesión en Sentinel Suite.", headers={"X-Suite-Login": suite.login(peticion)})
+    if not p.llega(slug):
+        if navegacion:  # la suite renueva el token por si se la acaban de asignar, y si no avisa
+            return RedirectResponse(suite.login(peticion, sub=slug), status_code=302)
+        raise HTTPException(403, "No tienes acceso a este cliente en Sentinel Suite.")
+    if not suite.escritura_segura(peticion):
+        raise HTTPException(403, "Petición desde otro origen.")
+    return p
+
+
+@app.get("/s/{slug}")
+def equipo_sin_barra(slug: str):
+    return RedirectResponse(f"/s/{slug}/", status_code=308)
+
+
+@app.get("/s/{slug}/", response_class=HTMLResponse)
+def equipo_visor(slug: str, peticion: Request):
+    p = equipo(peticion, slug, navegacion=True)
+    if not isinstance(p, suite.Persona):
+        return p
+    if not almacen.cliente(slug):
+        return _pagina("Este cliente todavía no está en reportes",
+                       "Dalo de alta desde el panel de reportes y pulsa «Preparar el reporte».",
+                       codigo=404)
+    vis = _cargar_visor()
+    if not vis:
+        return _pagina(*_MOTIVOS[503], codigo=503)
+    # La barra de Sentinel Suite (selector de cliente y de herramientas) encima del dashboard
+    barra = f'<script src="{suite.SUITE_URL}/suite-bar.js" data-tool="reportes" defer></script>'
+    html = vis["index"].replace("</body>", barra + "</body>", 1)
+    cab = seg.cabeceras({"Cache-Control": "private, no-store"}, csp_reporte=True)
+    cab["Content-Security-Policy"] = (cab["Content-Security-Policy"]
+                                      .replace("script-src 'self'", f"script-src 'self' {suite.SUITE_URL}")
+                                      .replace("connect-src 'self'", f"connect-src 'self' {suite.SUITE_URL}"))
+    return HTMLResponse(html, headers=cab)
+
+
+@app.get("/s/{slug}/snapshot.json")
+def equipo_snapshot(slug: str, peticion: Request):
+    equipo(peticion, slug, navegacion=False)
+    datos = almacen.snapshot(slug)
+    if datos is None:
+        raise HTTPException(409, "El reporte de este cliente todavía se está preparando: "
+                                 "aún no hay una extracción de datos terminada.")
+    return JSONResponse(aplicar(datos, "interno"),
+                        headers=seg.cabeceras({"Cache-Control": "private, no-store"}))
+
+
 @app.get("/r/{token}/snapshot.json")
 def snapshot(token: str, peticion: Request):
     e = _resolver_enlace(token, peticion)
@@ -425,9 +514,21 @@ def snapshot(token: str, peticion: Request):
 # ════════════════════════════════════════════════════════════════════════════
 #  Administración
 # ════════════════════════════════════════════════════════════════════════════
+def _solo_suyos(peticion: Request, slug: Optional[str]) -> None:
+    """Para rutas donde el cliente viene en el cuerpo: la persona tiene que llegar a él."""
+    p = getattr(peticion.state, "persona", None)
+    if p and slug and not p.llega(slug):
+        raise HTTPException(403, "No tienes acceso a este cliente en Sentinel Suite.")
+
+
 @app.get("/admin/estado", dependencies=[Depends(exige_admin)])
-def admin_estado():
+def admin_estado(peticion: Request):
     v = _cargar_visor()
+    clientes = almacen.clientes()
+    p = getattr(peticion.state, "persona", None)
+    if p:  # cada persona ve solo los clientes de sus subcuentas en la suite
+        permitidos = set(p.filtra([c.get("slug") for c in clientes]))
+        clientes = [c for c in clientes if c.get("slug") in permitidos]
     repo = _visor_del_repo()
     return {"version": VERSION, "almacen": almacen.tipo,
             "visor": {"hash": (v or {}).get("hash"), "subido": (v or {}).get("subido"),
@@ -436,7 +537,8 @@ def admin_estado():
                       # que el siguiente despliegue va a sustituir. Conviene verlo.
                       "origen": ("repositorio" if repo and v and repo["hash"] == v["hash"]
                                  else "subida temporal" if v else None)},
-            "clientes": almacen.clientes()}
+            "clientes": clientes,
+            "persona": ({"email": p.email, "nombre": p.nombre, "rol": p.rol} if p else None)}
 
 
 @app.post("/admin/visor", dependencies=[Depends(exige_admin)])
@@ -476,7 +578,7 @@ async def admin_subir_visor(peticion: Request):
 
 
 @app.post("/admin/clientes", dependencies=[Depends(exige_admin)])
-def admin_cliente(cuerpo: dict = Body(...)):
+def admin_cliente(peticion: Request, cuerpo: dict = Body(...)):
     """
     Da de alta un cliente y le deja la ficha lista para extraer.
 
@@ -491,6 +593,8 @@ def admin_cliente(cuerpo: dict = Body(...)):
     slug = (cuerpo.get("slug") or "").strip().lower()
     if not slug or not slug.replace("-", "").isalnum():
         raise HTTPException(400, "slug obligatorio, solo letras, números y guiones.")
+    # Dar de alta un cliente nuevo es cosa de quien llega a todas las subcuentas en la suite
+    _solo_suyos(peticion, slug)
     nombre = (cuerpo.get("nombre") or "").strip()
     if not nombre:
         raise HTTPException(400, "nombre obligatorio.")
@@ -648,8 +752,9 @@ def admin_historial(slug: str):
 
 
 @app.post("/admin/enlaces", dependencies=[Depends(exige_admin)])
-def admin_crear_enlace(cuerpo: dict = Body(...)):
+def admin_crear_enlace(peticion: Request, cuerpo: dict = Body(...)):
     slug = (cuerpo.get("cliente") or "").strip().lower()
+    _solo_suyos(peticion, slug)
     if not almacen.cliente(slug):
         raise HTTPException(404, f"El cliente '{slug}' no existe.")
     modo = (cuerpo.get("modo") or "cliente").strip().lower()
@@ -712,12 +817,16 @@ def admin_dominios(token: str, cuerpo: dict = Body(...)):
 
 
 @app.get("/admin/enlaces", dependencies=[Depends(exige_admin)])
-def admin_enlaces(cliente: Optional[str] = None):
+def admin_enlaces(peticion: Request, cliente: Optional[str] = None):
     def fila(e):
         f = {k: str(v) for k, v in e.items() if k != "dominios"}
         f["dominios"] = _dominios(e)
         return f
-    return {"enlaces": [fila(e) for e in almacen.enlaces(cliente)]}
+    enlaces = almacen.enlaces(cliente)
+    p = getattr(peticion.state, "persona", None)
+    if p:
+        enlaces = [e for e in enlaces if p.llega(e.get("cliente") or "")]
+    return {"enlaces": [fila(e) for e in enlaces]}
 
 
 @app.post("/admin/enlaces/{token}/revocar", dependencies=[Depends(exige_admin)])
@@ -839,7 +948,8 @@ rutas_extraccion.montar(app, almacen=almacen, exige_admin=exige_admin,
 # convierte el token de un enlace en su cliente: el enlace ES la autorización para
 # refrescar, porque ya da acceso a todos los datos de ese cliente.
 rutas_refrescar.montar(app, almacen=almacen, exige_admin=exige_admin,
-                       resolver_enlace=_resolver_enlace)
+                       resolver_enlace=_resolver_enlace,
+                       exige_equipo=lambda peticion, slug: equipo(peticion, slug, navegacion=False))
 
 # La zona horaria y la moneda las lee del CRM, para no pedírselas a nadie.
 rutas_ficha.montar(app, almacen=almacen, exige_admin=exige_admin,
