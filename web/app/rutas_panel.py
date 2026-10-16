@@ -53,7 +53,8 @@ def panel(peticion: Request):
     """
     Con Sentinel Suite activa, al panel se entra con la sesión de la suite: sin sesión (o
     sin la herramienta reportes) se manda a la suite, que vuelve aquí. La página recibe
-    quién es la persona y no pide token. Sin SUITE_URL sigue siendo el panel de siempre.
+    quién es la persona, con qué prefijo se sirve (/reportes por el gateway: todas las
+    llamadas del panel lo anteponen) y no pide token. Sin SUITE_URL es el panel de siempre.
     """
     if not suite.activa():
         return HTMLResponse(HTML, headers=CABECERAS)
@@ -61,7 +62,8 @@ def panel(peticion: Request):
     if not p:
         return RedirectResponse(suite.login(peticion), status_code=302)
     datos = json.dumps({"email": p.email, "nombre": p.nombre, "rol": p.rol,
-                        "login": suite.login(peticion), "suite": suite.SUITE_URL}).replace("</", "<\\/")
+                        "login": suite.login(peticion), "suite": suite.SUITE_URL,
+                        "prefix": suite.prefijo(peticion)}).replace("</", "<\\/")
     cabeza = (f"<script>window.SUITE={datos};</script>"
               f'<script src="{suite.SUITE_URL}/suite-bar.js" data-tool="reportes" defer></script>')
     return HTMLResponse(HTML.replace("</head>", cabeza + "</head>", 1), headers=CABECERAS)

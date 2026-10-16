@@ -1,4 +1,7 @@
-"""sentinel_suite_auth — valida la cookie SSO de Sentinel Suite en herramientas FastAPI / Starlette.
+"""sentinel_suite_auth — valida la identidad de Sentinel Suite en herramientas FastAPI / Starlette.
+
+COPIA VENDORIZADA de packages/suite-auth-fastapi/sentinel_suite_auth.py del repositorio sentinel-suite.
+No se edita aquí: los cambios se hacen en la suite y se vuelve a copiar.
 
 Dependencias: PyJWT[crypto] (pip install "PyJWT[crypto]>=2.8"). FastAPI/Starlette ya traen anyio.
 
@@ -26,7 +29,10 @@ Uso:
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import inspect
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -57,9 +63,41 @@ class SuiteUser:
     agency: str = "equipo"                        # rol en la agencia: admin | equipo
     subaccount: Optional[str] = None             # subcuenta activa en esta petición (slug)
     subaccounts: Union[str, list] = field(default_factory=list)  # "*" = todas, o lista de slugs
+    via: str = "cookie"                           # gateway | bearer | cookie
+    scopes: Optional[list] = None                 # scopes del access token OAuth (None si es un SSO)
+    client_id: Optional[str] = None
+    prefix: str = ""                              # ruta pública bajo la suite (X-Forwarded-Prefix), p. ej. "/reportes"
 
     def can_access(self, slug: str) -> bool:
         return can_access_subaccount(self.claims, slug)
+
+    @property
+    def read_only(self) -> bool:
+        """True con un access token OAuth que no incluye <tool>:write."""
+        return self.scopes is not None and not any(s.endswith(":write") for s in self.scopes)
+
+
+def verify_gateway_signature(headers, secret: Optional[str]) -> str:
+    """Cabeceras firmadas del gateway de la suite: "ok" (persona identificada, JWT en Authorization), "anon" (firma
+    anónima válida: una ruta pública que el gateway sirve sin persona), "none" (sin firma) o "bad" (firma inválida o
+    caducada: nunca se confía en ella).
+    Fórmula: HMAC-SHA256(secreto, f"{ts}\\n{user}\\n{role}\\n{subs}\\n{jwt}"), ts con ±5 min de margen. La anónima lleva
+    todo vacío menos ts: dice que la petición viene de la suite (y no del dominio antiguo), no quién la hace."""
+    sig = headers.get("x-suite-signature")
+    if not sig:
+        return "none"
+    if not secret:
+        return "bad"
+    ts = headers.get("x-suite-timestamp", "")
+    token = re.sub(r"^Bearer\s+", "", headers.get("authorization", ""), flags=re.I)
+    anon = not token and not headers.get("x-suite-user")
+    if not ts.isdigit() or abs(time.time() - int(ts)) > 300 or (not token and not anon):
+        return "bad"
+    msg = "\n".join([ts, headers.get("x-suite-user", ""), headers.get("x-suite-role", ""), headers.get("x-suite-subaccounts", ""), token])
+    expected = hmac.new(secret.encode(), msg.encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(sig, expected):
+        return "bad"
+    return "anon" if anon else "ok"
 
 
 _SUB_RE = re.compile(r"^/s/([a-z0-9][a-z0-9-]{1,49})(?:/|$)")
@@ -83,10 +121,16 @@ OnUser = Callable[[SuiteUser, Request], Union[Any, Awaitable[Any]]]
 class SuiteAuth:
     def __init__(self, hub_url: str, tool: str, on_user: Optional[OnUser] = None,
                  public_paths: Iterable[str] = (), api_prefixes: Iterable[str] = ("/api/",),
-                 subaccount_from: Callable[[Request], Optional[str]] = None):
+                 subaccount_from: Callable[[Request], Optional[str]] = None,
+                 gateway_secret: Optional[str] = None, gateway_only: Optional[bool] = None):
+        """gateway_secret: secreto compartido con el gateway de la suite (por defecto SUITE_GATEWAY_SECRET).
+        gateway_only: solo tráfico firmado por el gateway (por defecto GATEWAY_ONLY=1). Con FastAPI bajo una ruta de la
+        suite, arranca la app con root_path="/<ruta>" (o lee X-Forwarded-Prefix) para que las URL que genera lleven el prefijo."""
         self.subaccount_from = subaccount_from or default_subaccount_from
         self.hub = hub_url.rstrip("/")
         self.tool = tool
+        self.gateway_secret = gateway_secret if gateway_secret is not None else os.environ.get("SUITE_GATEWAY_SECRET", "")
+        self.gateway_only = gateway_only if gateway_only is not None else os.environ.get("GATEWAY_ONLY", "").lower() in ("1", "true", "yes")
         self.on_user = on_user
         self.public_paths = tuple(public_paths)
         self.api_prefixes = tuple(api_prefixes)
@@ -118,8 +162,9 @@ class SuiteAuth:
     def _full_url(self, request: Request) -> str:
         proto = request.headers.get("x-forwarded-proto", request.url.scheme).split(",")[0].strip()
         host = request.headers.get("x-forwarded-host", request.headers.get("host", request.url.netloc))
+        prefix = request.headers.get("x-forwarded-prefix", "").rstrip("/")
         qs = f"?{request.url.query}" if request.url.query else ""
-        return f"{proto}://{host}{request.url.path}{qs}"
+        return f"{proto}://{host}{prefix}{request.url.path}{qs}"
 
     async def _provision(self, user: SuiteUser, request: Request) -> Any:
         if not self.on_user:
@@ -140,8 +185,29 @@ class SuiteAuth:
     async def dispatch(self, request: Request, call_next) -> Response:
         if self._is_public(request.url.path):
             return await call_next(request)
-        claims = await anyio.to_thread.run_sync(self.verify, request.cookies.get(SSO_COOKIE))
         login = f"{self.hub}/sso/refresh?return={quote(self._full_url(request), safe='')}"
+        # 1. Gateway de la suite (firma válida → JWT en Authorization) · 2. Bearer directo · 3. cookie (transición)
+        gw = verify_gateway_signature(request.headers, self.gateway_secret)
+        if gw == "bad":
+            return JSONResponse({"error": "Firma del gateway de Sentinel Suite no válida. Revisa SUITE_GATEWAY_SECRET."}, status_code=401)
+        request.state.suite_gateway = gw in ("ok", "anon")  # viene de la suite (con persona o por una ruta pública)
+        bearer = re.sub(r"^Bearer\s+", "", request.headers.get("authorization", ""), flags=re.I) or None
+        if gw == "ok":
+            claims = await anyio.to_thread.run_sync(self.verify, bearer)
+            via = "gateway"
+        elif self.gateway_only:
+            # "anon": la suite la trató como ruta pública pero aquí no lo es → sin identidad, como cualquier otra
+            back = f"{self.hub}/ir/{quote(self.tool, safe='')}"
+            if self._is_api(request):
+                return JSONResponse({"error": "Esta herramienta solo se usa desde Sentinel Suite.", "suite": back}, status_code=401)
+            qs = f"?{request.url.query}" if request.url.query else ""
+            return RedirectResponse(f"{back}?ruta={quote(request.url.path + qs, safe='')}", status_code=302)
+        else:
+            claims = await anyio.to_thread.run_sync(self.verify, bearer) if bearer else None
+            via = "bearer"
+            if not claims:
+                claims = await anyio.to_thread.run_sync(self.verify, request.cookies.get(SSO_COOKIE))
+                via = "cookie"
         if not claims:
             if self._is_api(request):
                 return JSONResponse({"error": "Sesión caducada. Vuelve a entrar.", "login": login}, status_code=401)
@@ -170,7 +236,9 @@ class SuiteAuth:
         user = SuiteUser(id=str(claims["sub"]), email=claims.get("email", ""), name=claims.get("name"), role=role,
                          is_suite_admin=bool(claims.get("adm")), claims=claims,
                          agency=claims.get("agency") or ("admin" if claims.get("adm") else "equipo"),
-                         subaccount=subaccount, subaccounts=claims.get("subs", []))
+                         subaccount=subaccount, subaccounts=claims.get("subs", []), via=via,
+                         scopes=claims["scope"].split(" ") if isinstance(claims.get("scope"), str) else None,
+                         client_id=claims.get("client_id"), prefix=request.headers.get("x-forwarded-prefix", "").rstrip("/"))
         request.state.suite_user = user
         request.state.local_user = await self._provision(user, request)
         response = await call_next(request)

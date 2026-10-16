@@ -84,7 +84,8 @@ GET /app.js                      el dashboard, versionado por hash
 GET /salud                       healthcheck
 ```
 
-Administración (cabecera `X-Admin-Token`):
+Administración (con la sesión de Sentinel Suite desde `/reportes/admin`; las máquinas, con la
+cabecera `X-Admin-Token`):
 
 ```
 GET  /admin/estado
@@ -124,6 +125,28 @@ el extractor lo vea en su propio log y no reviente la construcción horas despu�
 - se declara gasto diario pero hay bloques de varios días
 - el JSON contiene `NaN` o `Infinity`
 
+## Reportes vive dentro de Sentinel Suite
+
+La URL de reportes es **`https://suite.sentinelmarketing.net/reportes`**. La suite hace de puerta
+única (gateway): la persona entra allí, y la suite reenvía cada petición a este servicio con el
+prefijo `/reportes` quitado, `X-Forwarded-Prefix: /reportes` y la identidad firmada en cabeceras
+(`X-Suite-*`, HMAC con `SUITE_GATEWAY_SECRET`) más el JWT en `Authorization`. No hay login propio.
+
+| Quién | Cómo llega | Qué ve |
+|---|---|---|
+| El equipo | la tarjeta «Reportes» de la suite → `/reportes/admin`, `/reportes/s/<slug>/` | el panel y los dashboards internos, solo de las subcuentas que tiene en la suite (rol `admin` o `equipo` de la herramienta) |
+| El cliente | el enlace con token, empotrado en GoHighLevel → `/reportes/r/<token>/embed` | su dashboard, **sin sesión de la suite**: la suite declara `/r/` (y `app.js`, `/salud`, `robots.txt`) como rutas públicas de la herramienta y las reenvía con una firma anónima |
+| Las máquinas | extractores y scripts con `X-Admin-Token`, por `reportes.railway.internal` o el dominio `*.up.railway.app` | todo `/admin`; no pasan por la suite |
+
+Con `GATEWAY_ONLY=1` el dominio viejo `reportes.sentinelmarketing.net` (y el de Railway) responde
+**301** a la misma ruta y query bajo la suite, incluidos los `/r/<token>`: los enlaces antiguos
+siguen funcionando. Solo `/salud` se contesta desde cualquier dominio (healthcheck de Railway).
+
+El middleware que valida la firma es una copia de `packages/suite-auth-fastapi` del repositorio
+`sentinel-suite`, en `web/vendor/sentinel_suite_auth.py`: se cambia allí y se vuelve a copiar.
+La integración (prefijo, rutas públicas, 301) está en `web/app/suite.py`; la prueba, en
+`pruebas/test_suite_sso.py`.
+
 ## Desarrollo
 
 ```bash
@@ -146,6 +169,9 @@ python pruebas/test_validar.py
 
 | Variable | Para qué |
 |---|---|
-| `ADMIN_TOKEN` | protege todo `/admin`. Sin ella, `/admin` devuelve 503. |
+| `ADMIN_TOKEN` (o `EXTRACTOR_TOKEN`) | el token de las **máquinas**: extractores y scripts mandan `X-Admin-Token` por el dominio de Railway, sin pasar por la suite. Sin ella, esa vía devuelve 503. Las personas no lo usan: entran por Sentinel Suite. |
+| `SUITE_URL` | `https://suite.sentinelmarketing.net`. Activa el acceso por Sentinel Suite (ver abajo). Sin ella, solo `X-Admin-Token`. |
+| `SUITE_GATEWAY_SECRET` | el secreto compartido de la herramienta `reportes` en la suite (Administración → Herramientas → Generar). Firma las cabeceras `X-Suite-*`. |
+| `GATEWAY_ONLY` | `1` en producción: solo entra lo firmado por el gateway; cualquier otra petición responde 301 a la suite. |
 | `DATABASE_URL` | si está, usa Postgres; si no, ficheros. |
 | `RUTA_DATOS_LOCAL` | carpeta del almacén de ficheros (en Railway, el volumen). |

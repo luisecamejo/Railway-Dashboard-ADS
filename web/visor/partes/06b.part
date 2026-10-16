@@ -278,7 +278,8 @@ async function descargaHTML(btn){
   try{
     const [idx,app]=await Promise.all([
       fetch(location.href,{cache:'no-store',credentials:'same-origin'}).then(r=>r.text()),
-      fetch('/app.js',{cache:'no-store',credentials:'same-origin'}).then(r=>r.text()),
+      // La misma URL con la que se cargó (bajo la suite es /reportes/app.js?v=…), no una fija
+      fetch((document.querySelector('script[src*="app.js"]')||{}).src||'/app.js',{cache:'no-store',credentials:'same-origin'}).then(r=>r.text()),
     ]);
     // Estas dos etiquetas NO se pueden escribir literales aquí: este archivo ES el
     // contenido de un script, así que un cierre literal lo terminaría a mitad y rompería
