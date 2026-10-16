@@ -105,6 +105,14 @@ def prefijo(peticion: Request) -> str:
 
 
 def _proto_host(peticion: Request) -> tuple[str, str]:
+    """
+    Desde dónde ve la web el navegador. Por el gateway es SIEMPRE la suite: el borde de
+    Railway pisa X-Forwarded-Host con el dominio del servicio, así que esa cabecera no vale
+    para saberlo; vale el prefijo, que solo pone el gateway.
+    """
+    if prefijo(peticion) and SUITE_URL:
+        proto, _, host = SUITE_URL.partition("://")
+        return proto, host
     proto = peticion.headers.get("x-forwarded-proto", peticion.url.scheme).split(",")[0].strip()
     host = peticion.headers.get("x-forwarded-host", peticion.headers.get("host", peticion.url.netloc))
     return proto, host
