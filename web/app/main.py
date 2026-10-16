@@ -82,7 +82,11 @@ from .visor import partir_html
 log = logging.getLogger("reportes")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "")
+# El token de las MÁQUINAS (extractores y scripts, cabecera X-Admin-Token). Las personas entran
+# por Sentinel Suite (ver suite.py). En Railway sigue llamándose ADMIN_TOKEN porque los tres
+# extractores lo leen por referencia (${{reportes.ADMIN_TOKEN}}); EXTRACTOR_TOKEN es el nombre
+# nuevo y gana si está.
+ADMIN_TOKEN = os.environ.get("EXTRACTOR_TOKEN", "") or os.environ.get("ADMIN_TOKEN", "")
 VERSION = os.environ.get("RAILWAY_GIT_COMMIT_SHA", "dev")[:7]
 
 # Topes de subida. El snapshot real de un cliente ronda 0,8 MB y el dashboard 1 MB;
@@ -97,6 +101,7 @@ LIM_ENLACE = seg.Limitador(intentos=40, ventana=300, castigo=600, etiqueta="enla
 
 app = FastAPI(title="Reportes Sentinel", docs_url=None, redoc_url=None, openapi_url=None)
 app.add_middleware(GZipMiddleware, minimum_size=1024)
+suite.instalar(app)   # la identidad de Sentinel Suite (gateway) y el 301 del dominio viejo
 app.include_router(router_panel)
 
 almacen = abrir_almacen()
@@ -173,6 +178,16 @@ def _cargar_visor(forzar: bool = False) -> Optional[dict]:
     return _cache
 
 
+def _indice(vis: dict, peticion: Request) -> str:
+    """
+    El visor tal como lo ve el navegador. Por el gateway de la suite la página vive en
+    /reportes/…, así que app.js tiene que pedirse como /reportes/app.js?v=…; el resto (el
+    snapshot, el refresco) ya es relativo a la propia URL y no necesita nada.
+    """
+    pre = suite.prefijo(peticion)
+    return vis["index"].replace("'/app.js?", f"'{pre}/app.js?") if pre else vis["index"]
+
+
 _sembrar_visor()
 _cargar_visor()
 log.info("servicio arriba · almacén %s · visor %s",
@@ -192,7 +207,8 @@ def exige_admin(peticion: Request, x_admin_token: str = Header(default="")) -> N
     equivocarse tecleando dejaría al operador fuera de su propio panel, y una IP
     compartida (una oficina detrás de un NAT) permitiría que un tercero se lo tirara.
     """
-    # El equipo entra por Sentinel Suite (cookie firmada); las máquinas, con X-Admin-Token.
+    # El equipo entra por Sentinel Suite (identidad firmada por su gateway, ver suite.py); las
+    # máquinas, con X-Admin-Token.
     if not x_admin_token and suite.activa():
         p = suite.persona(peticion)
         if p:
@@ -210,10 +226,10 @@ def exige_admin(peticion: Request, x_admin_token: str = Header(default="")) -> N
                 raise HTTPException(403, "Solo un administrador de reportes puede borrar clientes.")
             peticion.state.persona = p
             return
-        if suite.hay_cookie(peticion):
-            # Cookie caducada o sin la herramienta: el panel manda a renovarla a la suite
-            raise HTTPException(401, "Tu sesión de Sentinel Suite caducó o no tienes acceso a reportes.",
-                                headers={"X-Suite-Login": suite.login(peticion)})
+        # Sin persona y sin token: el middleware de la suite ya habrá contestado (301, redirección
+        # al login o 401) antes de llegar aquí. Por si acaso, la puerta queda cerrada.
+        raise HTTPException(401, "Inicia sesión en Sentinel Suite.",
+                            headers={"X-Suite-Login": suite.login(peticion)})
     if not ADMIN_TOKEN:
         raise HTTPException(503, "El servicio no tiene ADMIN_TOKEN configurado.")
     ip = seg.ip_cliente(peticion)
@@ -360,7 +376,7 @@ def robots():
 def raiz(peticion: Request):
     # Quien llega desde Sentinel Suite (la tarjeta "Reportes" de la agencia) va al panel
     if suite.persona(peticion):
-        return RedirectResponse("/admin", status_code=302)
+        return RedirectResponse(f"{suite.prefijo(peticion)}/admin", status_code=302)
     return HTMLResponse(
         "<!doctype html><meta charset=utf-8><title>Reportes</title>"
         "<style>body{font:15px/1.6 system-ui;background:#0b0f14;color:#93a1b5;"
@@ -384,8 +400,8 @@ def app_js(v: str = Query(default="")):
 
 
 @app.get("/r/{token}")
-def visor_sin_barra(token: str):
-    return RedirectResponse(f"/r/{token}/", status_code=308)
+def visor_sin_barra(token: str, peticion: Request):
+    return RedirectResponse(f"{suite.prefijo(peticion)}/r/{token}/", status_code=308)
 
 
 @app.get("/r/{token}/embed", response_class=HTMLResponse)
@@ -412,7 +428,8 @@ def embed(token: str, peticion: Request):
     # El visor pide 'snapshot.json' relativo a su URL: desde /r/{t}/embed eso resolvería
     # a /r/{t}/snapshot.json igual, porque 'embed' no lleva barra final. Se deja explícito
     # para que un cambio futuro en la ruta no rompa la carga de datos en silencio.
-    html = vis["index"].replace("'./snapshot.json'", f"'/r/{token}/snapshot.json'")
+    html = _indice(vis, peticion).replace(
+        "'./snapshot.json'", f"'{suite.prefijo(peticion)}/r/{token}/snapshot.json'")
     return HTMLResponse(html, headers=seg.cabeceras(
         {"Cache-Control": "private, max-age=60"},
         csp_reporte=True, empotrable_en=doms))
@@ -426,7 +443,7 @@ def visor(token: str, peticion: Request):
     if not vis:
         return _pagina(*_MOTIVOS[503], codigo=503, doms=doms)
     almacen.marcar_acceso(token)
-    return HTMLResponse(vis["index"], headers=seg.cabeceras(
+    return HTMLResponse(_indice(vis, peticion), headers=seg.cabeceras(
         {"Cache-Control": "private, max-age=60"},
         csp_reporte=True, empotrable_en=doms))
 
@@ -457,8 +474,8 @@ def equipo(peticion: Request, slug: str, *, navegacion: bool):
 
 
 @app.get("/s/{slug}")
-def equipo_sin_barra(slug: str):
-    return RedirectResponse(f"/s/{slug}/", status_code=308)
+def equipo_sin_barra(slug: str, peticion: Request):
+    return RedirectResponse(f"{suite.prefijo(peticion)}/s/{slug}/", status_code=308)
 
 
 @app.get("/s/{slug}/", response_class=HTMLResponse)
@@ -475,7 +492,7 @@ def equipo_visor(slug: str, peticion: Request):
         return _pagina(*_MOTIVOS[503], codigo=503)
     # La barra de Sentinel Suite (selector de cliente y de herramientas) encima del dashboard
     barra = f'<script src="{suite.SUITE_URL}/suite-bar.js" data-tool="reportes" defer></script>'
-    html = vis["index"].replace("</body>", barra + "</body>", 1)
+    html = _indice(vis, peticion).replace("</body>", barra + "</body>", 1)
     cab = seg.cabeceras({"Cache-Control": "private, no-store"}, csp_reporte=True)
     cab["Content-Security-Policy"] = (cab["Content-Security-Policy"]
                                       .replace("script-src 'self'", f"script-src 'self' {suite.SUITE_URL}")

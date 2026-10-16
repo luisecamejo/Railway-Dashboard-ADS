@@ -162,6 +162,9 @@ button.rojo:disabled{opacity:.45}
 <script>
 (function(){
   var TOK='';
+  // Por el gateway de Sentinel Suite el panel vive en /reportes/admin: toda ruta absoluta
+  // (las llamadas a /admin/… y los enlaces /r/… que se enseñan) lleva este prefijo delante.
+  var BASE=(window.SUITE&&window.SUITE.prefix)||'';
   var $=function(id){return document.getElementById(id)};
 
   function api(ruta,opciones){
@@ -169,7 +172,7 @@ button.rojo:disabled{opacity:.45}
     // Con la sesión de Sentinel Suite no hay token: va la cookie, y esta cabecera dice que la
     // petición sale de este panel (defensa extra contra peticiones desde otro subdominio)
     opciones.headers=Object.assign(TOK?{'X-Admin-Token':TOK}:{'X-Requested-With':'panel-reportes'},opciones.headers||{});
-    return fetch(ruta,opciones).then(function(r){
+    return fetch(BASE+ruta,opciones).then(function(r){
       return r.text().then(function(t){
         var d={}; try{d=t?JSON.parse(t):{}}catch(e){d={detail:t}}
         if(!r.ok){var e=new Error('http'); e.codigo=r.status; e.datos=d; throw e}

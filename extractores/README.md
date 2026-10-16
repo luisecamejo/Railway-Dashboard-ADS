@@ -72,7 +72,7 @@ Comunes a los tres:
 | Variable | Valor |
 |---|---|
 | `REPORTES_URL` | `https://reportes-production-a40d.up.railway.app` |
-| `REPORTES_ADMIN_TOKEN` | `${{reportes.ADMIN_TOKEN}}` — por referencia, el valor no se copia |
+| `REPORTES_ADMIN_TOKEN` | `${{reportes.ADMIN_TOKEN}}` — por referencia, el valor no se copia. Es el token de **máquinas**: las personas entran a reportes por Sentinel Suite, los extractores no (van directos al dominio de Railway, que con `X-Admin-Token` no redirige a la suite) |
 | `SOLO_CLIENTE` | opcional, un slug, para probar con uno solo |
 
 `extractor-ghl`:
