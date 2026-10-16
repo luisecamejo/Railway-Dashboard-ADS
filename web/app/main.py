@@ -375,8 +375,10 @@ def robots():
 @app.get("/", response_class=HTMLResponse)
 def raiz(peticion: Request):
     # Quien llega desde Sentinel Suite (la tarjeta "Reportes" de la agencia) va al panel
+    # Las redirecciones van SIN prefijo: el gateway de la suite reescribe cualquier Location
+    # relativa a su ruta pública (/admin → /reportes/admin). Si lo pusiéramos aquí, saldría doble.
     if suite.persona(peticion):
-        return RedirectResponse(f"{suite.prefijo(peticion)}/admin", status_code=302)
+        return RedirectResponse("/admin", status_code=302)
     return HTMLResponse(
         "<!doctype html><meta charset=utf-8><title>Reportes</title>"
         "<style>body{font:15px/1.6 system-ui;background:#0b0f14;color:#93a1b5;"
@@ -400,8 +402,8 @@ def app_js(v: str = Query(default="")):
 
 
 @app.get("/r/{token}")
-def visor_sin_barra(token: str, peticion: Request):
-    return RedirectResponse(f"{suite.prefijo(peticion)}/r/{token}/", status_code=308)
+def visor_sin_barra(token: str):
+    return RedirectResponse(f"/r/{token}/", status_code=308)   # el gateway le pone el prefijo
 
 
 @app.get("/r/{token}/embed", response_class=HTMLResponse)
@@ -474,8 +476,8 @@ def equipo(peticion: Request, slug: str, *, navegacion: bool):
 
 
 @app.get("/s/{slug}")
-def equipo_sin_barra(slug: str, peticion: Request):
-    return RedirectResponse(f"{suite.prefijo(peticion)}/s/{slug}/", status_code=308)
+def equipo_sin_barra(slug: str):
+    return RedirectResponse(f"/s/{slug}/", status_code=308)   # el gateway le pone el prefijo
 
 
 @app.get("/s/{slug}/", response_class=HTMLResponse)

@@ -15,6 +15,7 @@ las firmas que no valen, el 301 del dominio viejo y que X-Admin-Token (máquinas
 import hashlib
 import hmac
 import json
+from urllib.parse import quote
 import os
 import pathlib
 import sys
@@ -54,8 +55,10 @@ threading.Thread(target=srv.serve_forever, daemon=True).start()
 SUITE = f"http://127.0.0.1:{srv.server_address[1]}"
 SECRETO = "secreto-compartido-de-prueba-1234"
 PREFIJO = "/reportes"
-HOST_SUITE = "suite.test"            # lo que el navegador ve (X-Forwarded-Host)
-ORIGEN = f"https://{HOST_SUITE}"
+# El navegador está en la suite: desde ahí salen los POST del panel (cabecera Origin). Ojo: por el
+# gateway, X-Forwarded-Host NO trae la suite sino el dominio del servicio (lo pisa el borde de Railway).
+ORIGEN = SUITE
+HOST_RAILWAY = "reportes-production-a40d.up.railway.app"
 
 TOKEN = "token-de-prueba-solo-para-los-tests"
 os.environ["ADMIN_TOKEN"] = TOKEN
@@ -98,7 +101,7 @@ def _firma(ts, user, role, subs, tok, secreto=SECRETO):
     return hmac.new(secreto.encode(), msg.encode(), hashlib.sha256).hexdigest()
 
 
-REENVIO = {"X-Forwarded-Prefix": PREFIJO, "X-Forwarded-Host": HOST_SUITE, "X-Forwarded-Proto": "https"}
+REENVIO = {"X-Forwarded-Prefix": PREFIJO, "X-Forwarded-Host": HOST_RAILWAY, "X-Forwarded-Proto": "https"}
 
 
 def gw(tools=None, subs="*", *, tok=None, ts=None, secreto=SECRETO, **extra):
@@ -140,9 +143,10 @@ ok("y trae la barra de la suite", f"{SUITE}/suite-bar.js" in r.text)
 r = C.get("/admin", follow_redirects=False, headers=gw(tools={"funnel-hacker": "admin"}))
 ok("sin la herramienta reportes, la suite revalida (tool=reportes)",
    r.status_code == 302 and "/sso/refresh?return=" in r.headers["location"] and "tool=reportes" in r.headers["location"])
-ok("…y la vuelta lleva el prefijo", f"https%3A%2F%2F{HOST_SUITE}%2Freportes%2Fadmin" in r.headers["location"])
+ok("…y la vuelta es la URL de la suite con el prefijo (no X-Forwarded-Host, que Railway pisa)",
+   quote(f"{SUITE}/reportes/admin", safe="") in r.headers["location"])
 r = C.get("/", follow_redirects=False, headers=gw())
-ok("la raíz lleva al panel, con prefijo", r.status_code == 302 and r.headers["location"] == "/reportes/admin")
+ok("la raíz lleva al panel (Location sin prefijo: lo añade el gateway)", r.status_code == 302 and r.headers["location"] == "/admin")
 
 print("\nAPI del panel")
 r = C.get("/admin/estado", headers=gw())
@@ -158,7 +162,7 @@ ok("ni tocar un enlace de otro cliente por su token",
 ok("dar de alta un cliente nuevo exige llegar a todas las subcuentas",
    C.post("/admin/clientes", headers=gw(subs=["cliff"], Origin=ORIGEN), json={"slug": "nuevo", "nombre": "Nuevo", "tz": "Europe/Madrid"}).status_code == 403)
 r = C.post("/admin/clientes", headers=gw(Origin=ORIGEN), json={"slug": "nuevo", "nombre": "Nuevo", "tz": "Europe/Madrid"})
-ok("con todas, sí (el Origin es el de la suite)", r.status_code == 200, r.text[:200])
+ok("con todas, sí (el Origin es el de la suite, aunque X-Forwarded-Host traiga el dominio de Railway)", r.status_code == 200, r.text[:200])
 ok("una escritura desde otro origen se rechaza",
    C.post("/admin/clientes", headers=gw(Origin="https://otra.sentinelmarketing.net"), json={"slug": "x", "nombre": "X"}).status_code == 403)
 ok("borrar un cliente es solo para el rol admin",
@@ -189,7 +193,7 @@ ok("y app.js se pide bajo el prefijo", "'/reportes/app.js?v=" in r.text)
 r = C.get("/s/garage/", follow_redirects=False, headers=gw(subs=["cliff"]))
 ok("cliente fuera de sus subcuentas: la suite revalida (&sub=)", r.status_code == 302 and "&sub=garage" in r.headers["location"])
 r = C.get("/s/cliff", follow_redirects=False, headers=gw())
-ok("sin barra final, redirige con prefijo", r.status_code == 308 and r.headers["location"] == "/reportes/s/cliff/")
+ok("sin barra final, redirige (sin prefijo: lo añade el gateway)", r.status_code == 308 and r.headers["location"] == "/s/cliff/")
 d = C.get("/s/cliff/snapshot.json", headers=gw(subs=["cliff"]))
 ok("snapshot interno sin enmascarar", d.status_code == 200 and d.json()["leads"][0]["nombre"] == "Zoe Smith")
 ok("snapshot de otro cliente: 403", C.get("/s/garage/snapshot.json", headers=gw(subs=["cliff"])).status_code == 403)
@@ -203,7 +207,7 @@ ok("y carga app.js bajo el prefijo", "'/reportes/app.js?v=" in r.text)
 ok("el snapshot, enmascarado según el modo del enlace", C.get(f"/r/{TOK}/snapshot.json", headers=anon()).status_code == 200)
 ok("app.js es público", C.get("/app.js", headers=anon()).status_code == 200)
 r = C.get(f"/r/{TOK}", follow_redirects=False, headers=anon())
-ok("sin barra final, redirige con prefijo", r.status_code == 308 and r.headers["location"] == f"/reportes/r/{TOK}/")
+ok("sin barra final, redirige (sin prefijo: lo añade el gateway)", r.status_code == 308 and r.headers["location"] == f"/r/{TOK}/")
 ok("el refresco desde el dashboard del cliente", C.get(f"/r/{TOK}/refrescar", headers=anon()).status_code == 200)
 C.post(f"/admin/enlaces/{TOK}/dominios", headers=ADMIN, json={"dominios": ["https://app.gohighlevel.com"]})
 r = C.get(f"/r/{TOK}/embed", headers=anon())

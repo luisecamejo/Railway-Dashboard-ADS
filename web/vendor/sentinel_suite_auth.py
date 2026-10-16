@@ -160,11 +160,13 @@ class SuiteAuth:
                 or ("application/json" in accept and "text/html" not in accept))
 
     def _full_url(self, request: Request) -> str:
-        proto = request.headers.get("x-forwarded-proto", request.url.scheme).split(",")[0].strip()
-        host = request.headers.get("x-forwarded-host", request.headers.get("host", request.url.netloc))
         prefix = request.headers.get("x-forwarded-prefix", "").rstrip("/")
         qs = f"?{request.url.query}" if request.url.query else ""
-        return f"{proto}://{host}{prefix}{request.url.path}{qs}"
+        if prefix:  # por el gateway la URL pública es la de la suite (X-Forwarded-Host la pisa el borde de Railway)
+            return f"{self.hub}{prefix}{request.url.path}{qs}"
+        proto = request.headers.get("x-forwarded-proto", request.url.scheme).split(",")[0].strip()
+        host = request.headers.get("x-forwarded-host", request.headers.get("host", request.url.netloc))
+        return f"{proto}://{host}{request.url.path}{qs}"
 
     async def _provision(self, user: SuiteUser, request: Request) -> Any:
         if not self.on_user:
