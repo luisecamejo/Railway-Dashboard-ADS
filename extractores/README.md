@@ -75,12 +75,13 @@ Comunes a los tres:
 | `REPORTES_ADMIN_TOKEN` | `${{reportes.ADMIN_TOKEN}}` — por referencia, el valor no se copia. Es el token de **máquinas**: las personas entran a reportes por Sentinel Suite, los extractores no (van directos al dominio de Railway, que con `X-Admin-Token` no redirige a la suite) |
 | `SOLO_CLIENTE` | opcional, un slug, para probar con uno solo |
 
-`extractor-ghl`:
+`extractor-ghl` (y también el servicio `reportes`, que usa el mismo cliente para la ficha
+de cada cliente y para el botón «Actualizar ahora»):
 
 | Variable | Valor |
 |---|---|
-| `GHL_MCP_URL` | `https://sentinel-mcp-bd11.up.railway.app` |
-| `GHL_MCP_TOKEN` | `${{ghl-mcp.GHL_MCP_HTTP_TOKEN}}` — por referencia |
+| `GHL_MCP_URL` | `https://sentinel-mcp-production-7a17.up.railway.app` — el **dominio propio** del servicio `sentinel-mcp` (proyecto Railway `mcp-ghl`). NO la ruta de la suite ni el dominio antiguo: ver «Cómo entra un programa al MCP». |
+| `GHL_MCP_TOKEN` | un **token de servicio de Sentinel Suite** (`ss_…`): Administración → Integraciones → crear token con permiso `subaccounts:read`. Se enseña una sola vez. **Lo crea Luis a mano** y se pega en los dos servicios (no hay referencia `${{…}}` posible: el MCP vive en otro proyecto). |
 | `GHL_DIAS_VENDEDORES` | `120` (por defecto). Cierra el hallazgo H-3. |
 | `CONSTRUIR_AL_TERMINAR` | `1` |
 
@@ -114,21 +115,58 @@ Meta tiene una propia que es la que evita el fallo del 11-sep:
 | `META_API_VERSION` | `v26.0` |
 | `META_TIPOS_LEAD` | opcional, para ajustar qué acción cuenta como lead |
 
-### Por qué las URLs son públicas y no `*.railway.internal`
+### Cómo entra un programa al MCP (desde el 17-oct-2026)
 
-Sería mejor por la red privada (no sale a internet y no hace falta token en la URL),
-pero el SDK de MCP que usa `ghl-mcp` **valida la cabecera `Host`** contra su variable
-`ALLOWED_HOSTS`. Llamando por dentro el Host es `ghl-mcp.railway.internal` y responde:
+Desde la fase E el MCP de GoHighLevel vive **detrás de Sentinel Suite**: la gente lo usa
+en `https://suite.sentinelmarketing.net/mcp/ghl`, con OAuth de la suite, y el servicio
+ya no tiene token propio (`GHL_MCP_HTTP_TOKEN` desapareció). Un programa no puede
+entrar por ahí —el gateway exige una persona con sesión o un access token OAuth—, así
+que los extractores y `reportes` entran por **otra puerta**, pensada para máquinas:
 
 ```
-403  {"error":{"code":-32000,"message":"Invalid Host: ghl-mcp.railway.internal"}}
+extractor-ghl / reportes ──Bearer ss_…──> https://sentinel-mcp-production-7a17.up.railway.app/mcp
+                                                   │
+                                                   └── GET suite/api/v1/subaccounts (con ese mismo token)
+                                                       200 → token vivo + lista de subcuentas → solo lectura
 ```
 
-(comprobado levantando una réplica de su `http-server.js` con el mismo SDK).
+- El token es un **token de servicio de la suite** (`ss_…`, permiso `subaccounts:read`).
+  El MCP lo comprueba contra la suite en cada petición (con caché de un minuto) y le da
+  **solo lectura sobre todas las subcuentas registradas** en la suite. Revocar el token
+  en la suite corta el acceso.
+- Solo ve las sub-cuentas **dadas de alta en Sentinel Suite** (Administración →
+  Subcuentas, con su location id). Un cliente nuevo en reportes que no esté en la
+  suite no aparece en la lista del panel ni se extrae: hay que registrarlo allí.
+- El código del cliente (`comun/mcp.py`) no cambió de forma: sigue siendo `POST /mcp`
+  con `Authorization: Bearer` y `tools/call` sin `initialize`. Lo que sí hace ahora es
+  **explicar** los dos fallos de configuración en vez de dejar un «HTTP 308»:
 
-Para pasar a red privada: **añade `ghl-mcp.railway.internal` a `ALLOWED_HOSTS` de
-ghl-mcp** (sin quitar lo que ya hay) y cambia `GHL_MCP_URL` a
-`http://ghl-mcp.railway.internal:8080`. El código no necesita ningún cambio.
+| Síntoma en el log o en el panel | Qué pasa | Arreglo |
+|---|---|---|
+| `GHL_MCP_URL (…) redirige (HTTP 308)` | la URL es el dominio antiguo (`sentinel-mcp-bd11…` o `mcp.sentinelmarketing.net`), que manda a la suite | poner el dominio propio del servicio `sentinel-mcp` |
+| `El MCP rechazó el token (HTTP 401)` | `GHL_MCP_TOKEN` no es un `ss_…` vivo (o el token lo revocaron en la suite) | crear otro token de servicio y pegarlo en `reportes` y `extractor-ghl` |
+| `403 Invalid Host` | el dominio de `GHL_MCP_URL` no está en `ALLOWED_HOSTS` del servicio MCP | añadirlo allí (sin quitar lo que hay) |
+
+Cambiar las variables en Railway (la carpeta de este repo está enlazada al proyecto):
+
+```bash
+railway variables --service reportes --set GHL_MCP_URL=https://sentinel-mcp-production-7a17.up.railway.app --set GHL_MCP_TOKEN=ss_…
+```
+
+```bash
+railway variables --service extractor-ghl --set GHL_MCP_URL=https://sentinel-mcp-production-7a17.up.railway.app --set GHL_MCP_TOKEN=ss_…
+```
+
+Y para comprobarlo sin esperar al cron: `GET /admin/cuentas` del panel
+(`https://suite.sentinelmarketing.net/reportes/admin`) tiene que listar las sub-cuentas
+de GHL, y una ejecución manual del extractor con `SOLO_CLIENTE` tiene que terminar bien.
+
+**Por qué el dominio público y no `*.railway.internal`:** la red privada de Railway solo
+une servicios del **mismo** proyecto, y el MCP vive en el proyecto `mcp-ghl` mientras
+que `reportes` y los extractores están en «GHL MCP + Claude». Además, el SDK de MCP
+valida la cabecera `Host` contra `ALLOWED_HOSTS` del servicio: cualquier dominio por el
+que se le llame tiene que estar ahí (comprobado levantando una réplica de su
+`http-server.js` con el mismo SDK).
 
 ## Cuando haya 100 clientes
 
@@ -249,6 +287,12 @@ Dos cosas que el log dijo y conviene no olvidar:
 `pruebas/test_extractores.py` levanta un Graph API y un ghl-mcp de mentira con las
 formas de respuesta REALES y comprueba que la salida del extractor es la que produjo el
 snapshot ya verificado. No hace falta ningún token.
+
+`pruebas/test_mcp_servicio.py` levanta una réplica del MCP tal y como responde desde la
+fase E (308 en el dominio antiguo, 401 con un token que no es de servicio, SSE con uno
+bueno) y comprueba que los dos fallos de configuración se explican en vez de salir como
+«HTTP 308», que no se reintentan, y que con el dominio propio y un `ss_…` el
+`tools/call` sigue funcionando.
 
 `pruebas/test_reintentos.py` reproduce los dos fallos que dejaron a 6 de 8 clientes sin
 reporte el 11-sep-2026 — un `IncompleteRead` a media respuesta y un 429 de GoHighLevel

@@ -7,10 +7,18 @@ merece la pena hablarlo en vez de duplicar la extracción: `ghl-mcp` ya resuelve
 OAuth de agencia, el refresco de tokens y la caché de sub-cuentas, y todo eso ya
 está en producción. Repetirlo aquí sería mantener dos veces lo mismo.
 
+Desde el 17-oct-2026 (fase E) `ghl-mcp` vive detrás de Sentinel Suite y ya no tiene
+token propio. Un programa NO entra por la suite (esa ruta exige el OAuth de una
+persona): entra por el DOMINIO PROPIO del servicio con un TOKEN DE SERVICIO de la
+suite (`ss_…`, Administración → Integraciones, permiso subaccounts:read), que el
+MCP comprueba contra la suite y al que da solo lectura sobre todas las subcuentas
+registradas. Apuntar GHL_MCP_URL al dominio antiguo da un 308 (ver `_explicar`).
+
 TODO lo que sigue está comprobado contra el mismo SDK que usa ghl-mcp
 (@modelcontextprotocol/sdk 1.30) levantando una réplica de su http-server.js:
 
-  1. `POST /mcp` con `Authorization: Bearer <GHL_MCP_HTTP_TOKEN>` → rol admin.
+  1. `POST /mcp` con `Authorization: Bearer <GHL_MCP_TOKEN>`. El token es el de
+     servicio de la suite (antes era GHL_MCP_HTTP_TOKEN, que ya no existe).
   2. NO hace falta `initialize`. El transporte va sin estado
      (`sessionIdGenerator: undefined`), así que cada POST crea un servidor nuevo y
      un `tools/call` a pelo funciona. Mandar `initialize` antes sería un viaje de
@@ -19,10 +27,10 @@ TODO lo que sigue está comprobado contra el mismo SDK que usa ghl-mcp
      los dos el SDK responde 406 "Client must accept both". Comprobado.
   4. La respuesta llega como SSE (`event: message` / `data: {...}`) aunque sea una
      sola petición. De ahí `_leer_sse`.
-  5. El SDK valida la cabecera Host contra ALLOWED_HOSTS. Llamando por la red
-     privada el Host es `ghl-mcp.railway.internal`, así que ESE nombre tiene que
-     estar en la variable ALLOWED_HOSTS del servicio ghl-mcp o responde
-     403 "Invalid Host". Comprobado también.
+  5. El SDK valida la cabecera Host contra ALLOWED_HOSTS del servicio MCP: el
+     dominio al que apunte GHL_MCP_URL tiene que estar en esa variable o responde
+     403 "Invalid Host". Comprobado también. (Red privada `*.railway.internal`:
+     solo entre servicios del mismo proyecto, y el MCP vive en otro.)
 """
 from __future__ import annotations
 
@@ -32,7 +40,7 @@ import logging
 import random
 import time
 
-from .http import pedir
+from .http import ErrorHTTP, pedir
 
 log = logging.getLogger("extractor.mcp")
 
@@ -121,17 +129,44 @@ class ClienteMCP:
         self._ids = itertools.count(1)
 
     def _post(self, peticion: dict) -> dict:
-        _c, crudo, _h = pedir(
-            f"{self.base}/mcp", metodo="POST",
-            cuerpo=json.dumps(peticion, ensure_ascii=False).encode("utf-8"),
-            cabeceras={
-                "Authorization": f"Bearer {self.token}",
-                "Content-Type": "application/json",
-                # Las DOS, o 406. No es cosmético.
-                "Accept": "application/json, text/event-stream",
-            },
-            timeout=self.timeout)
+        try:
+            _c, crudo, _h = pedir(
+                f"{self.base}/mcp", metodo="POST",
+                cuerpo=json.dumps(peticion, ensure_ascii=False).encode("utf-8"),
+                cabeceras={
+                    "Authorization": f"Bearer {self.token}",
+                    "Content-Type": "application/json",
+                    # Las DOS, o 406. No es cosmético.
+                    "Accept": "application/json, text/event-stream",
+                },
+                timeout=self.timeout)
+        except ErrorHTTP as ex:
+            raise self._explicar(ex) from ex
         return _leer_sse(crudo)
+
+    def _explicar(self, ex: ErrorHTTP) -> RuntimeError:
+        """
+        Los dos fallos de CONFIGURACIÓN que nadie debería tener que descifrar.
+
+        Son definitivos (reintentar no los arregla) y, dichos como «HTTP 308» o
+        «HTTP 401», mandan a quien mira el log a buscar en el sitio equivocado.
+        El 17-oct-2026 el panel estuvo diciendo «No pude leer la lista: HTTP 308»
+        cuando lo que pasaba era que GHL_MCP_URL seguía apuntando al dominio
+        antiguo del MCP, que desde la fase E redirige a la suite.
+        """
+        if ex.codigo in (301, 302, 307, 308):
+            return RuntimeError(
+                f"GHL_MCP_URL ({self.base}) redirige (HTTP {ex.codigo}): es el dominio "
+                "antiguo del MCP, que ahora manda a Sentinel Suite. Un programa no "
+                "puede entrar por la suite: GHL_MCP_URL tiene que ser el dominio propio "
+                "del servicio sentinel-mcp (ver extractores/README.md).")
+        if ex.codigo in (401, 403):
+            return RuntimeError(
+                f"El MCP rechazó el token (HTTP {ex.codigo}): GHL_MCP_TOKEN tiene que "
+                "ser un token de servicio de Sentinel Suite (ss_…, Administración → "
+                "Integraciones, permiso subaccounts:read) vivo, no revocado "
+                f"(ver extractores/README.md). Detalle: {ex.cuerpo[:200]}")
+        return ex
 
     def llamar(self, herramienta: str, argumentos: dict | None = None):
         """
