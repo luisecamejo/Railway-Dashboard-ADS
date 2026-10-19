@@ -155,7 +155,11 @@ def _extractores_en_path() -> None:
 def cuentas_ghl() -> list[dict]:
     """Las sub-cuentas de la agencia. Una sola llamada al MCP, ya paginada por él."""
     r = _cliente_mcp().llamar("ghl_list_clients", {})
-    filas = r if isinstance(r, list) else (r or {}).get("clients") or []
+    # Desde la fase E el MCP responde {"clientes": [...]} (antes, {"clients": [...]}).
+    # Se aceptan las dos: el 20-oct-2026 el panel enseñaba la lista vacía sin error
+    # porque solo miraba la clave antigua.
+    filas = r if isinstance(r, list) else ((r or {}).get("clientes")
+                                           or (r or {}).get("clients") or [])
     out = []
     for c in filas:
         if not isinstance(c, dict):
