@@ -242,6 +242,8 @@ footer b{color:var(--dim)}
    <button data-t="paid" title="Campañas, creativos, ROAS y CPL de las plataformas con gasto">Paid Media<span class="n" id="n1"></span></button>
    <button data-t="ventas" title="Auditoría de tiempos de respuesta, llamadas y cumplimiento del SOP por vendedor">Vendedores</button>
    <button data-t="notas" title="Salvedades y límites conocidos de los datos de este reporte">Notas y salvedades</button>
+   <!-- Solo para administradores que entran por Sentinel Suite (ver partes/06c.part). Nunca en el empotrado. -->
+   <button data-t="ajustes" id="tabAjustes" style="display:none" title="Enlace para empotrar, menú en GoHighLevel y rotación del enlace. Solo administradores.">Ajustes</button>
  </div>
  <div id="view"></div>
  <div id="lb"><img id="lbimg" alt=""><div id="lberr" style="display:none">Vista previa no disponible: el enlace de Meta para este creativo ya expiró (son URLs firmadas con fecha de vencimiento). No es un error del dashboard — para volver a verla hay que regenerar el snapshot de datos.</div><div class="cap" id="lbcap"></div></div>

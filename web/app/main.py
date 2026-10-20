@@ -69,7 +69,6 @@ from fastapi.responses import (HTMLResponse, JSONResponse, PlainTextResponse,
 from starlette.exceptions import HTTPException as ErrorHTTP
 
 from .almacen import abrir_almacen
-from .rutas_panel import router as router_panel
 from . import rutas_extraccion
 from . import rutas_refrescar
 from . import rutas_ficha
@@ -104,7 +103,18 @@ LIM_ENLACE = seg.Limitador(intentos=40, ventana=300, castigo=600, etiqueta="enla
 app = FastAPI(title="Reportes Sentinel", docs_url=None, redoc_url=None, openapi_url=None)
 app.add_middleware(GZipMiddleware, minimum_size=1024)
 suite.instalar(app)   # la identidad de Sentinel Suite (gateway) y el 301 del dominio viejo
-app.include_router(router_panel)
+
+
+@app.get("/admin")
+def admin_retirado(peticion: Request):
+    """
+    El panel de administración se retiró el 20-oct-2026. Lo que pedía (sub-cuenta de GHL,
+    cuentas, zona horaria) se da de alta UNA vez en Sentinel Suite; lo propio del reporte
+    (enlace para empotrar, menú en GoHighLevel, rotar) está en la pestaña «Ajustes» del
+    propio dashboard, visible solo para administradores que entran por la suite.
+    """
+    destino = f"{suite.SUITE_URL}/admin?pestana=subcuentas" if suite.SUITE_URL else "/"
+    return RedirectResponse(destino, status_code=302)
 
 almacen = abrir_almacen()
 
@@ -226,6 +236,12 @@ def exige_admin(peticion: Request, x_admin_token: str = Header(default="")) -> N
             # Borrar un cliente (y sus enlaces empotrados) queda para el rol admin
             if peticion.method == "DELETE" and p.rol != "admin":
                 raise HTTPException(403, "Solo un administrador de reportes puede borrar clientes.")
+            # Lo que está en la pestaña «Ajustes» del dashboard (rotar el enlace, instalar el
+            # menú en GoHighLevel) es de administradores: el rol equipo mira, no toca.
+            ruta = peticion.url.path
+            if (peticion.method == "POST" and p.rol != "admin"
+                    and (ruta.endswith("/rotar") or "/admin/menu-ghl/" in ruta)):
+                raise HTTPException(403, "Solo un administrador de ROASLytics puede hacer esto.")
             peticion.state.persona = p
             return
         # Sin persona y sin token: el middleware de la suite ya habrá contestado (301, redirección
@@ -509,6 +525,13 @@ def equipo_visor(slug: str, peticion: Request):
     # La barra de Sentinel Suite (selector de cliente y de herramientas) encima del dashboard
     barra = f'<script src="{suite.SUITE_URL}/suite-bar.js" data-tool="reportes" defer></script>'
     html = _indice(vis, peticion).replace("</body>", barra + "</body>", 1)
+    # La pestaña «Ajustes» del dashboard (enlace para empotrar, menú en GoHighLevel, rotar)
+    # existe SOLO para administradores que entran por la suite. Se anuncia con un <meta>
+    # (la CSP no deja scripts en línea nuevos) y el dashboard la enseña si lo encuentra.
+    # En /r/<token>/ (clientes, empotrado) no se inyecta nunca.
+    if p.rol == "admin":
+        meta = (f'<meta name="roaslytics-ajustes" content="{suite.prefijo(peticion)}|{slug}|{p.rol}">')
+        html = html.replace("<head>", "<head>" + meta, 1)
     cab = seg.cabeceras({"Cache-Control": "private, no-store"}, csp_reporte=True)
     cab["Content-Security-Policy"] = (cab["Content-Security-Policy"]
                                       .replace("script-src 'self'", f"script-src 'self' {suite.SUITE_URL}")
