@@ -84,7 +84,40 @@
         ' · creado '+fecha(d.creado)+' · modo '+esc(d.modo)+'</p>'+
         '<div class="preset"><button class="gdoms">cambiar dominios</button>'+
         '<button class="grotar">rotar el enlace…</button></div>'+
-        '<div class="grot" style="display:none"></div>';
+        '<div class="grot" style="display:none"></div>'+
+        // El menú en la sub-cuenta de GoHighLevel: se instala solo al publicar; aquí se ve
+        // si está y se puede reinstalar (p. ej. tras dar el permiso en el Marketplace).
+        '<div class="gmenu-caja" style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line)">'+
+        '<label>En el menú de GoHighLevel del cliente</label><p class="nota gmenu-est">Comprobando…</p>'+
+        '<div class="preset"><button class="gmenu">Instalar en el menú de GoHighLevel</button></div>'+
+        '<div class="msg gmenu-msg"></div></div>';
+
+      var gest=cajaGen.querySelector('.gmenu-est'), gmsg=cajaGen.querySelector('.gmenu-msg');
+      function pintaMenuGhl(m){
+        if(!m.activo){ gest.innerHTML='Instalación automática apagada (GHL_MENU_AUTO=0).'; return }
+        if(!m.location){ gest.innerHTML='Este cliente no tiene sub-cuenta de GoHighLevel: no hay dónde ponerlo.'; return }
+        if(m.menu && m.menu.url===m.url){
+          gest.innerHTML='<b>Instalado</b> como «'+esc(m.menu.titulo)+'» el '+fecha(m.menu.cuando)+
+            ' ('+esc(m.menu.accion||'')+'). El cliente lo ve en su menú lateral y abre este reporte dentro de su CRM.';
+        } else if(m.error){
+          gest.innerHTML='<span class="grave">No se pudo instalar:</span> '+esc(m.error)+
+            (/custom-menu|scope|permiso|401|403/i.test(m.error)
+              ? '<br>Suele ser que la app de agencia del Marketplace no tiene el permiso <b>custom-menu-link.write</b>: actívalo y reautoriza la agencia en la suite (MCP de GoHighLevel → Reautorizar).'
+              : '');
+        } else {
+          gest.innerHTML='Todavía no está en el menú. Se instala solo con la siguiente publicación, o ahora con el botón.';
+        }
+      }
+      api('/admin/menu-ghl/'+encodeURIComponent(slug)).then(pintaMenuGhl)
+        .catch(function(e){ gest.innerHTML='No pude comprobarlo: '+problema(e) });
+      cajaGen.querySelector('.gmenu').onclick=function(){
+        pinta(gmsg,'cargando','Creando el enlace de menú en GoHighLevel…');
+        api('/admin/menu-ghl/'+encodeURIComponent(slug),{method:'POST'}).then(function(r){
+          pinta(gmsg,'ok','Menú <b>'+esc(r.accion||'instalado')+'</b> en la sub-cuenta. Pide al cliente que recargue GoHighLevel.');
+          return api('/admin/menu-ghl/'+encodeURIComponent(slug)).then(pintaMenuGhl);
+        }).catch(function(e){ pinta(gmsg,'err',problema(e));
+          api('/admin/menu-ghl/'+encodeURIComponent(slug)).then(pintaMenuGhl).catch(function(){}) });
+      };
 
       cajaGen.querySelector('.gcopiar').onclick=function(){
         var b=this;

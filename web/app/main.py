@@ -74,6 +74,7 @@ from . import rutas_extraccion
 from . import rutas_refrescar
 from . import rutas_ficha
 from . import enlace_general
+from . import menu_ghl
 from .privacidad import MODOS, aplicar
 from . import seguridad as seg
 from . import suite
@@ -772,6 +773,7 @@ async def admin_publicar(slug: str, peticion: Request):
     reg = almacen.publicar_snapshot(slug, datos)
     almacen.purgar_snapshots(slug, conservar=30)
     enlace_general.tras_publicar(almacen, slug)
+    menu_ghl.tras_publicar(almacen, slug)
     log.info("snapshot publicado · %s · %s leads · %.0f KB",
              slug, reg.get("n_leads"), (reg.get("bytes") or 0) / 1024)
     return {"ok": True, **{k: str(v) for k, v in reg.items()}}
@@ -987,6 +989,8 @@ rutas_refrescar.montar(app, almacen=almacen, exige_admin=exige_admin,
 rutas_ficha.montar(app, almacen=almacen, exige_admin=exige_admin,
                    config_de=lambda s: (almacen.cliente(s) or {}).get("config") or {})
 enlace_general.montar(app, almacen=almacen, exige_admin=exige_admin)
+# El reporte en el menú lateral de la sub-cuenta de GoHighLevel (se instala solo al publicar).
+menu_ghl.montar(app, almacen=almacen, exige_admin=exige_admin)
 
 
 # ════════════════════════════════════════════════════════════════════════════

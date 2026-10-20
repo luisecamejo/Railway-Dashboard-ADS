@@ -83,6 +83,7 @@
         ' · visor '+(v.hash?('<b>'+esc(v.hash)+'</b> ('+Math.round((v.bytes||0)/1024)+' KB, '+fecha(v.subido)+')')
                             :'<b style="color:var(--rd)">sin cargar</b>');
       pintaClientes(d.clientes||[]);
+      abrirDesdeUrl();
       // El hash es la huella del dashboard que se está sirviendo. Sirve para una sola
       // pregunta, pero es LA pregunta: "¿el cambio que acabo de subir al repositorio ya
       // está en producción?". Si cambia, sí.
@@ -100,6 +101,17 @@
   }
 
   // ── clientes ────────────────────────────────────
+  // ?cliente=<slug>: la suite enlaza aquí desde la página de la subcuenta; se abre esa ficha.
+  var abiertoDesdeUrl=false;
+  function abrirDesdeUrl(){
+    if(abiertoDesdeUrl) return;
+    var q=new URLSearchParams(location.search).get('cliente');
+    if(!q) return;
+    var det=document.querySelector('.cli[data-slug="'+q.replace(/"/g,'')+'"]');
+    if(!det) return;
+    abiertoDesdeUrl=true; det.open=true;
+    setTimeout(function(){ det.scrollIntoView({behavior:'smooth',block:'start'}) },150);
+  }
   function resumen(c){
     // "sin configurar" en rojo: con la cartera entera dada de alta, esto es lo primero
     // que hay que poder ver de un vistazo — un cliente sin cuentas no extrae nada.
