@@ -245,6 +245,11 @@ Qué hace falta para montarlo:
 
 ## Dar de alta un cliente
 
+**Desde el 20-oct-2026 el alta se hace en Sentinel Suite** (Administración → Subcuentas): el
+servicio `reportes` sincroniza ese registro y crea el cliente con su location de GHL, sus
+cuentas de Meta y Google y su zona, y le encola la primera extracción. Lo que sigue es para
+la configuración FINA del reporte (productos, roles, SOP), que sigue viviendo en el servicio.
+
 La configuración de construcción (productos, roles, SOP, cuentas de anuncios) vive en
 el servicio, no aquí: es dato de negocio y cambia sin desplegar. `clientes/SLUG.json`
 es solo el valor inicial, y `operar.py` lo deja en el servicio:

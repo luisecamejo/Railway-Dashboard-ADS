@@ -45,36 +45,36 @@
 
   function entrar(){
     $('app').style.display='block';
-    $('ctz').innerHTML=opcionesZona('');
-    pintaLocAlta();
     cargar();
+    estadoSync();
   }
 
-  var locAlta=null;   // devuelve el location elegido (del desplegable o escrito a mano)
-  // pintaLocAlta se vuelve a llamar tras cada alta, así que el manejador se pone UNA vez:
-  // si no, cada cliente creado dejaría otra llamada al CRM colgando del mismo campo.
-  function engancha(el,evento){
-    if(el.dataset.enganchado===evento) return;
-    el.dataset.enganchado=evento;
-    el.addEventListener(evento,miraFicha);
+  // ── los clientes vienen de Sentinel Suite ────────────────────────
+  // Aquí ya no se da de alta a nadie: cada subcuenta de la suite es un cliente de
+  // ROASLytics, y el servicio la trae solo (al arrancar, cada pocos minutos y cuando la
+  // suite avisa). El botón es para no esperar.
+  function estadoSync(){
+    api('/admin/sincronizar').then(function(d){
+      if(!d.activa){ pinta($('msync'),'err','La sincronización con la suite está apagada: falta SUITE_URL o el token de servicio.'); return }
+      var r=d.resultado||{};
+      pinta($('msync'),r.error?'err':'ok', d.cuando
+        ? ('Última sincronización '+fecha(d.cuando)+(r.error?': '+esc(r.error)
+           :' · '+(r.creados||[]).length+' creado(s) · '+(r.actualizados||[]).length+' actualizado(s)')+
+           '. Se repite cada '+d.cadaMin+' minutos y cada vez que creas o editas una subcuenta en la suite.')
+        : 'Todavía no se ha sincronizado desde que arrancó el servicio.');
+    }).catch(function(){});
   }
-  function pintaLocAlta(valor){
-    var sel=$('cloc'), inp=$('clocman');
-    sel.innerHTML='<option value="">Cargando las sub-cuentas del CRM…</option>';
-    cargaCuentas().then(function(d){
-      locAlta=combo(sel,inp,(d.ghl||{}).cuentas,valor||'','— elige la sub-cuenta —');
-      $('cficha').innerHTML='Elige la sub-cuenta y leo del CRM su zona horaria y su moneda.'+
-        avisoLista(d.ghl);
-      engancha(sel,'change'); engancha(inp,'input');
-    }).catch(function(e){
-      // Sin lista, el alta NO se bloquea: vuelve a ser la casilla de texto de siempre.
-      sel.style.display='none'; inp.style.display='block';
-      locAlta=function(){ return inp.value.trim() };
-      engancha(inp,'input');
-      $('cficha').innerHTML='No pude leer la lista de sub-cuentas ('+problema(e)+'). '+
-        'Pega el id a mano y sigo leyendo del CRM su zona horaria.';
-    });
-  }
+  $('bsync').onclick=function(){
+    pinta($('msync'),'cargando','Leyendo las subcuentas de la suite…');
+    api('/admin/sincronizar',{method:'POST'}).then(function(r){
+      if(r.error){ pinta($('msync'),'err',esc(r.error)); return }
+      var c=(r.creados||[]), a=(r.actualizados||[]);
+      pinta($('msync'),'ok',(c.length?'Dashboard creado para <b>'+c.map(esc).join('</b>, <b>')+'</b>: su primera extracción ya está en marcha (15-25 min). ':'')+
+        (a.length?'Actualizado: <b>'+a.map(function(x){return esc(x.slug)}).join('</b>, <b>')+'</b>. ':'')+
+        (!c.length&&!a.length?'Todo estaba al día: '+r.sinCambios+' cliente(s) iguales que en la suite.':''));
+      cargar();
+    }).catch(function(e){ pinta($('msync'),'err',problema(e)) });
+  };
 
   function cargar(){
     return api('/admin/estado').then(function(d){
@@ -98,74 +98,6 @@
       $('estado').innerHTML='<span style="color:var(--rd)">no se pudo leer el estado</span>';
     });
   }
-
-  // ── alta de cliente ────────────────────────────────────
-  $('cnom').oninput=function(){
-    if($('cslug').dataset.tocado) return;
-    $('cslug').value=$('cnom').value.toLowerCase().normalize('NFD')
-      .replace(/[̀-ͯ]/g,'').replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'');
-  };
-  $('cslug').oninput=function(){ $('cslug').dataset.tocado='1' };
-
-  // Se lee del CRM en cuanto hay un location. Con retardo, porque en el camino de
-  // escribir a mano si no se llamaría una vez por tecla.
-  var FICHA={}, tficha=null;
-  function miraFicha(){
-    var loc=locAlta?locAlta():'';
-    FICHA={}; clearTimeout(tficha);
-    $('ctzman').style.display='none';
-    if(loc.length<6){ $('cficha').innerHTML='Elige la sub-cuenta y leo del CRM su zona horaria y su moneda.'; return }
-    $('cficha').innerHTML='Preguntando al CRM…';
-    tficha=setTimeout(function(){
-      api('/admin/ficha?location='+encodeURIComponent(loc)).then(function(d){
-        FICHA=d||{};
-        var trozos=[];
-        if(d.nombre) trozos.push('<b>'+esc(d.nombre)+'</b>');
-        if(d.ciudad||d.pais) trozos.push(esc([d.ciudad,d.pais].filter(Boolean).join(', ')));
-        if(d.tz) trozos.push('zona <b>'+esc(d.tz)+'</b> ('+esc(husoDe(d.tz))+')');
-        if(d.moneda) trozos.push('moneda <b>'+esc(d.moneda)+'</b>');
-        $('cficha').innerHTML='Leído del CRM: '+trozos.join(' · ');
-        if(!d.tz){
-          $('cficha').innerHTML+='<br>Esta sub-cuenta <b>no declara zona horaria</b> en GoHighLevel. Elígela a mano.';
-          $('ctzman').style.display='block';
-        }
-        if(d.nombre && !$('cnom').value.trim()){
-          $('cnom').value=d.nombre; $('cnom').oninput();
-        }
-      }).catch(function(e){
-        $('cficha').innerHTML='No pude leer el CRM: '+problema(e)+'<br>Elige la zona horaria a mano.';
-        $('ctzman').style.display='block';
-      });
-    },300);
-  }
-
-  $('bcli').onclick=function(){
-    var cuerpo={nombre:$('cnom').value.trim(),slug:$('cslug').value.trim(),
-                ghl_location_id:(locAlta?locAlta():'')||null,
-                tz:(FICHA.tz||$('ctz').value||'').trim()||null,
-                moneda:FICHA.moneda||null,
-                fuentes:['crm','meta','google']};
-    if(!cuerpo.nombre||!cuerpo.slug) return pinta($('mcli'),'err','Hacen falta nombre e identificador.');
-    if(!cuerpo.ghl_location_id&&!cuerpo.tz) return pinta($('mcli'),'err',
-      'Elige la sub-cuenta de GoHighLevel: de ahí sale la zona horaria, y sin zona las fechas no cuadran con el CRM.');
-    pinta($('mcli'),'cargando','Guardando…');
-    api('/admin/clientes',{method:'POST',body:JSON.stringify(cuerpo),
-                           headers:{'Content-Type':'application/json'}})
-      .then(function(d){
-        pinta($('mcli'),'ok','Cliente <b>'+esc(d.nombre)+'</b> guardado'+
-          (d.tz?' · zona <b>'+esc(d.tz)+'</b>'+(d.tzDetectada?' (leída del CRM)':' (a mano)'):'')+
-          (d.moneda?' · moneda <b>'+esc(d.moneda)+'</b>':'')+
-          '.<br>Ábrelo abajo y pulsa <b>Preparar el reporte</b> para extraer sus datos.'+
-          (d.aviso?'<br>'+esc(d.aviso):''));
-        ['cnom','cslug','ctz','clocman'].forEach(function(k){$(k).value=''});
-        FICHA={}; $('ctzman').style.display='none';
-        // Se vuelve a pintar la lista: la sub-cuenta que se acaba de usar ahora sale
-        // marcada como ocupada, que es justo lo que hay que ver en el alta siguiente.
-        olvidaCuentas(); pintaLocAlta('');
-        delete $('cslug').dataset.tocado; cargar();
-      })
-      .catch(function(e){ pinta($('mcli'),'err',problema(e)) });
-  };
 
   // ── clientes ────────────────────────────────────
   function resumen(c){

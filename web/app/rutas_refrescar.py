@@ -71,6 +71,8 @@ CADUCA_MIN = int(os.environ.get("REFRESCO_CADUCA_MIN", "45"))
 
 # slug -> {"pedido": datetime, "por": str, "curso": bool}
 _cola: dict[str, dict] = {}
+# encolar(slug, por): lo fija montar(). Lo usa la sincronización con la suite.
+encolar = None
 _cerrojo = threading.Lock()
 _obrero: Optional[threading.Thread] = None
 
@@ -230,6 +232,11 @@ def montar(app, *, almacen, exige_admin, resolver_enlace, exige_equipo=None):
         _arrancar_obrero()
         log.info("refresco pedido · %s · por %s · %d en cola", slug, por, len(_cola))
         return _estado(slug)
+
+    # La sincronización con la suite (sincronizar.py) encola la primera extracción de
+    # cada cliente nuevo. Se expone aquí porque _encolar necesita la cola y el obrero.
+    global encolar
+    encolar = _encolar
 
     # ── desde el dashboard, con el token del enlace ──────────────────
     @router.get("/r/{token}/refrescar")

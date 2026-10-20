@@ -127,7 +127,7 @@ footer b{color:var(--dim)}
 @media(prefers-reduced-motion:no-preference){.kpi,.panel{animation:up .45s cubic-bezier(.2,.7,.3,1) both}@keyframes up{from{opacity:0;transform:translateY(7px)}}}
 </style></head><body>
 <header><div class="wrap">
- <div class="brand"><div class="logo" id="agName">SENTINEL<span>.</span></div><div class="sep"></div>
+ <div class="brand"><div class="logo"><svg viewBox="0 0 120 120" aria-hidden="true"><defs><linearGradient id="rlg" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stop-color="#7C3AED"/><stop offset="1" stop-color="#2DD4A8"/></linearGradient></defs><rect x="10" y="10" width="100" height="100" rx="26" fill="url(#rlg)"/><g fill="none" stroke="#fff" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"><path d="M34 90V66M58 90V50M82 90V72"/><path d="M30 48l20-18 16 12 30-24"/><path d="M78 18h18v18"/></g></svg><div>ROAS<span>Lytics</span><small id="agName">por Sentinel Marketing</small></div></div><div class="sep"></div>
  <div class="cli" id="cliName">—</div></div>
  <div class="meta" id="hmeta"></div>
 

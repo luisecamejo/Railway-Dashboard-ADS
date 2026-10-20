@@ -1,7 +1,20 @@
-# Reportes Sentinel
+# ROASLytics (servicio `reportes`)
 
 Servicio que sirve los dashboards de adquisición de los clientes de Sentinel Marketing.
 Un solo visor, un snapshot de datos por cliente, y un enlace con token por destinatario.
+Desde el 20-oct-2026 se llama **ROASLytics** (identidad visual en `branding/roaslytics/`) y
+vive dentro de Sentinel Suite en `https://suite.sentinelmarketing.net/reportes`.
+
+## Los clientes son las subcuentas de Sentinel Suite
+
+Un cliente se da de alta **una sola vez**, en Suite → Administración → Subcuentas, con su
+sub-cuenta de GoHighLevel y sus cuentas de anuncios. El servicio lee ese registro
+(`web/app/sincronizar.py`: al arrancar, cada 10 minutos, cuando la suite avisa al crear o
+editar una subcuenta, y con el botón del panel) y crea el cliente con su configuración de
+extracción, encolando su primera extracción. La sub-cuenta de GHL, las cuentas y la zona
+horaria se gobiernan desde la suite; lo propio del reporte (productos, SOP, roles) se ajusta
+en el panel de ROASLytics. Una subcuenta archivada en la suite no se borra aquí: borrar
+destruye enlaces empotrados y lo decide una persona en dos pasos.
 
 ## Por qué está partido en dos
 

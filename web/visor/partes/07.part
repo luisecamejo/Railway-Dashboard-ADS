@@ -185,7 +185,7 @@ window.addEventListener('resize',updateAllFades);
 updateDateLabel();
 (()=>{const c=document.getElementById('cliName'),a=document.getElementById('agName');
   if(c)c.textContent=(DATA.cliente&&DATA.cliente.nombre)||'';
-  if(a&&DATA.agencia)a.innerHTML=DATA.agencia+'<span>.</span>';
-  document.title=((DATA.cliente&&DATA.cliente.nombre)?DATA.cliente.nombre+' · ':'')+'Rendimiento de adquisición';})();
+  if(a&&DATA.agencia)a.textContent='por '+DATA.agencia;
+  document.title=((DATA.cliente&&DATA.cliente.nombre)?DATA.cliente.nombre+' · ':'')+'ROASLytics';})();
 render();
 </script></body></html>

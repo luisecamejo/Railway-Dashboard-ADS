@@ -332,8 +332,8 @@
             .then(function(){
               // La tarjeta se va con el repintado de la lista; el aviso se pone arriba,
               // donde sí va a seguir existiendo algo que lo muestre.
-              olvidaCuentas(); pintaLocAlta('');
-              pinta($('mcli'),'ok','Cliente <b>'+esc(slug)+'</b> dado de baja. Se borraron '+
+              olvidaCuentas();
+              pinta($('msync'),'ok','Cliente <b>'+esc(slug)+'</b> dado de baja. Se borraron '+
                 'sus datos, su historial y <b>todos sus enlaces, el general incluido</b>: '+
                 'ya no tiene acceso al dashboard. Si tenía el iframe puesto en su '+
                 'GoHighLevel, ahí ya no se muestra nada.');
