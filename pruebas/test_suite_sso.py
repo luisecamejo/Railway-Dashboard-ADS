@@ -136,9 +136,13 @@ TOK = enl.get("token")
 print("preparación:", r.status_code, "enlace", bool(TOK))
 
 print("\nPanel por el gateway")
-r = C.get("/admin", headers=gw())
-ok("con la identidad firmada, el panel se sirve sin pedir token", r.status_code == 200 and "window.SUITE=" in r.text)
-ok("y sabe su prefijo (/reportes) para las llamadas y los enlaces", '"prefix": "/reportes"' in r.text)
+# El panel /admin se retiró el 20-oct-2026: lo suyo vive en la suite (Subcuentas) y en la
+# pestaña «Ajustes» del dashboard. /admin manda a la suite.
+r = C.get("/admin", headers=gw(), follow_redirects=False)
+ok("con la identidad firmada, /admin ya no es un panel: manda a Subcuentas de la suite",
+   r.status_code == 302 and r.headers["location"].startswith(f"{SUITE}/admin"))
+r = C.get("/s/cliff/", headers=gw(tools={"reportes": "admin"}))
+ok("el dashboard del equipo sabe su prefijo (/reportes) para app.js", f"'{PREFIJO}/app.js?" in r.text)
 ok("y trae la barra de la suite", f"{SUITE}/suite-bar.js" in r.text)
 r = C.get("/admin", follow_redirects=False, headers=gw(tools={"funnel-hacker": "admin"}))
 ok("sin la herramienta reportes, la suite revalida (tool=reportes)",

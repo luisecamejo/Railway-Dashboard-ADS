@@ -1,0 +1,91 @@
+
+/* ═══ AJUSTES · solo administradores que entran por Sentinel Suite ═══════════════════════
+   El 20-oct-2026 se retiró el panel /admin: todo lo que pedía (sub-cuenta de GHL, cuentas de
+   anuncios, zona horaria) ya se da de alta UNA vez en la suite, y lo poco que era propio del
+   reporte vive aquí, dentro del propio dashboard:
+     · el enlace para empotrar (URL y código del iframe);
+     · el menú «Reporte ROASLytics» en el GoHighLevel del cliente (estado y reinstalar);
+     · rotar el enlace cuando un cliente se va.
+   Cómo sabe el dashboard que puede enseñarlo: el servidor pone <meta name="roaslytics-ajustes">
+   SOLO cuando sirve /s/<slug>/ a una persona con rol admin por la suite. En /r/<token>/ (lo que
+   ven los clientes, empotrado o no) ese meta no existe y la pestaña ni se pinta.
+   ════════════════════════════════════════════════════════════════════════════════════ */
+const ADM=(()=>{
+  const m=document.querySelector('meta[name="roaslytics-ajustes"]');
+  if(!m) return null;
+  const [pre,slug,rol]=(m.content||'').split('|');
+  return {pre:pre||'',slug,rol};
+})();
+if(ADM){ const tb=document.getElementById('tabAjustes'); if(tb) tb.style.display=''; }
+
+async function admApi(ruta, opts={}){
+  const r=await fetch(ADM.pre+'/admin'+ruta,{cache:'no-store',credentials:'same-origin',
+    headers:{'Accept':'application/json',...(opts.body?{'Content-Type':'application/json'}:{})},
+    method:opts.method||'GET', body:opts.body?JSON.stringify(opts.body):undefined});
+  const j=await r.json().catch(()=>({}));
+  if(!r.ok){ const d=j.detail; throw new Error(typeof d==='string'?d:(d&&d.error)||('HTTP '+r.status)); }
+  return j;
+}
+const admEsc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+function ajustes(){
+  if(!ADM) return notas();
+  return `<div class="panel"><div class="ph"><div><h2>Ajustes del reporte</h2>
+   <p>Lo que no vive en Sentinel Suite. La sub-cuenta de GoHighLevel, las cuentas de anuncios y la zona horaria se cambian en <b>Suite → Administración → Subcuentas</b>; el reporte las toma de ahí solo.</p></div></div>
+   <div class="pb nt" id="ajustesCuerpo"><p class="muted">Cargando…</p></div></div>`;
+}
+
+function admCaja(titulo, html){ return `<h3>${titulo}</h3>${html}`; }
+
+async function bindAjustes(){
+  const c=document.getElementById('ajustesCuerpo'); if(!c||!ADM) return;
+  let enl=null, menu=null, err=null;
+  try{ enl=await admApi('/enlaces/general/'+encodeURIComponent(ADM.slug)); }catch(e){ err=e.message; }
+  try{ menu=await admApi('/menu-ghl/'+encodeURIComponent(ADM.slug)); }catch(e){ menu={error:e.message}; }
+  const origen=location.origin+ADM.pre;
+  let h='';
+  if(!enl||!enl.token){
+    h+=admCaja('Enlace para empotrar', `<p>${err?admEsc(err):'Todavía no hay enlace: nace solo con la primera publicación del reporte.'}</p>`);
+  } else {
+    const url=origen+enl.ruta, emb=enl.rutaEmbed?origen+enl.rutaEmbed:null;
+    const iframe=emb?`<iframe src="${emb}"\n        title="Reporte ROASLytics"\n        style="width:100%;height:1400px;border:0;display:block"\n        loading="lazy" referrerpolicy="no-referrer"></iframe>`:'';
+    h+=admCaja('Enlace para empotrar',
+      `<p>Es <b>permanente</b>: se pega una vez y no cambia aunque se añadan cuentas o cambie el dashboard. ${admEsc(enl.accesos)} visita${String(enl.accesos)==='1'?'':'s'}.</p>
+       <p><input type="text" readonly value="${admEsc(url)}" style="width:100%;font:12px var(--m);background:var(--pan2);border:1px solid var(--line);color:var(--tx);padding:6px 8px;border-radius:6px"></p>
+       <p><button type="button" class="accion" data-copia="${admEsc(url)}">Copiar enlace</button>
+          ${emb?`<button type="button" class="accion" data-copia="${admEsc(iframe)}">Copiar código del iframe</button>`:''}
+          <a class="accion" href="${admEsc(url)}" target="_blank" rel="noreferrer" style="text-decoration:none">Abrir</a></p>
+       ${emb?`<textarea readonly rows="5" style="width:100%;font:11.5px var(--m);background:var(--pan2);border:1px solid var(--line);color:var(--dim);padding:8px;border-radius:6px">${admEsc(iframe)}</textarea>
+       <p class="muted">Se puede empotrar en: ${(enl.dominios||[]).map(admEsc).join(' · ')||'ningún sitio'}.</p>`
+       :`<p><b>Sin dominios permitidos</b>: así no se puede empotrar. Avísame y los añado.</p>`}`);
+  }
+  let mh='';
+  if(menu&&menu.error&&!menu.menu) mh=`<p>No pude comprobarlo: ${admEsc(menu.error)}</p>`;
+  else if(menu&&!menu.location) mh='<p>Este cliente no tiene sub-cuenta de GoHighLevel: no hay dónde ponerlo.</p>';
+  else if(menu&&menu.menu&&menu.menu.url===menu.url) mh=`<p><b>Instalado</b> como «${admEsc(menu.menu.titulo)}» (${admEsc(menu.menu.cuando)}). El cliente lo ve en el menú lateral de su CRM y abre este mismo reporte dentro.</p>`;
+  else if(menu&&menu.error) mh=`<p><b>No se pudo instalar:</b> ${admEsc(menu.error)}</p>`;
+  else mh='<p>Todavía no está en el menú. Se instala solo con la siguiente publicación, o ahora con el botón.</p>';
+  h+=admCaja('Menú en el GoHighLevel del cliente', mh+`<p><button type="button" class="accion" id="admMenu">Instalar / reinstalar ahora</button> <span id="admMenuMsg" class="muted"></span></p>`);
+  h+=admCaja('Rotar el enlace (cuando un cliente se va)',
+    `<p>Revoca el enlace actual y crea otro. <b>El iframe que esté pegado en su web y el menú de GoHighLevel se actualizan solos</b> con la siguiente publicación, pero cualquier otro sitio donde lo hayas pegado deja de funcionar. Para confirmar, escribe el identificador <code>${admEsc(ADM.slug)}</code>.</p>
+     <p><input type="text" id="admRotConf" placeholder="${admEsc(ADM.slug)}" style="font:12px var(--m);background:var(--pan2);border:1px solid var(--line);color:var(--tx);padding:6px 8px;border-radius:6px;width:260px">
+        <button type="button" class="accion" id="admRotar">Rotar</button> <span id="admRotMsg" class="muted"></span></p>`);
+  c.innerHTML=h;
+
+  c.querySelectorAll('[data-copia]').forEach(b=>b.onclick=async()=>{
+    try{ await navigator.clipboard.writeText(b.dataset.copia); const t=b.textContent; b.textContent='Copiado'; setTimeout(()=>b.textContent=t,1400); }
+    catch(e){ alert('No pude copiar. Selecciona el texto y cópialo a mano.'); }
+  });
+  const bm=document.getElementById('admMenu'), mm=document.getElementById('admMenuMsg');
+  if(bm) bm.onclick=async()=>{ bm.disabled=true; mm.textContent='Creando el enlace de menú en GoHighLevel…';
+    try{ const r=await admApi('/menu-ghl/'+encodeURIComponent(ADM.slug),{method:'POST'}); mm.textContent='Menú '+(r.accion||'instalado')+'. Pide al cliente que recargue GoHighLevel.'; setTimeout(bindAjustes,1200); }
+    catch(e){ mm.textContent='No se pudo: '+e.message; bm.disabled=false; } };
+  const br=document.getElementById('admRotar'), rm=document.getElementById('admRotMsg');
+  if(br) br.onclick=async()=>{ const v=(document.getElementById('admRotConf').value||'').trim();
+    if(v!==ADM.slug){ rm.textContent='Escribe exactamente '+ADM.slug+' para confirmar.'; return; }
+    br.disabled=true; rm.textContent='Rotando…';
+    try{ await admApi('/enlaces/general/'+encodeURIComponent(ADM.slug)+'/rotar?confirmar='+encodeURIComponent(v),{method:'POST'});
+         try{ await admApi('/menu-ghl/'+encodeURIComponent(ADM.slug),{method:'POST'}); }catch(e){}
+         rm.textContent='Enlace nuevo creado y menú de GoHighLevel actualizado.'; setTimeout(bindAjustes,1200); }
+    catch(e){ rm.textContent='No se pudo: '+e.message; br.disabled=false; } };
+}

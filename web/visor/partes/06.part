@@ -198,6 +198,8 @@ function render(){
     S._serie=null; h=kpis(a,sp)+funnel()+porSource()+listado();
   } else if(S.t==='ventas'){
     S._serie=null; S._dnt=null; h=vendedores();
+  } else if(S.t==='ajustes' && typeof ajustes==='function'){
+    S._serie=null; S._dnt=null; h=ajustes();
   } else {
     S._serie=null; S._dnt=null; h=notas();
   }
@@ -208,6 +210,7 @@ function render(){
   if(typeof updateDateLabel==='function'){updateDateLabel();updateMasCount();updateActiveBadge();updateOrigChip();updateBarMode()}
   document.getElementById('view').innerHTML=h;
   bindLeads(); tBind(); bindSerie(); bindDonut();
+  if(S.t==='ajustes' && typeof bindAjustes==='function') bindAjustes();
   if(typeof updateAllFades==='function')updateAllFades();
   document.querySelectorAll('.thumb').forEach(t=>t.onclick=()=>{
     const lb=document.getElementById('lb'), img=document.getElementById('lbimg'), err=document.getElementById('lberr');

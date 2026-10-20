@@ -13,7 +13,9 @@ sub-cuenta de GoHighLevel y sus cuentas de anuncios. El servicio lee ese registr
 editar una subcuenta, y con el botón del panel) y crea el cliente con su configuración de
 extracción, encolando su primera extracción. La sub-cuenta de GHL, las cuentas y la zona
 horaria se gobiernan desde la suite; lo propio del reporte (productos, SOP, roles) se ajusta
-en el panel de ROASLytics. Una subcuenta archivada en la suite no se borra aquí: borrar
+en la pestaña «Ajustes» del propio dashboard (solo administradores por la suite): enlace para
+empotrar, menú en GoHighLevel y rotación del enlace. El panel `/admin` se retiró el 20-oct-2026.
+Una subcuenta archivada en la suite no se borra aquí: borrar
 destruye enlaces empotrados y lo decide una persona en dos pasos.
 
 ## Por qué está partido en dos
@@ -97,8 +99,8 @@ GET /app.js                      el dashboard, versionado por hash
 GET /salud                       healthcheck
 ```
 
-Administración (con la sesión de Sentinel Suite desde `/reportes/admin`; las máquinas, con la
-cabecera `X-Admin-Token`):
+Administración (las personas, por la suite desde la pestaña «Ajustes» del dashboard; las
+máquinas, con la cabecera `X-Admin-Token`; `GET /admin` redirige a Subcuentas de la suite):
 
 ```
 GET  /admin/estado
