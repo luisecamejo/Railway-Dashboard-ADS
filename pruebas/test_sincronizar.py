@@ -10,7 +10,8 @@ cliente todavía no está en reportes». Aquí se comprueba que:
      extracción (location de GHL, cuentas de Meta y de Google, zona y moneda del CRM)
      y se le encola su primera extracción;
   2. un cliente que ya existía NO se reencola, y solo se toca lo que gobierna la suite
-     (nombre, location, cuentas, zona): productos, SOP y roles se conservan;
+     (nombre, location, cuentas): productos, SOP y roles se conservan. La ZONA la decide
+     el CRM: nunca se pisa con la de la suite, y una puesta desde la suite se corrige;
   3. una pasada sin cambios no escribe nada;
   4. si la suite no contesta, no se rompe nada: el error se devuelve y se registra;
   5. una subcuenta archivada no se crea ni se borra.
@@ -52,7 +53,13 @@ def main() -> int:
              "timezone": "Europe/Madrid"},
             {"slug": "archivado", "name": "Archivado", "status": "archived",
              "ghl_location_id": "LOCarch", "meta_accounts": [], "google_accounts": []},
+            # Zona puesta desde la suite en una pasada anterior: si el CRM la declara, se corrige
+            {"slug": "corregir", "name": "Corregir", "status": "active",
+             "ghl_location_id": "LOCcorr", "meta_accounts": [], "google_accounts": [], "timezone": "Europe/Madrid"},
         ]
+        alm.guardar_cliente("corregir", "Corregir", "LOCcorr", "Europe/Madrid")
+        alm.guardar_config("corregir", {"nombre": "Corregir", "slug": "corregir", "tz": "Europe/Madrid",
+                                        "ghlLocationId": "LOCcorr", "cuentas": [], "tzFuente": S.TZ_DE_LA_SUITE})
         # Un cliente que ya existía, con configuración propia del reporte
         alm.guardar_cliente("viejo", "Viejo", "LOCviejo", "America/New_York")
         alm.guardar_config("viejo", {"nombre": "Viejo", "slug": "viejo", "tz": "America/New_York",
@@ -75,21 +82,24 @@ def main() -> int:
            "configuración sembrada con location, zona y moneda del CRM")
         ok(sorted((x["plataforma"], x["id"]) for x in cfg.get("cuentas", [])) == [("Google", "123-456-7890"), ("Meta", "111")],
            "las cuentas de Meta y Google de la suite pasan a la configuración")
-        ok(fichas == ["LOCnuevo"], "al CRM solo se le pregunta por el cliente nuevo (la suite ya traía la zona del otro)")
+        ok(sorted(fichas) == ["LOCcorr", "LOCnuevo"], f"al CRM se le pregunta por el nuevo y por el que tenía la zona de la suite: {fichas}")
+        cc = (alm.cliente("corregir") or {}).get("config") or {}
+        ok(cc.get("tz") == "America/Denver" and "GoHighLevel" in cc.get("tzFuente", ""),
+           "una zona puesta desde la suite se corrige con la del CRM")
         ok(encolados == [("nuevo-spa", "suite")], f"solo el nuevo se encola para su primera extracción: {encolados}")
 
         v = (alm.cliente("viejo") or {}).get("config") or {}
         cambios = [x for x in r["actualizados"] if x["slug"] == "viejo"]
-        ok(bool(cambios) and set(cambios[0]["cambios"]) == {"nombre", "tz", "cuentas"},
+        ok(bool(cambios) and set(cambios[0]["cambios"]) == {"nombre", "cuentas"},
            f"el existente se actualiza solo en lo que gobierna la suite: {cambios}")
-        ok(v.get("nombre") == "Viejo Renombrado" and v.get("tz") == "Europe/Madrid"
-           and len(v.get("cuentas", [])) == 2, "nombre, zona y cuentas vienen de la suite")
+        ok(v.get("nombre") == "Viejo Renombrado" and v.get("tz") == "America/New_York"
+           and len(v.get("cuentas", [])) == 2, "nombre y cuentas vienen de la suite; la zona del CRM NO se pisa con la de la suite")
         ok(v.get("productos") == [{"nombre": "Botox"}] and v.get("sop") == {"Ganado": ["won"]},
            "productos y SOP del reporte se conservan")
         ok(alm.cliente("archivado") is None, "una subcuenta archivada no se crea")
 
         r2 = S.sincronizar(alm, encolar=lambda s, por: encolados.append((s, por)), ficha_crm=ficha, origen="prueba")
-        ok(not r2["creados"] and not r2["actualizados"] and r2["sinCambios"] == 2 and len(encolados) == 1,
+        ok(not r2["creados"] and not r2["actualizados"] and r2["sinCambios"] == 3 and len(encolados) == 1,
            "la segunda pasada no cambia nada ni reencola")
 
         import urllib.error

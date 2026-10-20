@@ -48,6 +48,7 @@ TOKEN = (os.environ.get("SUITE_SERVICE_TOKEN", "").strip()
          or (os.environ.get("GHL_MCP_TOKEN", "").strip()
              if os.environ.get("GHL_MCP_TOKEN", "").startswith("ss_") else ""))
 CADA_MIN = int(os.environ.get("SUITE_SINCRONIZAR_MIN", "10"))
+TZ_DE_LA_SUITE = "Subcuenta de Sentinel Suite (el CRM no declara zona)"
 
 _cerrojo = threading.Lock()
 _ultimo: dict = {"cuando": None, "resultado": None}
@@ -118,23 +119,29 @@ def sincronizar(almacen, *, encolar: Optional[Callable[[str, str], object]] = No
             cuentas = _cuentas(sub)
             existente = almacen.cliente(slug)
 
+            # La ZONA HORARIA la decide el CRM, no la suite. GoHighLevel sella la hora de
+            # cada lead con la zona de la sub-cuenta; la de la suite la tecleó una persona
+            # (el 20-oct Seguro Que Sí tenía Nueva York en la suite y Chicago en el CRM).
+            # La suite solo vale cuando el CRM no la declara.
+            tz_crm, moneda = None, None
+            if loc and ficha_crm and (existente is None
+                                      or (existente.get("config") or {}).get("tzFuente") == TZ_DE_LA_SUITE):
+                try:
+                    f = ficha_crm(loc)
+                    tz_crm, moneda = f.get("tz"), f.get("moneda")
+                except Exception as ex:                # noqa: BLE001
+                    log.warning("%s: el CRM no contestó la zona (%s)", slug, ex)
+
             if existente is None:
-                moneda = None
-                if loc and ficha_crm:
-                    try:
-                        f = ficha_crm(loc)
-                        tz = tz or f.get("tz")
-                        moneda = f.get("moneda")
-                    except Exception as ex:            # noqa: BLE001
-                        log.warning("alta de %s: el CRM no contestó (%s)", slug, ex)
+                tz = tz_crm or tz
                 almacen.guardar_cliente(slug, nombre, loc, tz)
                 cfg = dict((almacen.cliente(slug) or {}).get("config") or {})
                 cfg.update({"nombre": nombre, "slug": slug, "ghlLocationId": loc,
                             "cuentas": cuentas})
                 if tz:
                     cfg["tz"] = tz
-                    cfg["tzFuente"] = ("Subcuenta de Sentinel Suite" if sub.get("timezone")
-                                       else f"Sub-cuenta de GoHighLevel {loc} (timezone)")
+                    cfg["tzFuente"] = (f"Sub-cuenta de GoHighLevel {loc} (timezone)" if tz_crm
+                                       else TZ_DE_LA_SUITE)
                 if moneda:
                     cfg["moneda"] = moneda
                 almacen.guardar_config(slug, cfg)
@@ -154,13 +161,17 @@ def sincronizar(almacen, *, encolar: Optional[Callable[[str, str], object]] = No
                 cfg["nombre"] = nombre; cambios.append("nombre")
             if loc and cfg.get("ghlLocationId") != loc:
                 cfg["ghlLocationId"] = loc; cambios.append("ghl")
-            if tz and cfg.get("tz") != tz:
-                cfg["tz"] = tz; cfg["tzFuente"] = "Subcuenta de Sentinel Suite"; cambios.append("tz")
+            # Zona de un cliente existente: solo si el CRM la da (corrige una puesta desde
+            # la suite) o si no tenía ninguna. Nunca se pisa una zona del CRM con la suite.
+            if tz_crm and cfg.get("tz") != tz_crm:
+                cfg["tz"] = tz_crm; cfg["tzFuente"] = f"Sub-cuenta de GoHighLevel {loc} (timezone)"; cambios.append("tz")
+            elif tz and not cfg.get("tz"):
+                cfg["tz"] = tz; cfg["tzFuente"] = TZ_DE_LA_SUITE; cambios.append("tz")
             if cuentas and not _misma_lista(cfg.get("cuentas") or [], cuentas):
                 cfg["cuentas"] = cuentas; cambios.append("cuentas")
             if cambios:
                 cfg.setdefault("slug", slug)
-                almacen.guardar_cliente(slug, nombre, loc, tz)
+                almacen.guardar_cliente(slug, nombre, loc, cfg.get("tz"))
                 almacen.guardar_config(slug, cfg)
                 res["actualizados"].append({"slug": slug, "cambios": cambios})
                 log.info("cliente actualizado desde la suite · %s · %s", slug, ", ".join(cambios))
