@@ -71,6 +71,9 @@ async function bindAjustes(){
      <p><input type="text" id="admRotConf" placeholder="${admEsc(ADM.slug)}" style="font:12px var(--m);background:var(--pan2);border:1px solid var(--line);color:var(--tx);padding:6px 8px;border-radius:6px;width:260px">
         <button type="button" class="accion" id="admRotar">Rotar</button> <span id="admRotMsg" class="muted"></span></p>`);
   c.innerHTML=h;
+  // Mismo aspecto que los botones de la cabecera (#acciones), que también se pintan por código.
+  c.querySelectorAll('.accion').forEach(b=>{ b.style.cssText='background:var(--pan2,#171724);color:var(--dim,#8A8AA3);'
+    +'border:1px solid var(--line);border-radius:6px;padding:5px 11px;font:600 11.5px var(--d);cursor:pointer;margin-right:6px;display:inline-block'; });
 
   c.querySelectorAll('[data-copia]').forEach(b=>b.onclick=async()=>{
     try{ await navigator.clipboard.writeText(b.dataset.copia); const t=b.textContent; b.textContent='Copiado'; setTimeout(()=>b.textContent=t,1400); }
