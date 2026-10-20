@@ -29,6 +29,7 @@ from typing import Optional
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 
 from . import enlace_general
+from . import menu_ghl
 
 log = logging.getLogger("reportes.extraccion")
 
@@ -216,6 +217,8 @@ def montar(app, *, almacen, exige_admin, validar, leer_cuerpo, tope_mb: float):
         # empotrable en GoHighLevel. Es idempotente, así que las publicaciones siguientes
         # no lo tocan — ese es justamente el punto: el enlace no cambia nunca.
         enlace_general.tras_publicar(almacen, slug)
+        # Y con el enlace, el menú en la sub-cuenta de GoHighLevel que lo abre (idempotente).
+        menu_ghl.tras_publicar(almacen, slug)
         log.info("snapshot construido y publicado · %s · %s leads · fuentes %s",
                  slug, reg.get("n_leads"), ", ".join(sorted(procedencia)))
         for a in avisos:
