@@ -51,7 +51,10 @@ ROLES = ("admin", "equipo")
 # Ruta pública de reportes dentro de la suite (la que el gateway manda en X-Forwarded-Prefix).
 RUTA_SUITE = "/" + os.environ.get("SUITE_RUTA", "reportes").strip("/")
 # Lo que se sirve sin persona. Tiene que coincidir con las «rutas públicas» de la herramienta en la suite.
-PUBLICAS = ("/r/", "/app.js", "/salud", "/healthz", "/robots.txt", "/static/")
+PUBLICAS = ("/r/", "/app.js", "/salud", "/healthz", "/robots.txt", "/static/",
+            # El aviso de la suite al crear o editar una subcuenta: llega firmado por su
+            # gateway (firma anónima) y lo comprueba la propia ruta (ver firmada()).
+            "/admin/sincronizar")
 # Lo que se contesta aunque no venga por la suite ni con token: el healthcheck de Railway.
 SIEMPRE_DIRECTO = ("/salud",)
 
@@ -71,6 +74,11 @@ def activa() -> bool:
 
 def solo_gateway() -> bool:
     return bool(_auth and _auth.gateway_only)
+
+
+def firmada(peticion: Request) -> bool:
+    """¿Viene de la suite? Firma del gateway válida, con persona o anónima."""
+    return bool(_auth) and verify_gateway_signature(peticion.headers, _auth.gateway_secret) in ("ok", "anon")
 
 
 @dataclass

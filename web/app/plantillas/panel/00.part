@@ -3,7 +3,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
-<title>Panel · Reportes Sentinel</title>
+<title>ROASLytics · Panel</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='1' x2='1' y2='0'%3E%3Cstop offset='0' stop-color='%237C3AED'/%3E%3Cstop offset='1' stop-color='%232DD4A8'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect x='10' y='10' width='100' height='100' rx='26' fill='url(%23g)'/%3E%3Cg fill='none' stroke='%23fff' stroke-width='7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M34 90V66M58 90V50M82 90V72'/%3E%3Cpath d='M30 48l20-18 16 12 30-24'/%3E%3Cpath d='M78 18h18v18'/%3E%3C/g%3E%3C/svg%3E">
 <style>
 :root{
   --bg:#0b0f14; --pn:#121821; --pn2:#171f2a; --line:#212c3a; --line2:#1a232f;
@@ -15,8 +16,10 @@
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--tx);font:14px/1.55 var(--d)}
 .wrap{max-width:1000px;margin:0 auto;padding:28px 22px 80px}
-h1{font-size:19px;font-weight:700;letter-spacing:-.01em;margin:0}
-h1 span{color:var(--pu)}
+h1{font-size:19px;font-weight:800;letter-spacing:-.02em;margin:0;display:inline-flex;align-items:center;gap:10px}
+h1 svg{width:26px;height:26px;flex:none}
+h1 span{color:#2dd4a8;font-weight:500}
+h1 em{font-style:normal;font-weight:500;color:var(--faint);font-size:13px;margin-left:6px}
 h2{font-size:14px;font-weight:600;margin:0 0 4px}
 .sub{color:var(--mut);font-size:12.5px;margin:0 0 16px}
 header.top{display:flex;align-items:baseline;justify-content:space-between;gap:16px;
@@ -112,7 +115,7 @@ button.rojo:disabled{opacity:.45}
 
 <div id="app" style="display:none">
   <header class="top">
-    <h1>SENTINEL<span>.</span> &nbsp;Panel de reportes</h1>
+    <h1><svg viewBox="0 0 120 120" aria-hidden="true"><defs><linearGradient id="rlg" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stop-color="#7C3AED"/><stop offset="1" stop-color="#2DD4A8"/></linearGradient></defs><rect x="10" y="10" width="100" height="100" rx="26" fill="url(#rlg)"/><g fill="none" stroke="#fff" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"><path d="M34 90V66M58 90V50M82 90V72"/><path d="M30 48l20-18 16 12 30-24"/><path d="M78 18h18v18"/></g></svg>ROAS<span>Lytics</span><em>Panel · Sentinel Marketing</em></h1>
     <div class="est" id="estado"></div>
   </header>
 
@@ -130,27 +133,20 @@ button.rojo:disabled{opacity:.45}
   </div>
 
   <div class="panel">
-    <h2>Alta de cliente</h2>
-    <!-- La zona horaria ya NO se pregunta. Se lee de la sub-cuenta de GoHighLevel, que es
-         quien sella la hora de cada lead: pedirla era pedir un dato que el sistema ya
-         sabe, y equivocarse no daba ningún error, daba fechas corridas. -->
-    <p class="sub">Elige la sub-cuenta de GoHighLevel <b>por su nombre</b>: el identificador lo
-    pone el sistema. La zona horaria y la moneda también se leen del CRM. El identificador del
-    cliente se usa en las rutas y no se puede cambiar después.</p>
-    <div class="fila">
-      <div style="flex:2 1 280px"><label for="cloc">Sub-cuenta de GoHighLevel</label>
-        <select id="cloc"></select>
-        <input type="text" id="clocman" placeholder="pega aquí el id de la sub-cuenta" style="display:none;margin-top:6px"></div>
-      <div><label for="cnom">Nombre</label><input type="text" id="cnom" placeholder="Clínica Ejemplo"></div>
-      <div><label for="cslug">Identificador</label><input type="text" id="cslug" placeholder="clinica-ejemplo"></div>
-      <button id="bcli">Guardar</button>
-    </div>
-    <p class="nota" id="cficha">Cargando las sub-cuentas del CRM…</p>
-    <div id="ctzman" style="display:none;max-width:420px">
-      <label for="ctz">Zona horaria (el CRM no la dice, elígela a mano)</label>
-      <select id="ctz"></select>
-    </div>
-    <div class="msg" id="mcli"></div>
+    <h2>Los clientes se crean en Sentinel Suite</h2>
+    <!-- Aquí había un formulario de alta. Se quitó a propósito el 20-oct-2026: cada
+         subcuenta de la suite ES un cliente de ROASLytics, y tener dos altas hacía que
+         seis clientes se quedaran sin dashboard. Ahora el servicio lee el registro de
+         la suite (al arrancar, cada pocos minutos y cuando la suite avisa) y crea el
+         dashboard solo, con su primera extracción. -->
+    <p class="sub">Un cliente nuevo se da de alta <b>una sola vez</b>, en
+    <a href="https://suite.sentinelmarketing.net/admin" target="_blank" rel="noopener">Suite →
+    Administración → Subcuentas</a>, con su sub-cuenta de GoHighLevel y sus cuentas de anuncios.
+    Su dashboard aparece aquí solo y empieza a extraer datos al momento. La sub-cuenta de GHL,
+    las cuentas de anuncios y la zona horaria <b>se gobiernan desde la suite</b>; lo que es
+    propio del reporte (productos, etapas, roles) se ajusta abajo, en cada cliente.</p>
+    <div class="fila"><button id="bsync">Sincronizar con la suite ahora</button></div>
+    <div class="msg" id="msync"></div>
   </div>
 
   <h2 style="margin:26px 0 2px">Clientes</h2>

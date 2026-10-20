@@ -77,6 +77,7 @@ from . import enlace_general
 from .privacidad import MODOS, aplicar
 from . import seguridad as seg
 from . import suite
+from . import sincronizar
 from .visor import partir_html
 
 log = logging.getLogger("reportes")
@@ -292,7 +293,7 @@ CABECERAS_PRIVADAS = seg.cabeceras()
 
 
 def _pagina(titulo: str, texto: str, *, codigo: int = 200,
-            doms: list[str] | None = None) -> HTMLResponse:
+            doms: list[str] | None = None, recarga: int = 0) -> HTMLResponse:
     """
     Una página sobria para lo que ve el destinatario de un enlace.
 
@@ -305,6 +306,7 @@ def _pagina(titulo: str, texto: str, *, codigo: int = 200,
         "<!doctype html><html lang=es><meta charset=utf-8>"
         "<meta name=viewport content='width=device-width,initial-scale=1'>"
         f"<title>{titulo}</title>"
+        + (f"<meta http-equiv=refresh content={int(recarga)}>" if recarga else "") +
         "<style>body{font:15px/1.6 ui-sans-serif,system-ui,sans-serif;background:#0b0f14;"
         "color:#93a1b5;display:grid;place-items:center;min-height:100vh;margin:0;"
         "text-align:center;padding:28px}div{max-width:430px}"
@@ -486,8 +488,19 @@ def equipo_visor(slug: str, peticion: Request):
     if not isinstance(p, suite.Persona):
         return p
     if not almacen.cliente(slug):
-        return _pagina("Este cliente todavía no está en reportes",
-                       "Dalo de alta desde el panel de reportes y pulsa «Preparar el reporte».",
+        # La subcuenta existe en la suite (la persona llegó por ella) pero aquí todavía no:
+        # se trae AHORA, en vez de mandar a nadie a dar de alta nada. Si aparece, el
+        # dashboard está en marcha; si no, es que la suite no la tiene o no contesta.
+        _sincronizar("visor")
+        if almacen.cliente(slug):
+            return _pagina("Estamos preparando este dashboard",
+                           "El cliente acaba de llegar desde Sentinel Suite y su primera "
+                           "extracción de datos ya está en marcha: suele tardar entre quince y "
+                           "veinticinco minutos. Esta página se actualiza sola.",
+                           codigo=202, recarga=60)
+        return _pagina("Este cliente no está en Sentinel Suite",
+                       "Los dashboards se crean solos para cada subcuenta de la suite. Dalo de "
+                       "alta en Suite → Administración → Subcuentas y vuelve aquí.",
                        codigo=404)
     vis = _cargar_visor()
     if not vis:
@@ -974,3 +987,39 @@ rutas_refrescar.montar(app, almacen=almacen, exige_admin=exige_admin,
 rutas_ficha.montar(app, almacen=almacen, exige_admin=exige_admin,
                    config_de=lambda s: (almacen.cliente(s) or {}).get("config") or {})
 enlace_general.montar(app, almacen=almacen, exige_admin=exige_admin)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  Los clientes de ROASLytics son las subcuentas de Sentinel Suite (sincronizar.py).
+# ════════════════════════════════════════════════════════════════════════════
+def _sincronizar(origen: str) -> dict:
+    return sincronizar.sincronizar(almacen, encolar=rutas_refrescar.encolar,
+                                   ficha_crm=rutas_ficha.ficha_crm, origen=origen)
+
+
+@app.post("/admin/sincronizar")
+def admin_sincronizar(peticion: Request, x_admin_token: str = Header(default="")):
+    """
+    Trae los clientes de la suite ahora mismo.
+
+    Lo llaman tres: la suite al crear o editar una subcuenta (firma de su gateway,
+    anónima: la ruta es pública para el middleware y se comprueba aquí), el botón del
+    panel (firma con persona) y las máquinas (X-Admin-Token).
+    """
+    if x_admin_token:
+        exige_admin(peticion, x_admin_token)
+        origen = "admin"
+    elif suite.firmada(peticion):
+        origen = "suite"
+    else:
+        raise HTTPException(401, "Solo Sentinel Suite o el token de administración.")
+    return _sincronizar(origen)
+
+
+@app.get("/admin/sincronizar", dependencies=[Depends(exige_admin)])
+def admin_sincronizar_estado():
+    return sincronizar.estado()
+
+
+sincronizar.arrancar_periodico(almacen, encolar=rutas_refrescar.encolar,
+                               ficha_crm=rutas_ficha.ficha_crm)

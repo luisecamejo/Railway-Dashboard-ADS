@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 120" width="560" height="120" role="img" aria-label="ROASLytics">
+  <defs>
+    <linearGradient id="g" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0" stop-color="#7C3AED"/>
+      <stop offset="1" stop-color="#2DD4A8"/>
+    </linearGradient>
+  </defs>
+  <!-- Marca: barras que suben y la línea de retorno por encima -->
+  <rect x="10" y="10" width="100" height="100" rx="26" fill="url(#g)"/>
+  <g fill="none" stroke="#FFFFFF" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M34 90V66M58 90V50M82 90V72"/>
+    <path d="M30 48l20-18 16 12 30-24"/>
+    <path d="M78 18h18v18"/>
+  </g>
+  <!-- Wordmark -->
+  <text x="136" y="80" font-family="Montserrat, 'Segoe UI', system-ui, sans-serif" font-size="62" font-weight="800" letter-spacing="-2" fill="#EDEDF5">ROAS<tspan fill="#2DD4A8" font-weight="500">Lytics</tspan></text>
+</svg>

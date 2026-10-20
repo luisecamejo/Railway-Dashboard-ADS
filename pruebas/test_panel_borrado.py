@@ -163,7 +163,7 @@ async def main() -> int:
         ok(len(borrados) == 1, "sale UNA petición de borrado", str(len(borrados)))
         ok("/admin/clientes/cliff?" in borrados[0], "contra el cliente correcto", borrados[0][-60:])
         ok("confirmar=cliff" in borrados[0], "y con el confirmar exacto")
-        aviso = await pg.inner_text("#mcli")
+        aviso = await pg.inner_text("#msync")
         ok("dado de baja" in aviso,
            "el aviso se pone ARRIBA, porque la tarjeta desaparece", aviso[:60])
         ok("general incluido" in aviso,

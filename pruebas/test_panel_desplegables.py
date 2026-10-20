@@ -68,6 +68,7 @@ async def main() -> int:
     from playwright.async_api import async_playwright
 
     guardado = {}
+    sincronizados = []
 
     async def enruta(ruta):
         p = ruta.request.url.split("?")[0]
@@ -87,6 +88,12 @@ async def main() -> int:
             return await responde({"generado": "2026-09-02T09:31Z", "enCurso": False,
                                    "puede": True, "duracionMin": 20})
         if p.endswith("/admin/enlaces"):     return await responde({"enlaces": []})
+        if p.endswith("/admin/sincronizar"):
+            if ruta.request.method == "POST":
+                sincronizados.append(1)
+                return await responde({"creados": ["clinica-libre"], "actualizados": [], "sinCambios": 1, "error": None})
+            return await responde({"activa": True, "cadaMin": 10, "cuando": "2026-10-20T10:00Z",
+                                   "resultado": {"creados": [], "actualizados": [], "sinCambios": 1, "error": None}})
         if "/admin/ficha" in p:
             return await responde({"tz": "Europe/Madrid", "moneda": "EUR",
                                    "nombre": "Clínica Libre", "ciudad": "Ponferrada",
@@ -108,29 +115,22 @@ async def main() -> int:
         await pg.goto("http://panel.local/", wait_until="domcontentloaded")
         await pg.wait_for_timeout(1200)
 
-        print("\n── el alta ──────────────────────────────────────────")
+        print("\n── los clientes vienen de la suite ─────────────────────")
+        # El alta de cliente ya no existe en el panel (20-oct-2026): cada subcuenta de
+        # Sentinel Suite es un cliente, y el servicio la trae solo. Lo que queda es el
+        # estado de esa sincronización y un botón para no esperar.
         ok(len(errs) == 0, "la página carga sin errores de JS", "; ".join(errs[:2]))
-        ops = await pg.eval_on_selector_all("#cloc option", "e=>e.map(o=>o.textContent)")
-        ok(any("Clínica Libre" in o for o in ops), "el desplegable trae los nombres del CRM")
-        ok(any("LOC-LIBRE" in o for o in ops), "y el identificador al lado")
-        ok(any("YA EN otro-cliente" in o for o in ops),
-           "y marca las sub-cuentas que ya usa otro cliente")
-        ok(any("escribir el id a mano" in o for o in ops),
-           "y deja siempre la salida de escribir el id a mano")
-
-        # Elegir una sub-cuenta tiene que disparar la lectura del CRM
-        await pg.select_option("#cloc", "LOC-LIBRE")
-        await pg.wait_for_timeout(900)
-        ficha = await pg.inner_text("#cficha")
-        ok("Europe/Madrid" in ficha, "al elegirla, se lee su zona del CRM", ficha[:60])
-        ok("EUR" in ficha, "y su moneda")
-        ok((await pg.input_value("#cnom")) == "Clínica Libre",
-           "y rellena el nombre, que es lo que había que teclear")
-
-        # La salida a mano
-        await pg.select_option("#cloc", "__a_mano__")
-        await pg.wait_for_timeout(200)
-        ok(await pg.is_visible("#clocman"), "«a mano» descubre la casilla de texto")
+        ok(await pg.eval_on_selector_all("#cloc, #cnom, #bcli", "e=>e.length") == 0,
+           "no queda ningún formulario de alta: los clientes se crean en la suite")
+        estado = await pg.inner_text("#msync")
+        ok("Última sincronización" in estado and "cada 10 minutos" in estado,
+           "se enseña cuándo fue la última sincronización y cada cuánto se repite", estado[:80])
+        await pg.click("#bsync")
+        await pg.wait_for_timeout(700)
+        ok(len(sincronizados) == 1, "el botón pide la sincronización al servicio")
+        msg = await pg.inner_text("#msync")
+        ok("clinica-libre" in msg and "primera extracción" in msg,
+           "y dice qué dashboard se creó y que su extracción ya va", msg[:90])
 
         print("\n── la ficha del cliente ──────────────────────────────────")
         await pg.click(".cli > summary")
