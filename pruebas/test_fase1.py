@@ -50,8 +50,13 @@ def main():
     from app.rutas_extraccion import comprobar_crudo        # noqa: E402
 
     print("\n== comprobaciones de un trozo crudo (sin datos reales) ==")
-    ok(comprobar_crudo("ghl", {"oportunidades": [], "pipelines": []}),
-       "un trozo de ghl sin oportunidades se rechaza")
+    ok(not comprobar_crudo("ghl", {"oportunidades": [], "pipelines": []}),
+       "un CRM recién abierto —sin oportunidades y sin pipelines— NO es un error")
+    ok(not comprobar_crudo("ghl", {"oportunidades": [],
+                                   "pipelines": [{"n": "p", "stages": [{"id": "s"}]}]}),
+       "un cliente con pipelines pero todavía sin oportunidades pasa")
+    ok(comprobar_crudo("ghl", {"oportunidades": {}, "pipelines": []}),
+       "'oportunidades' que no es una lista sigue rechazándose")
     ok(comprobar_crudo("ghl", {"oportunidades": [{"oid": "a", "created": 1}, {"oid": "a", "created": 1}],
                                "pipelines": [{"n": "p", "stages": [{"id": "s"}]}]}),
        "oportunidades duplicadas se rechazan (bug del cursor de GHL)")

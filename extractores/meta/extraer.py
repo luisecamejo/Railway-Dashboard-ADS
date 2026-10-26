@@ -117,6 +117,28 @@ SUBCODIGOS_TROCEAR = {1504018, 1504031, 1504033}
 CODIGOS_CUOTA = {4, 17, 32, 613} | set(range(80000, 80015))
 # Fallo temporal del lado de Meta, dicho por ellos mismos.
 CODIGOS_TEMPORALES = {1, 2}
+# El token ya no alcanza la cuenta. No es cuota, no es tamaño, no es un mal día de
+# Meta: alguien le quitó el activo al usuario del sistema, o nunca se lo asignó.
+#   10  · permiso no concedido      200 · el dueño de la cuenta no dio ads_read
+#   272 · el activo no está asignado al usuario   294 · hace falta administrar la página
+CODIGOS_PERMISO = {10, 200, 272, 294}
+
+
+class SinPermiso(RuntimeError):
+    """
+    La cuenta publicitaria existe, pero este token no llega a ella.
+
+    Se separa del resto de errores porque la respuesta es distinta: no se reintenta
+    (ver comun/pasadas.py) y lo que hay que hacer no está en el código sino en el
+    Business Manager. El mensaje lo dice entero para que el log del cron baste.
+    """
+
+    definitivo = True
+
+
+def es_permiso(ex: Exception) -> bool:
+    e = _error_meta(ex)
+    return bool(e) and e.get("code") in CODIGOS_PERMISO
 
 _PISTAS_TROCEAR = ("reduce the amount of data", "please reduce the amount",
                    "smaller date range", "intervalo de fechas menor",
@@ -354,22 +376,37 @@ def extraer_cliente(objetivo: dict, token: str) -> dict:
         act = str(c.get("id") or "").replace("act_", "").strip()
         if not act:
             continue
-        info = cuenta_info(act, token)
-        tz_meta = info.get("timezone_name") or ""
-        cuentas.append({"plataforma": "Meta", "id": act, "tz": tz_meta,
-                        "nombre": info.get("name") or ""})
-        # H-10 de la auditoría: si la cuenta publicitaria y el negocio no comparten huso,
-        # el gasto y los leads se cortan en momentos distintos y el CPL diario miente.
-        # Se avisa alto y claro en vez de dejarlo pasar.
-        if tz_meta and tz_meta != tz:
-            log.warning("¡ZONAS DISTINTAS! act_%s está en %s y el negocio en %s. El CPL "
-                        "diario no es comparable hasta que coincidan.", act, tz_meta, tz)
+        try:
+            info = cuenta_info(act, token)
+            tz_meta = info.get("timezone_name") or ""
+            cuentas.append({"plataforma": "Meta", "id": act, "tz": tz_meta,
+                            "nombre": info.get("name") or ""})
+            # H-10 de la auditoría: si la cuenta publicitaria y el negocio no comparten
+            # huso, el gasto y los leads se cortan en momentos distintos y el CPL diario
+            # miente. Se avisa alto y claro en vez de dejarlo pasar.
+            if tz_meta and tz_meta != tz:
+                log.warning("¡ZONAS DISTINTAS! act_%s está en %s y el negocio en %s. El "
+                            "CPL diario no es comparable hasta que coincidan.",
+                            act, tz_meta, tz)
 
-        g, tipos = gasto_diario(act, token, desde, hasta)
-        gasto.extend(g)
-        tipos_total.update(tipos)
-        anuncios.extend(anuncios_diario(act, token, desde, hasta))
-        thumbs.update(miniaturas(act, token))
+            g, tipos = gasto_diario(act, token, desde, hasta)
+            gasto.extend(g)
+            tipos_total.update(tipos)
+            anuncios.extend(anuncios_diario(act, token, desde, hasta))
+            thumbs.update(miniaturas(act, token))
+        except ErrorHTTP as ex:
+            if not es_permiso(ex):
+                raise
+            # Antes esto llegaba al resumen como 300 caracteres de JSON de Graph, y
+            # había que leerlo entero para entender que no era un fallo del extractor.
+            raise SinPermiso(
+                f"act_{act} ya no está al alcance del token de Sentinel. Meta dice: "
+                f"«{_motivo(ex)}». Se arregla en el Business Manager del cliente "
+                f"—Configuración del negocio › Cuentas publicitarias › act_{act} › "
+                f"Asignar activos— volviendo a dar acceso de anuncios al usuario del "
+                f"sistema. Hasta entonces este cliente se queda sin datos de Meta y "
+                f"reintentarlo no cambia nada."
+            ) from ex
 
     if tipos_total:
         # El desglose completo, para poder decidir con datos qué es "un lead" en esta

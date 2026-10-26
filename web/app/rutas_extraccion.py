@@ -316,11 +316,20 @@ def estado_fuentes(cfg: dict, procedencia: dict) -> dict:
 def comprobar_crudo(fuente: str, d: dict) -> list[str]:
     p: list[str] = []
     if fuente == "ghl":
-        if not isinstance(d.get("oportunidades"), list) or not d["oportunidades"]:
-            p.append("'oportunidades' tiene que ser una lista con al menos un elemento.")
-        if not isinstance(d.get("pipelines"), list) or not d["pipelines"]:
-            p.append("'pipelines' tiene que ser una lista con al menos un elemento.")
-        else:
+        # Vacío NO es un error. Lo era hasta el 26-oct-2026, y rechazaba a tres clientes
+        # reales —305-fenix-group, raquel-martin, sentinel-academy— cuyo CRM está recién
+        # abierto: sin oportunidades todavía, o sin ningún pipeline creado. El extractor
+        # levanta una excepción en cuanto una llamada a GoHighLevel falla, así que una
+        # lista vacía que llega hasta aquí significa "no hay nada", no "la extracción se
+        # rompió". Confundir las dos cosas tumbaba el cron entero por un cliente nuevo.
+        # Lo que sí se sigue rechazando es un tipo equivocado: eso nunca es un CRM vacío.
+        if not isinstance(d.get("oportunidades"), list):
+            p.append("'oportunidades' tiene que ser una lista "
+                     "(vacía si el cliente todavía no tiene ninguna).")
+        if not isinstance(d.get("pipelines"), list):
+            p.append("'pipelines' tiene que ser una lista "
+                     "(vacía si el CRM todavía no tiene ninguno).")
+        elif d["pipelines"]:
             sin_etapas = [x.get("n") for x in d["pipelines"] if not x.get("stages")]
             if len(sin_etapas) == len(d["pipelines"]):
                 p.append("Ningún pipeline trae etapas: el embudo saldría vacío.")
