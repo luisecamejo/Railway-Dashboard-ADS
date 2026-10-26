@@ -96,7 +96,8 @@ def sincronizar(almacen, *, encolar: Optional[Callable[[str, str], object]] = No
     lee del CRM la zona horaria y la moneda cuando la suite no trae zona. Las dos se
     inyectan para que esto no dependa de main.py (y se pueda probar sin red).
     """
-    res = {"creados": [], "actualizados": [], "sinCambios": 0, "error": None, "origen": origen}
+    res = {"creados": [], "actualizados": [], "desactivados": [], "sinCambios": 0,
+           "error": None, "origen": origen}
     if not activa():
         res["error"] = "Sin SUITE_URL o sin token de servicio de la suite."
         return res
@@ -157,6 +158,12 @@ def sincronizar(almacen, *, encolar: Optional[Callable[[str, str], object]] = No
 
             cfg = dict(existente.get("config") or {})
             cambios = []
+            # Desarchivar en la suite tiene que volver a encenderlo aquí; si no, el
+            # apagado de más abajo sería de ida y nadie entendería por qué el cliente
+            # vuelve a la suite pero su reporte sigue sin actualizarse.
+            if not existente.get("activo", True):
+                almacen.activar_cliente(slug, True)
+                cambios.append("reactivado")
             if nombre and cfg.get("nombre") != nombre:
                 cfg["nombre"] = nombre; cambios.append("nombre")
             if loc and cfg.get("ghlLocationId") != loc:
@@ -177,6 +184,25 @@ def sincronizar(almacen, *, encolar: Optional[Callable[[str, str], object]] = No
                 log.info("cliente actualizado desde la suite · %s · %s", slug, ", ".join(cambios))
             else:
                 res["sinCambios"] += 1
+
+        # Una subcuenta que se archiva en la suite DEJA de ser objetivo aquí. Hasta el
+        # 26-oct-2026 esto no pasaba: la sincronización solo creaba y actualizaba, así
+        # que un cliente archivado seguía extrayéndose cada noche. Con golden-rose, que
+        # además ya había revocado el acceso a su cuenta de Meta, eso significaba un
+        # cron en rojo todas las madrugadas por un cliente que ya no existía.
+        # Se APAGA, no se borra: sus snapshots y sus enlaces siguen ahí, y destruirlos
+        # es una decisión de una persona (DELETE /admin/clientes/{slug}).
+        vivos = {str(sub["slug"]).strip().lower() for sub in subs}
+        if vivos:          # una lista vacía es casi siempre un fallo: no apagar a nadie
+            for c in almacen.clientes():
+                if c.get("activo", True) and c["slug"] not in vivos:
+                    try:
+                        almacen.activar_cliente(c["slug"], False)
+                    except KeyError:
+                        continue
+                    res["desactivados"].append(c["slug"])
+                    log.info("cliente apagado · %s · ya no es una subcuenta activa de "
+                             "la suite; sus datos se conservan", c["slug"])
         return res
     finally:
         _ultimo.update({"cuando": time.strftime("%Y-%m-%dT%H:%MZ", time.gmtime()), "resultado": res})

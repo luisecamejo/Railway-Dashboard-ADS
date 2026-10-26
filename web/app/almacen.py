@@ -166,6 +166,22 @@ class AlmacenPostgres:
         return dict(zip(("slug", "nombre", "ghl_location_id", "tz", "fuentes",
                          "activo", "creado", "config"), r))
 
+    def activar_cliente(self, slug, activo: bool) -> dict:
+        """
+        Enciende o apaga un cliente sin tocar nada suyo.
+
+        Apagar es lo que se hace cuando una subcuenta se archiva en la suite: deja de
+        ser objetivo de los extractores (ver comun/reportes.py: objetivos), pero sus
+        snapshots, sus enlaces y su histórico siguen donde estaban. Borrar, que sí
+        destruye, es otra decisión y la toma una persona.
+        """
+        with self.pool.connection() as c:
+            n = c.execute("UPDATE clientes SET activo=%s WHERE slug=%s",
+                          (bool(activo), slug)).rowcount
+        if not n:
+            raise KeyError(slug)
+        return self.cliente(slug)
+
     def resumen_borrado(self, slug) -> Optional[dict]:
         """
         Qué se destruiría al borrar este cliente. Se mira ANTES de borrar.
@@ -395,6 +411,16 @@ class AlmacenFicheros:
 
     def cliente(self, slug):
         return self._leer()["clientes"].get(slug)
+
+    def activar_cliente(self, slug, activo: bool) -> dict:
+        """Enciende o apaga un cliente sin tocar nada suyo. Ver la versión SQL."""
+        with self._lock:
+            d = self._leer()
+            if slug not in d["clientes"]:
+                raise KeyError(slug)
+            d["clientes"][slug]["activo"] = bool(activo)
+            self._escribir(d)
+        return self.cliente(slug)
 
     # ── configuracion de construccion y datos crudos ────────────────────
     def guardar_config(self, slug, config: dict) -> dict:

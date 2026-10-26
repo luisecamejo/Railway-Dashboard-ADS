@@ -109,6 +109,41 @@ def main() -> int:
         r3 = S.sincronizar(alm, encolar=lambda s, por: encolados.append((s, por)), origen="prueba")
         ok("no devolvió" in (r3["error"] or "") and len(encolados) == 1, "si la suite no contesta, se informa y no se toca nada")
         ok(S.estado()["resultado"] is r3 and S.estado()["cuando"], "el estado recuerda la última pasada")
+
+        # ── archivar en la suite apaga el cliente aquí ──────────────────────
+        # El caso de golden-rose: se deja de ser cliente, se archiva la subcuenta, y
+        # hasta el 26-oct-2026 el extractor seguía yendo a por él todas las noches.
+        vivas = [s for s in SUITE if s["status"] == "active" and s["slug"] != "viejo"]
+        S.subcuentas_de_la_suite = lambda timeout=15: vivas
+        r4 = S.sincronizar(alm, encolar=lambda s, por: encolados.append((s, por)),
+                           ficha_crm=ficha, origen="prueba")
+        ok(r4["desactivados"] == ["viejo"],
+           f"la subcuenta que ya no está activa en la suite se apaga: {r4['desactivados']}")
+        ok((alm.cliente("viejo") or {}).get("activo") is False,
+           "queda apagado, no borrado")
+        v4 = (alm.cliente("viejo") or {}).get("config") or {}
+        ok(v4.get("productos") == [{"nombre": "Botox"}],
+           "y conserva lo suyo: apagar no destruye nada")
+        ok([c for c in alm.clientes() if c["slug"] == "viejo"],
+           "sigue en la lista de clientes, visible para quien quiera borrarlo a mano")
+
+        # ── y desarchivar lo vuelve a encender ──────────────────────────────
+        S.subcuentas_de_la_suite = lambda timeout=15: [s for s in SUITE if s["status"] == "active"]
+        r5 = S.sincronizar(alm, encolar=lambda s, por: encolados.append((s, por)),
+                           ficha_crm=ficha, origen="prueba")
+        reactivado = [x for x in r5["actualizados"] if x["slug"] == "viejo"]
+        ok(bool(reactivado) and "reactivado" in reactivado[0]["cambios"],
+           f"volver a activarla en la suite lo reenciende: {r5['actualizados']}")
+        ok((alm.cliente("viejo") or {}).get("activo") is True, "y vuelve a estar activo")
+
+        # ── una lista vacía NO apaga a nadie ────────────────────────────────
+        # Si la suite contestara 200 con una lista vacía por un fallo suyo, apagar a
+        # todos los clientes dejaría a la agencia entera sin reportes esa noche.
+        S.subcuentas_de_la_suite = lambda timeout=15: []
+        r6 = S.sincronizar(alm, origen="prueba")
+        ok(r6["desactivados"] == [],
+           "una suite que devuelve cero subcuentas no apaga a nadie: eso es un fallo, no una baja")
+        ok((alm.cliente("viejo") or {}).get("activo") is True, "nadie se apagó")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
