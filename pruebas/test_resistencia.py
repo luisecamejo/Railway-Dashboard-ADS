@@ -88,6 +88,10 @@ ERROR_CUOTA = {"error": {"message": "(#17) User request limit reached",
                          "type": "OAuthException", "code": 17, "is_transient": True}}
 ERROR_TOKEN = {"error": {"message": "Invalid OAuth access token", "code": 190,
                          "type": "OAuthException", "is_transient": False}}
+# El de golden-rose el 26-oct-2026, literal: la cuenta sigue ahí, el token ya no llega.
+ERROR_PERMISO = {"error": {"message": "(#200) Ad account owner has NOT grant "
+                                      "ads_management or ads_read permission",
+                           "code": 200, "type": "OAuthException"}}
 
 
 class _Graph(BaseHTTPRequestHandler):
@@ -159,6 +163,10 @@ def prueba_meta_timeout():
            "un token inválido se lee como 'ríndete': insistir no lo arregla")
         ok(M.clasificar(ErrorHTTP(500, "<html>vaya</html>", "http://x")) == "rendirse",
            "un cuerpo que no es de Meta no se interpreta a la ligera")
+        ok(M.es_permiso(ErrorHTTP(403, json.dumps(ERROR_PERMISO), "http://x")),
+           "el (#200) del dueño de la cuenta se reconoce como permiso revocado")
+        ok(not M.es_permiso(ErrorHTTP(400, json.dumps(ERROR_CUOTA), "http://x")),
+           "una cuota agotada NO se confunde con un permiso revocado")
 
         # b) el caso completo: 120 días contra un servidor que no aguanta más de 15
         _Graph.tope_dias, _Graph.peticiones, _Graph.rangos_servidos = 15, [], []
@@ -266,6 +274,26 @@ def prueba_pasadas():
 
     # e) sin objetivos no es un error
     ok(ejecutar([], lambda o: None, dormir=nada) == 0, "una lista vacía no es un fallo")
+
+    # f) lo que no se arregla solo no se reintenta. Un permiso revocado sigue revocado
+    #    dentro de 60 s: repetirlo cuesta el enfriamiento entero y una línea roja
+    #    idéntica. Sigue contando como fallo —el cron lo dirá— pero de una sola pasada.
+    vistos, esperas[:] = [], []
+
+    class _Definitivo(RuntimeError):
+        definitivo = True
+
+    def sin_permiso(o):
+        vistos.append(o["slug"])
+        if o["slug"] == "c2":
+            raise _Definitivo("permiso revocado")
+
+    ok(ejecutar(objetivos, sin_permiso, enfriamiento=60, dormir=nada) == 1,
+       "un fallo definitivo sigue devolviendo 1: no se esconde")
+    ok(vistos.count("c2") == 1,
+       "pero NO se reintenta: una sola pasada", f"{vistos.count('c2')} intentos")
+    ok(60 not in esperas,
+       "y no se paga el enfriamiento de una segunda pasada que no va a existir")
 
 
 def prueba_concurrencia():

@@ -13,6 +13,10 @@ Lo que hace esta pieza, y por qué:
 
   · DOS PASADAS. La segunda repite SOLO los que fallaron, y espera antes. Si la causa
     fue la cuota de la API, reintentar en caliente vuelve a chocar con el mismo límite.
+    Lo que NO se repite es lo que no se arregla solo: una excepción con el atributo
+    `definitivo = True` —un permiso revocado, una cuenta que ya no está al alcance del
+    token— se anota como fallo y se deja estar. Reintentarla solo añade un minuto de
+    espera y una segunda línea roja idéntica a la primera.
 
   · CONCURRENCIA ACOTADA. Es la pieza pensada para crecer. Los límites de GoHighLevel
     (~100 peticiones por cada 10 s) y los de Meta son POR SUB-CUENTA / POR CUENTA
@@ -135,11 +139,20 @@ def _una_pasada(objetivos: list[dict], procesar, res: Resultado, pasada: int, *,
                 procesar(o)
                 res.anota_ok(o["slug"], reloj() - t0)
             except Exception as ex:
+                # Hay fallos que no se arreglan solos: un permiso revocado sobre una
+                # cuenta publicitaria sigue revocado dentro de 60 segundos. Quien los
+                # conoce es el extractor, no esta pieza, así que los marca con
+                # `definitivo = True` en la propia excepción. Se anotan igual —el
+                # cliente ha fallado y el cron lo dirá— pero no se reintentan: el
+                # enfriamiento solo retrasaría el mismo error.
+                definitivo = bool(getattr(ex, "definitivo", False))
                 sufijo = "" if pasada == 1 else f" (pasada {pasada})"
-                log.error("%s · FALLÓ%s: %s", o["slug"], sufijo, ex)
+                log.error("%s · FALLÓ%s%s: %s", o["slug"],
+                          " SIN REINTENTO" if definitivo else "", sufijo, ex)
                 res.anota_fallo(o["slug"], f"{type(ex).__name__}: {ex}")
-                with candado:
-                    fallidos.append(o)
+                if not definitivo:
+                    with candado:
+                        fallidos.append(o)
             finally:
                 cola.task_done()
 
