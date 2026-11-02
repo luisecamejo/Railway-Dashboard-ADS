@@ -41,6 +41,7 @@ import random
 import time
 
 from .http import ErrorHTTP, pedir
+from .pasadas import FalloDefinitivo
 
 log = logging.getLogger("extractor.mcp")
 
@@ -68,6 +69,38 @@ PASAJEROS = (
 def _es_pasajero(mensaje: str) -> bool:
     m = (mensaje or "").lower()
     return any(s in m for s in PASAJEROS)
+
+
+# Señales de que el fallo es DEFINITIVO: la sub-cuenta pedida no está entre las que
+# ve el MCP. Son los textos literales con los que ghl-mcp (src/register-tools.js,
+# `resolver`) contesta cuando el `client` que se le pasa no coincide con ninguna de
+# sus sub-cuentas, o coincide con varias. Un location id que no existe hoy tampoco
+# existirá dentro de dos minutos: lo que hay que arreglar es el registro de la
+# subcuenta en Sentinel Suite, y eso lo hace una persona.
+SUBCUENTA_INEXISTENTE = (
+    "no hay ninguna sub-cuenta a tu alcance",
+    "coincide con varias sub-cuentas",
+)
+
+
+class SubcuentaInexistente(FalloDefinitivo):
+    """El MCP de GoHighLevel no ve la sub-cuenta que se le pidió."""
+
+
+def _es_subcuenta_inexistente(mensaje: str) -> bool:
+    m = (mensaje or "").lower()
+    return any(s in m for s in SUBCUENTA_INEXISTENTE)
+
+
+def _explicar_subcuenta(herramienta: str, argumentos: dict | None,
+                        msg: str) -> SubcuentaInexistente:
+    pedido = (argumentos or {}).get("client") or "?"
+    return SubcuentaInexistente(
+        f"GoHighLevel no tiene (o el MCP de GHL no ve) ninguna sub-cuenta con el "
+        f"location id «{pedido}»: la sub-cuenta se desactivó, cambió de agencia o el id "
+        f"está mal. Hay que revisar el location id de esta subcuenta en Sentinel Suite "
+        f"(Administración → Subcuentas). No se reintenta. "
+        f"Detalle de '{herramienta}': {msg[:200]}")
 
 
 class RespuestaIlegible(RuntimeError):
@@ -207,6 +240,8 @@ class ClienteMCP:
             # código 200 y sin "error". Si no se mira, un error se cuela como dato.
             if res.get("isError"):
                 msg = _texto(res)[:400]
+                if _es_subcuenta_inexistente(msg):
+                    raise _explicar_subcuenta(herramienta, argumentos, msg)
                 ultimo = RuntimeError(f"'{herramienta}' devolvió error: {msg}")
                 if n == self.intentos or not _es_pasajero(msg):
                     raise ultimo

@@ -152,6 +152,17 @@ prefijo `/reportes` quitado, `X-Forwarded-Prefix: /reportes` y la identidad firm
 | El equipo | la tarjeta «Reportes» de la suite → `/reportes/admin`, `/reportes/s/<slug>/` | el panel y los dashboards internos, solo de las subcuentas que tiene en la suite (rol `admin` o `equipo` de la herramienta) |
 | El cliente | el enlace con token, empotrado en GoHighLevel → `/reportes/r/<token>/embed` | su dashboard, **sin sesión de la suite**: la suite declara `/r/` (y `app.js`, `/salud`, `robots.txt`) como rutas públicas de la herramienta y las reenvía con una firma anónima |
 | Las máquinas | extractores y scripts con `X-Admin-Token`, por `reportes.railway.internal` o el dominio `*.up.railway.app` | todo `/admin`; no pasan por la suite |
+| Claude, por el MCP de la suite | `reportes_clientes`, `reportes_kpis`, `reportes_actualizar` → el gateway reenvía con un **access token OAuth** de la persona (`X-Suite-Via: oauth`, scope efectivo en `X-Suite-Scope`) | lo mismo que esa persona vería en la suite; escribe (refrescar un dashboard) solo con `reportes:write` |
+
+Lo que cambia datos (POST/DELETE) exige además que la petición salga de la propia suite: la
+cabecera `Origin` del navegador tiene que ser la de la suite (defensa contra CSRF). Una llamada
+servidor a servidor por el MCP no trae `Origin`, y no la necesita: no hay cookie ni sesión
+ambiente que un tercero pueda aprovechar, el token va en la propia petición y el gateway la firma.
+Por eso `suite.escritura_insegura` acepta sin `Origin` solo lo que llega firmado por el gateway con
+un access token OAuth (claim `client_id` del JWT ya verificado) y permiso de escritura. Antes de
+2-nov-2026 esa llamada respondía «403 Petición desde otro origen» y `reportes_actualizar` no
+funcionaba. La prueba está en `pruebas/test_suite_sso.py` («El botón «Actualizar ahora» y el MCP
+de la suite»).
 
 Con `GATEWAY_ONLY=1` el dominio viejo `reportes.sentinelmarketing.net` (y el de Railway) responde
 **301** a la misma ruta y query bajo la suite, incluidos los `/r/<token>`: los enlaces antiguos

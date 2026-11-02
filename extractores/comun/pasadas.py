@@ -45,12 +45,32 @@ from typing import Callable
 log = logging.getLogger("extractor.pasadas")
 
 
+class FalloDefinitivo(RuntimeError):
+    """
+    Un fallo que NO se arregla reintentando: la configuración del cliente está mal.
+
+    El caso que lo motivó: desde el 1-nov-2026 el extractor de GoHighLevel fallaba
+    cada noche con 305-fenix-group porque su location id ya no está entre las
+    sub-cuentas que ve el MCP (la sub-cuenta se desactivó o cambió de agencia). El
+    error venía como uno más, así que se le daban las dos pasadas enteras —con su
+    enfriamiento de dos minutos— y el cron terminaba en rojo por un cliente al que
+    ninguna cantidad de reintentos iba a devolver.
+
+    Quien lo levanta sabe que es definitivo (ver comun/mcp.py). Aquí se anota, se
+    dice con claridad qué tiene que arreglar una persona, no se reintenta y no se
+    cuenta como fallo de la pasada: los demás clientes salen bien y el cron termina
+    en verde. Solo si NINGÚN cliente salió bien (una ejecución con SOLO_CLIENTE sobre
+    el cliente roto, como la del botón «Actualizar ahora») el código de salida avisa.
+    """
+
+
 class Resultado:
     """Qué pasó con cada cliente. Es lo que se mira cuando hay muchos."""
 
     def __init__(self):
         self.ok: dict[str, float] = {}          # slug → segundos
-        self.fallos: dict[str, str] = {}        # slug → motivo
+        self.fallos: dict[str, str] = {}        # slug → motivo (pasajero: se reintentó)
+        self.definitivos: dict[str, str] = {}   # slug → motivo (no se reintenta)
         self._lock = threading.Lock()
 
     def anota_ok(self, slug: str, segundos: float) -> None:
@@ -61,6 +81,10 @@ class Resultado:
     def anota_fallo(self, slug: str, motivo: str) -> None:
         with self._lock:
             self.fallos[slug] = motivo
+
+    def anota_definitivo(self, slug: str, motivo: str) -> None:
+        with self._lock:
+            self.definitivos[slug] = motivo
 
     @property
     def hubo_fallos(self) -> bool:
@@ -138,6 +162,10 @@ def _una_pasada(objetivos: list[dict], procesar, res: Resultado, pasada: int, *,
             try:
                 procesar(o)
                 res.anota_ok(o["slug"], reloj() - t0)
+            except FalloDefinitivo as ex:
+                # Reintentar no lo arregla: no entra en la lista de la segunda pasada.
+                log.error("%s · SE OMITE (no se reintenta): %s", o["slug"], ex)
+                res.anota_definitivo(o["slug"], str(ex))
             except Exception as ex:
                 # Hay fallos que no se arreglan solos: un permiso revocado sobre una
                 # cuenta publicitaria sigue revocado dentro de 60 segundos. Quien los
@@ -182,9 +210,21 @@ def _resumir(res: Resultado, total: int, pasadas_hechas: int) -> int:
             log.info("  los que más tardan: %s",
                      ", ".join(f"{s} {t:.0f}s" for s, t in lentos))
 
+    if res.definitivos:
+        log.error("%d cliente(s) con la configuración mal: se omiten y NO se reintentan "
+                  "hasta que una persona lo arregle en Sentinel Suite:",
+                  len(res.definitivos))
+        for slug in sorted(res.definitivos):
+            log.error("  · %s — %s", slug, res.definitivos[slug][:300].replace("\n", " "))
+
     if not res.hubo_fallos:
-        log.info("listo · %d cliente(s)", total)
-        return 0
+        if res.ok or not res.definitivos:
+            log.info("listo · %d de %d cliente(s)", len(res.ok), total)
+            return 0
+        # Nadie salió bien y todo fue definitivo: hay que decirlo (el botón «Actualizar
+        # ahora» corre con un solo cliente, y un "ok" sería mentira).
+        log.error("ningún cliente se pudo extraer: todos tienen la configuración mal")
+        return 2
 
     log.error("fallaron %d de %d clientes tras %d pasada(s):",
               len(res.fallos), total, pasadas_hechas)

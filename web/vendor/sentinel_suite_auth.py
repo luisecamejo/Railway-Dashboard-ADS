@@ -1,7 +1,4 @@
-"""sentinel_suite_auth — valida la identidad de Sentinel Suite en herramientas FastAPI / Starlette.
-
-COPIA VENDORIZADA de packages/suite-auth-fastapi/sentinel_suite_auth.py del repositorio sentinel-suite.
-No se edita aquí: los cambios se hacen en la suite y se vuelve a copiar.
+"""sentinel_suite_auth — valida la cookie SSO de Sentinel Suite en herramientas FastAPI / Starlette.
 
 Dependencias: PyJWT[crypto] (pip install "PyJWT[crypto]>=2.8"). FastAPI/Starlette ya traen anyio.
 
@@ -235,11 +232,14 @@ class SuiteAuth:
             if self._is_api(request):
                 return JSONResponse({"error": "No tienes acceso a esta subcuenta.", "suite": f"{self.hub}/", "login": recheck}, status_code=403)
             return RedirectResponse(recheck, status_code=302)
+        # Por el gateway llega el scope EFECTIVO que calculó la suite (X-Suite-Scope): con el token del MCP de la suite
+        # (mcp-suite:read/write, que vale para todas las herramientas de la persona) es "<tool>:read [<tool>:write]"
+        scope_text = request.headers.get("x-suite-scope") if via == "gateway" and request.headers.get("x-suite-scope") else claims.get("scope")
         user = SuiteUser(id=str(claims["sub"]), email=claims.get("email", ""), name=claims.get("name"), role=role,
                          is_suite_admin=bool(claims.get("adm")), claims=claims,
                          agency=claims.get("agency") or ("admin" if claims.get("adm") else "equipo"),
                          subaccount=subaccount, subaccounts=claims.get("subs", []), via=via,
-                         scopes=claims["scope"].split(" ") if isinstance(claims.get("scope"), str) else None,
+                         scopes=scope_text.split(" ") if isinstance(scope_text, str) else None,
                          client_id=claims.get("client_id"), prefix=request.headers.get("x-forwarded-prefix", "").rstrip("/"))
         request.state.suite_user = user
         request.state.local_user = await self._provision(user, request)

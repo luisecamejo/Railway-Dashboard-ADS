@@ -87,13 +87,18 @@ def ok(nombre, cond, extra=""):
     print(("  ✓ " if cond else "  ✗ ") + nombre + (f"  ({extra})" if extra and not cond else ""))
 
 
-def jwt_de(tools=None, subs="*", clave=CLAVE, iss=None, exp=900):
+def jwt_de(tools=None, subs="*", clave=CLAVE, iss=None, exp=900, oauth=None):
+    """`oauth="mcp-suite:read mcp-suite:write"`: un access token OAuth (typ at+jwt, claims scope/client_id/grant)."""
     ahora = int(time.time())
     claims = {"iss": iss or SUITE, "aud": "sentinel-suite", "sub": "7", "iat": ahora, "exp": ahora + exp,
               "jti": str(uuid.uuid4()), "email": "ana@sentinelmarketing.net", "name": "Ana",
               "tools": tools if tools is not None else {"reportes": "equipo"}, "subs": subs,
               "agency": "equipo", "adm": False}
-    return jwt.encode(claims, clave, algorithm="EdDSA", headers={"kid": "k1"})
+    cab = {"kid": "k1"}
+    if oauth:
+        claims.update({"scope": oauth, "client_id": "claude-desktop", "grant": 42})
+        cab["typ"] = "at+jwt"
+    return jwt.encode(claims, clave, algorithm="EdDSA", headers=cab)
 
 
 def _firma(ts, user, role, subs, tok, secreto=SECRETO):
@@ -114,6 +119,22 @@ def gw(tools=None, subs="*", *, tok=None, ts=None, secreto=SECRETO, **extra):
          "X-Suite-Timestamp": ts, "X-Suite-Signature": _firma(ts, "7", rol, subs_h, tok, secreto),
          "Authorization": f"Bearer {tok}", "X-Suite-Via": "session"}
     h.update(extra)
+    return h
+
+
+def mcp(escribe=True, tools=None, subs="*"):
+    """
+    Las cabeceras con las que el gateway reenvía una llamada del MCP DE LA SUITE
+    (reportes_actualizar): servidor a servidor, con un access token OAuth y SIN Origin.
+    La suite calcula el scope efectivo para reportes y lo manda en X-Suite-Scope.
+    """
+    alcance = "mcp-suite:read mcp-suite:write" if escribe else "mcp-suite:read"
+    efectivo = "reportes:read reportes:write" if escribe else "reportes:read"
+    tok = jwt_de(tools, subs, oauth=alcance)
+    h = gw(tools, subs, tok=tok)
+    h.update({"X-Suite-Via": "oauth", "X-Suite-Scope": efectivo, "X-Suite-Client": "claude-desktop",
+              # Lo que de verdad manda mcp-suite (src/tools/reportes.ts): no es la del panel.
+              "X-Requested-With": "tp"})
     return h
 
 
@@ -203,6 +224,45 @@ ok("snapshot interno sin enmascarar", d.status_code == 200 and d.json()["leads"]
 ok("snapshot de otro cliente: 403", C.get("/s/garage/snapshot.json", headers=gw(subs=["cliff"])).status_code == 403)
 ok("cliente sin datos todavía: 409", C.get("/s/garage/snapshot.json", headers=gw()).status_code == 409)
 ok("estado del botón actualizar", C.get("/s/cliff/refrescar", headers=gw()).status_code == 200)
+
+print("\nEl botón «Actualizar ahora» y el MCP de la suite (reportes_actualizar)")
+# Para no lanzar extracciones de verdad: se sustituye el trabajo del obrero por un apunte.
+from app import rutas_refrescar as RR  # noqa: E402
+pedidos = []
+RR._refrescar_cliente = lambda slug: (pedidos.append(slug), (True, "simulado"))[1]
+for _ in range(20):  # dar tiempo al obrero a vaciar la cola entre un caso y otro
+    if not RR._cola:
+        break
+    time.sleep(0.05)
+r = C.post("/s/cliff/refrescar", headers=gw(Origin=ORIGEN), json={})
+while RR._cola:
+    time.sleep(0.05)
+ok("el botón del dashboard (navegador en la suite, con Origin) sigue funcionando", r.status_code == 200 and pedidos == ["cliff"], r.text[:200])
+pedidos.clear()
+ok("un POST desde otro origen con la sesión de la persona se sigue rechazando (CSRF)",
+   C.post("/s/cliff/refrescar", headers=gw(Origin="https://otra.sentinelmarketing.net"), json={}).status_code == 403)
+ok("y uno de navegador sin Origin ni la cabecera del panel, también",
+   C.post("/s/cliff/refrescar", headers=gw(), json={}).status_code == 403)
+while RR._cola:
+    time.sleep(0.05)
+r = C.post("/s/cliff/refrescar", headers=mcp(), json={})
+while RR._cola:
+    time.sleep(0.05)
+ok("el MCP de la suite (token OAuth con escritura, firmado por el gateway, sin Origin) encola el refresco",
+   r.status_code == 200 and "cliente" in r.json(), f"{r.status_code} {r.text[:200]}")
+ok("…y el refresco se pidió de verdad", pedidos == ["cliff"])
+pedidos.clear()
+while RR._cola:
+    time.sleep(0.05)
+r = C.post("/s/cliff/refrescar", headers=mcp(escribe=False), json={})
+ok("con un token de solo lectura, no: 403 que lo explica", r.status_code == 403 and "lectura" in r.text, r.text[:200])
+ok("un token OAuth de otra subcuenta tampoco", C.post("/s/cliff/refrescar", headers=mcp(subs=["garage"]), json={}).status_code == 403)
+h = mcp(); h["X-Suite-Signature"] = "0" * 64
+ok("ni un token OAuth sin la firma buena del gateway", C.post("/s/cliff/refrescar", headers=h, json={}).status_code == 401)
+ok("y la lectura con el token OAuth va como siempre", C.get("/s/cliff/refrescar", headers=mcp(escribe=False)).status_code == 200)
+while RR._cola:
+    time.sleep(0.05)
+ok("ninguno de los rechazados llegó a encolar nada", pedidos == [])
 
 print("\nEnlaces del cliente (/r/…): públicos, por el gateway sin sesión")
 r = C.get(f"/r/{TOK}/", headers=anon())
