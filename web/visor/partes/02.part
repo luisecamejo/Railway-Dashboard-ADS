@@ -198,10 +198,19 @@ function sopDe(lead){ return (DATA.sopById||{})[lead&&lead.ei]; }
    subía de 604 a 968 y el CPL se hundía a la mitad sin que nada lo avisara. El selector cambia
    CÓMO se agrupa el origen, no QUÉ leads son de pago. */
 aplicaOrigen();   // fija x._src antes de construir el índice estable de plataforma por origen
+/* Orígenes ORGÁNICOS (2 nov 2026, pedido por Luis): "Social Media", "Organic Search", "Referral",
+   "Google Business"… son tráfico orgánico de redes, buscadores o boca a boca. Que unos pocos leads
+   de ese origen traigan utm_campaign_id (alguien que vio el anuncio y luego escribió por Instagram)
+   NO convierte a todo el origen en pagado: antes "Social Media" heredaba Meta y sus leads entraban
+   en Paid Media. Un lead de estos solo cuenta como pago si trae su propia campaña.
+   Ojo: "Paid Social"/"Paid Search" (los buckets de atribución) NO están aquí a propósito. */
+const ORGANICO=/^(social(\s*media)?|redes(\s*sociales)?|rrss|organic(o|a)?(\s*(search|social|rrss))?|org[aá]nico|referr?al|referid[oa]s?|recomendaci[oó]n|boca\s*a\s*boca|direct(o)?|website|web|seo|google\s*(my\s*)?business(\s*profile)?|gmb|ficha\s*de\s*google|walk[\s-]*in|network(ing)?)$/i;
+const esOrganico=k=>ORGANICO.test(String(k||'').trim());
 const PLATSRC=(()=>{
   const m={};
   L.forEach(x=>{
     const k=((x._src!==undefined?x._src:x.src)||'').trim();
+    if(esOrganico(k)) return;   // un origen orgánico nunca hereda plataforma de pago
     m[k]=m[k]||{};
     const c=x.c?CIDX[x.c]:null;
     if(c){const p=platCamp(c); m[k][p]=(m[k][p]||0)+1;}
@@ -217,6 +226,7 @@ const platLead=x=>{
   const c=x.c?CIDX[x.c]:null;
   if(c) return platCamp(c);
   const k=((x._src!==undefined?x._src:x.src)||'').trim();
+  if(esOrganico(k)) return 'Otros';   // sin campaña propia, un lead orgánico es orgánico
   return PLATSRC[k] || x.plataforma || x.plat || 'Otros';
 };
 
