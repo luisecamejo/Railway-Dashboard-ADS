@@ -26,7 +26,8 @@ sys.path.insert(0, str(RAIZ / "extractores"))
 logging.disable(logging.WARNING)
 
 from comun import http as H                      # noqa: E402
-from comun.mcp import ClienteMCP                 # noqa: E402
+from comun.mcp import ClienteMCP, SubcuentaInexistente   # noqa: E402
+from comun.pasadas import FalloDefinitivo, ejecutar      # noqa: E402
 
 fallos = []
 
@@ -134,6 +135,68 @@ def prueba_sse_truncado():
     ok(r == {"meta": {}, "filas": 1}, "se reintenta en vez de reventar")
 
 
+def prueba_subcuenta_inexistente():
+    """
+    El fallo de 305-fenix-group del 1-nov-2026: su location id ya no está entre las
+    sub-cuentas que ve el MCP. Antes se reintentaba en la segunda pasada (con dos
+    minutos de enfriamiento) y el cron terminaba en rojo por un cliente al que ningún
+    reintento iba a devolver.
+    """
+    print("la sub-cuenta pedida no existe para el MCP (location id desactivado o mal)")
+    err = _error_de_herramienta(
+        'Error: No hay ninguna sub-cuenta a tu alcance que coincida con '
+        '"rfRm2ixhtHnkoZDtf7cd". Disponibles: AestheticsbyCliff Med SPA, ENROLL AMERICA INC')
+    n = {"i": 0}
+
+    def urlopen(req, timeout=None):
+        n["i"] += 1
+        return _Resp(_sse(err))
+
+    H.urllib.request.urlopen = urlopen
+    c = ClienteMCP("https://x", "tok", intentos=4, espera_base=0.01)
+    try:
+        c.llamar("ghl_list_pipelines", {"client": "rfRm2ixhtHnkoZDtf7cd"})
+        ok(False, "levanta error")
+    except SubcuentaInexistente as ex:
+        ok(n["i"] == 1, "falla al primer intento, sin gastar reintentos")
+        ok("rfRm2ixhtHnkoZDtf7cd" in str(ex) and "Sentinel Suite" in str(ex),
+           "el error dice qué id falta y dónde se arregla (la subcuenta en la suite)")
+        ok(isinstance(ex, FalloDefinitivo), "es un fallo definitivo para las pasadas")
+
+    # Y las pasadas: el cliente roto no entra en la segunda pasada ni tumba el cron.
+    llamadas = []
+    esperas = []
+
+    def procesar(o):
+        llamadas.append(o["slug"])
+        if o["slug"] == "305-fenix-group":
+            raise SubcuentaInexistente("no existe")
+        if o["slug"] == "cliff" and llamadas.count("cliff") == 1:
+            raise RuntimeError("429 Too Many Requests")   # pasajero: sí se reintenta
+
+    codigo = ejecutar([{"slug": "cliff"}, {"slug": "305-fenix-group"}, {"slug": "garage"}],
+                      procesar, concurrencia=1, pausa_entre=0, enfriamiento=120,
+                      dormir=esperas.append, reloj=lambda: 0.0)
+    ok(llamadas.count("305-fenix-group") == 1, "el cliente roto se procesa UNA vez, sin segunda pasada")
+    ok(llamadas.count("cliff") == 2 and codigo == 0,
+       "el pasajero sí se reintenta y, recuperado, la pasada termina en verde (código 0)")
+    ok(all(e == 0 for e in esperas[:-1]) and esperas[-1] == 120,
+       "el enfriamiento se espera por el pasajero, no por el definitivo")
+
+    llamadas.clear(); esperas.clear()
+    codigo = ejecutar([{"slug": "305-fenix-group"}], procesar, concurrencia=1, pausa_entre=0,
+                      enfriamiento=120, dormir=esperas.append, reloj=lambda: 0.0)
+    ok(codigo == 2 and not esperas,
+       "con SOLO_CLIENTE sobre el cliente roto (botón «Actualizar ahora»): código 2 y sin esperar")
+
+    llamadas.clear()
+    codigo = ejecutar([{"slug": "305-fenix-group"}, {"slug": "garage"}], procesar,
+                      concurrencia=1, pausa_entre=0, enfriamiento=120,
+                      dormir=esperas.append, reloj=lambda: 0.0)
+    ok(codigo == 0 and len(llamadas) == 2 and not esperas,
+       "solo definitivo + uno bien: código 0, sin segunda pasada ni enfriamiento")
+
+
 def main():
     real_sleep, time.sleep = time.sleep, lambda s: None   # no esperar de verdad
     real_urlopen = H.urllib.request.urlopen
@@ -142,6 +205,7 @@ def main():
         prueba_429_dentro_de_un_200()
         prueba_error_definitivo_no_se_reintenta()
         prueba_sse_truncado()
+        prueba_subcuenta_inexistente()
     finally:
         time.sleep = real_sleep
         H.urllib.request.urlopen = real_urlopen

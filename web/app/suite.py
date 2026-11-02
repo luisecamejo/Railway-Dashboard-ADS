@@ -153,19 +153,39 @@ def login(peticion: Request, sub: Optional[str] = None) -> str:
     return url + (f"&sub={quote(sub, safe='')}" if sub else "")
 
 
-def escritura_segura(peticion: Request) -> bool:
+def escritura_insegura(peticion: Request) -> Optional[str]:
     """
     Para lo que cambia datos se exige que la petición salga de esta misma web (por el gateway, el
     origen es el de la suite). Es una defensa extra contra peticiones lanzadas desde otro sitio
-    con la sesión de la persona.
+    con la sesión de la persona (CSRF). Devuelve el motivo del rechazo, o None si la escritura
+    es segura.
+
+    Hay una vía que no trae Origin y sí es segura: una llamada SERVIDOR A SERVIDOR con un access
+    token OAuth de la suite (el MCP de la suite, `reportes_actualizar`). Ahí no hay cookie ni
+    sesión ambiente que un tercero pueda aprovechar: quien manda la petición tiene que llevar el
+    token en la propia petición, y además el gateway la firma (HMAC). Se reconoce por el JWT ya
+    verificado (claim `client_id`, que solo llevan los access tokens OAuth), no por una cabecera
+    suelta. Un token que solo tiene permiso de lectura (`reportes:read`) tampoco escribe.
     """
     if peticion.method in ("GET", "HEAD", "OPTIONS"):
-        return True
+        return None
     origen = peticion.headers.get("origin")
     if origen:
-        return origen == origen_propio(peticion)
+        return None if origen == origen_propio(peticion) else "Petición desde otro origen."
     # Sin Origin (navegadores viejos): al menos la cabecera que solo pone nuestro panel
-    return peticion.headers.get("x-requested-with") == "panel-reportes"
+    if peticion.headers.get("x-requested-with") == "panel-reportes":
+        return None
+    u = getattr(peticion.state, "suite_user", None)
+    if isinstance(u, SuiteUser) and u.via == "gateway" and u.client_id:
+        if u.read_only:
+            return ("Tu token de Sentinel Suite solo tiene permiso de lectura en ROASLytics: "
+                    "para actualizar un dashboard hace falta permiso de escritura.")
+        return None
+    return "Petición desde otro origen."
+
+
+def escritura_segura(peticion: Request) -> bool:
+    return escritura_insegura(peticion) is None
 
 
 async def _dispatch(peticion: Request, call_next):

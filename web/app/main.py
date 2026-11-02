@@ -224,8 +224,9 @@ def exige_admin(peticion: Request, x_admin_token: str = Header(default="")) -> N
     if not x_admin_token and suite.activa():
         p = suite.persona(peticion)
         if p:
-            if not suite.escritura_segura(peticion):
-                raise HTTPException(403, "Petición desde otro origen.")
+            motivo = suite.escritura_insegura(peticion)
+            if motivo:
+                raise HTTPException(403, motivo)
             # De qué cliente es la petición: /…/{slug}, ?cliente= o el dueño de /…/{token}
             slug = peticion.path_params.get("slug") or peticion.query_params.get("cliente")
             tok = peticion.path_params.get("token")
@@ -489,8 +490,9 @@ def equipo(peticion: Request, slug: str, *, navegacion: bool):
         if navegacion:  # la suite renueva el token por si se la acaban de asignar, y si no avisa
             return RedirectResponse(suite.login(peticion, sub=slug), status_code=302)
         raise HTTPException(403, "No tienes acceso a este cliente en Sentinel Suite.")
-    if not suite.escritura_segura(peticion):
-        raise HTTPException(403, "Petición desde otro origen.")
+    motivo = suite.escritura_insegura(peticion)
+    if motivo:
+        raise HTTPException(403, motivo)
     return p
 
 

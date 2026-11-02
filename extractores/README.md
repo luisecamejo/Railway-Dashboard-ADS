@@ -91,7 +91,7 @@ Ajuste fino del ritmo (todas tienen valor por defecto; solo se ponen para desvia
 |---|---|---|
 | `GHL_PAUSA_LLAMADAS` | `0.12` | Pausa entre peticiones de mensajes. GoHighLevel admite ~10 peticiones/segundo por sub-cuenta; 0,12 s deja el bucle en ~8/s. Con el `0.05` anterior iba a ~20/s, el doble del techo, y el 429 era cuestión de tiempo. |
 | `GHL_PAUSA_ENTRE_CLIENTES` | `20` | Segundos de descanso entre un cliente y el siguiente, para no arrastrar la cuota que gastó el anterior. |
-| `GHL_ENFRIAMIENTO` | `120` | Espera antes de la segunda pasada sobre los clientes que fallaron. |
+| `GHL_ENFRIAMIENTO` | `120` | Espera antes de la segunda pasada sobre los clientes que fallaron por algo **pasajero**. Un fallo **definitivo** —el MCP no ve ninguna sub-cuenta con el location id del cliente («No hay ninguna sub-cuenta a tu alcance que coincida con …»: la sub-cuenta se desactivó, cambió de agencia o el id está mal en la suite)— no se reintenta, no espera el enfriamiento y no pone el cron en rojo: se anota en el resumen final como «configuración mal», y lo arregla una persona en Suite → Administración → Subcuentas. Solo si ningún cliente salió bien (p. ej. el botón «Actualizar ahora» sobre ese cliente) el extractor sale con código 2. Ver `comun/pasadas.py` (`FalloDefinitivo`) y `comun/mcp.py` (`SubcuentaInexistente`); prueba en `pruebas/test_reintentos.py`. |
 | `GHL_MCP_TIMEOUT` | `240` | Lo que se le da al MCP para contestar una página. |
 | `GHL_LOTE_VENDEDORES` | `50` | Conversaciones por página del export de vendedores. Subirlo hace que una página no quepa en el timeout. |
 | `GHL_TOPE_PAGINAS` | `400` | Tope de seguridad: antes que devolver datos a medias, falla. |
