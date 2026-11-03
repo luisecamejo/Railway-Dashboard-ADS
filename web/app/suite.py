@@ -47,7 +47,10 @@ from sentinel_suite_auth import SuiteAuth, SuiteUser, verify_gateway_signature  
 
 SUITE_URL = os.environ.get("SUITE_URL", "").strip().rstrip("/")
 HERRAMIENTA = "reportes"
-ROLES = ("admin", "equipo")
+# `vendedor` (nov-2026): el rol que la suite da a un vendedor del cliente para que decida en
+# la pestaña «Reconciliación» de su cliente, y SOLO eso: ni dashboard, ni refrescar, ni ficha.
+# La puerta está en main.equipo(), que lo deja pasar únicamente a /s/<slug>/reconciliacion/….
+ROLES = ("admin", "equipo", "vendedor")
 # Ruta pública de reportes dentro de la suite (la que el gateway manda en X-Forwarded-Prefix).
 RUTA_SUITE = "/" + os.environ.get("SUITE_RUTA", "reportes").strip("/")
 # Lo que se sirve sin persona. Tiene que coincidir con las «rutas públicas» de la herramienta en la suite.
@@ -85,7 +88,7 @@ def firmada(peticion: Request) -> bool:
 class Persona:
     email: str
     nombre: Optional[str]
-    rol: str                 # rol en reportes: admin | equipo
+    rol: str                 # rol en reportes: admin | equipo | vendedor
     subs: object             # "*" = todas las subcuentas, o lista de slugs
     claims: dict
     prefijo: str = ""        # "/reportes" por el gateway; "" en local

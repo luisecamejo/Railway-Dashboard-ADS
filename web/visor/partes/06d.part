@@ -1,0 +1,129 @@
+/* ═══ RECONCILIACIÓN (pestaña) y FICHA DE CLIENTE (dentro de Ajustes) · nov-2026 ═══════════
+   La pestaña «Reconciliación» existe para todo el equipo que entra por Sentinel Suite (admin y
+   equipo): el servidor lo anuncia con <meta name="roaslytics-persona"> en /s/<slug>/. En
+   /r/<token>/ (clientes, empotrado) no existe. El código de la pestaña NO está aquí: es
+   web/visor/reconciliacion.js, el mismo archivo que sirve la página sola que ve el rol vendedor
+   (/s/<slug>/reconciliacion/). Aquí solo se carga ese archivo y se le da el hueco.
+   La Ficha de cliente (lo que antes era el Google Sheet de 4 pestañas: datos de atribución,
+   números de teléfono, sources y pipelines) se guarda en la config del cliente y se edita en
+   Ajustes. Los datos de identidad (nombre, locationId, zona horaria, cuentas de anuncios) se
+   enseñan en solo lectura: viven en la suite.
+   ════════════════════════════════════════════════════════════════════════════════════════ */
+const PERSONA=(()=>{
+  const m=document.querySelector('meta[name="roaslytics-persona"]');
+  if(!m) return null;
+  const [pre,slug,rol,email,suite]=(m.content||'').split('|');
+  return {pre:pre||'',slug,rol,email:email||'',suite:suite||''};
+})();
+if(PERSONA){ const tb=document.getElementById('tabReconc'); if(tb) tb.style.display=''; }
+
+function reconciliacion(){
+  if(!PERSONA) return notas();
+  const e=admEsc;
+  return `<div class="panel"><div class="ph"><div><h2>Reconciliación</h2>
+   <p>Lo que Claude propone tras cruzar los pagos (Fresha, Stripe, HouseCall…) o las llamadas de Google Ads con el CRM. Marca <b>SI</b> para aprobar cada propuesta; el equipo la cierra cuando queda aplicada en GoHighLevel. Todo queda como historial del cliente. <a href="${e(PERSONA.pre)}/s/${e(PERSONA.slug)}/reconciliacion/" style="color:var(--pul)">Abrir en página aparte</a>.</p></div></div>
+   <div class="pb nt"><div id="reconc" data-manual="1" data-pre="${e(PERSONA.pre)}" data-slug="${e(PERSONA.slug)}" data-rol="${e(PERSONA.rol)}" data-email="${e(PERSONA.email)}" data-suite="${e(PERSONA.suite)}" data-nombre="${e((DATA.cliente||{}).nombre||'')}"><p class="muted">Cargando…</p></div></div></div>`;
+}
+
+function bindReconciliacion(){
+  const el=document.getElementById('reconc'); if(!el||!PERSONA) return;
+  const arranca=()=>{ if(window.ROASReconc) window.ROASReconc.montar(el); };
+  if(window.ROASReconc) return arranca();
+  if(document.getElementById('rcScript')){ document.getElementById('rcScript').addEventListener('load',arranca); return; }
+  const s=document.createElement('script'); s.id='rcScript'; s.src=PERSONA.pre+'/reconciliacion.js?t='+Date.now().toString(36).slice(0,-3);
+  s.onload=arranca; s.onerror=()=>{ el.innerHTML='<p class="muted">No pude cargar la reconciliación. Recarga la página.</p>'; };
+  document.head.appendChild(s);
+}
+// El contador de la pestaña: pendientes de decidir. Solo cuando hay persona (nunca en /r/).
+(async function contadorReconc(){
+  if(!PERSONA) return;
+  try{
+    const r=await fetch(`${PERSONA.pre}/s/${encodeURIComponent(PERSONA.slug)}/reconciliacion/api?estado=pendiente`,{cache:'no-store',credentials:'same-origin',headers:{'Accept':'application/json'}});
+    if(!r.ok) return; const j=await r.json(); const n=document.getElementById('n3');
+    if(n) n.textContent=(j.total&&j.total.abiertos)?num(j.total.abiertos):'';
+  }catch(e){}
+})();
+
+/* ── Ficha de cliente (en Ajustes) ───────────────────────────────────────────────────────── */
+const FICHA_CAMPOS=[
+  ['moneda','Moneda','USD / EUR'],
+  ['pipeline_nombre','Pipeline de ventas — nombre','El único que se usa tras consolidar'],
+  ['pipeline_id','Pipeline de ventas — ID',''],
+  ['etapa_cierre','Etapa de cierre (won)','A dónde se mueve un lead que compró'],
+  ['prefijo_campanas','Prefijo de nuestras campañas','Ej.: SEN_ · distingue lo propio de lo externo'],
+  ['apps_reconciliacion','Apps de reconciliación','Fresha / Stripe / Square / HouseCall Pro / otra'],
+  ['criterio_reconciliacion','Criterio de reconciliación','Ventas (total vendido) o Pagos (lo cobrado)'],
+  ['cohorte','Cohorte','Creación de la oportunidad (por defecto)'],
+  ['ventana_dias','Ventana de atribución (días)','30 para todos'],
+  ['numero_control','Número de control (ganados)','Total del periodo. Si cambia solo, algo se rompió'],
+  ['notas','Notas','Lo que conviene saber de este cliente'],
+];
+const FICHA_TABLAS={
+  numeros:{titulo:'Números de teléfono',cols:[['numero','Número'],['nombre','Nombre en GHL'],['source','Source que representa'],['atribuye','¿Atribuye?'],['notas','Notas']],
+    ayuda:'Si un lead llamó a un número marcado SÍ, su source es el de la columna «Source que representa». El número general (caller ID de todos) NUNCA atribuye.'},
+  sources:{titulo:'Sources existentes',cols:[['source','Source actual'],['prioridad','Prioridad'],['clase','Default / Adicional'],['deteccion','Cómo se detecta'],['propuesta','Propuesta'],['decision','Decisión'],['si_no','Si no se aprueba, qué hacer']],
+    ayuda:'Una fila por valor de source que exista hoy en el CRM. Formato de los adicionales: «[Plataforma] [Agencia]». Un nombre de formulario nunca es un source.'},
+  pipelines:{titulo:'Pipelines',cols:[['pipeline','Pipeline'],['oportunidades','Oportunidades'],['destino','¿Destino o se vacía?'],['mapeo','Mapeo de etapas']],
+    ayuda:'Un solo DESTINO: el pipeline de ventas real. Los demás «se vacía» o «No se toca».'},
+};
+const fichaInp='style="width:100%;font:12px var(--d);background:var(--pan2);border:1px solid var(--line);color:var(--tx);padding:5px 7px;border-radius:6px"';
+
+async function fichaApi(opts={}){
+  const r=await fetch(`${PERSONA.pre}/s/${encodeURIComponent(PERSONA.slug)}/api/ficha`,{cache:'no-store',credentials:'same-origin',
+    method:opts.method||'GET',headers:{'Accept':'application/json',...(opts.body?{'Content-Type':'application/json'}:{})},
+    body:opts.body?JSON.stringify(opts.body):undefined});
+  const j=await r.json().catch(()=>({}));
+  if(!r.ok){ const d=j.detail; throw new Error(typeof d==='string'?d:(d&&d.error)||('HTTP '+r.status)); }
+  return j;
+}
+
+async function bindFicha(c){
+  if(!c||!PERSONA) return;
+  let d; try{ d=await fichaApi(); }catch(e){ c.innerHTML=`<h3>Ficha del cliente</h3><p>No pude cargarla: ${admEsc(e.message)}</p>`; return; }
+  const e=admEsc, f=d.ficha||{}, id=d.identidad||{};
+  const cuentas=(id.cuentas||[]).map(x=>`${x.plataforma||''} ${x.id||''}`.trim()).join(' · ')||'—';
+  let h=`<h3>Ficha del cliente · atribución y reconciliación</h3>
+  <p>Es la Ficha de 4 pestañas que antes vivía en un Google Sheet. Claude la lee cuando atribuye o reconcilia. Lo de identidad se cambia en <b>Suite → Administración → Subcuentas</b>; el reporte lo toma de ahí.</p>
+  <div class="note" style="margin:8px 0 14px"><b>${e(id.nombre||'')}</b> · locationId <code>${e(id.ghl_location_id||'—')}</code> · zona horaria ${e(id.tz||'—')} · cuentas de anuncios: ${e(cuentas)} · moneda detectada ${e(id.moneda_detectada||'—')}</div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px 18px">`;
+  const pipes=(d.pipelines_crm||[]), stages=(d.stages_crm||[]);
+  FICHA_CAMPOS.forEach(([k,t,n])=>{
+    let inp;
+    const v=f[k]==null?'':f[k];
+    if(k==='criterio_reconciliacion') inp=`<select data-fk="${k}" ${fichaInp}><option value="">—</option>${['Ventas','Pagos'].map(o=>`<option${v===o?' selected':''}>${o}</option>`).join('')}</select>`;
+    else if(k==='pipeline_nombre'&&pipes.length) inp=`<input list="fichaPipes" data-fk="${k}" value="${e(v)}" ${fichaInp}><datalist id="fichaPipes">${pipes.map(p=>`<option value="${e(p.n||p.nombre||p)}">`).join('')}</datalist>`;
+    else if(k==='etapa_cierre'&&stages.length) inp=`<input list="fichaStages" data-fk="${k}" value="${e(v)}" ${fichaInp}><datalist id="fichaStages">${stages.map(s=>`<option value="${e(s.n||s.nombre||s)}">`).join('')}</datalist>`;
+    else if(k==='notas') inp=`<textarea data-fk="${k}" rows="2" ${fichaInp}>${e(v)}</textarea>`;
+    else inp=`<input type="text" data-fk="${k}" value="${e(v)}" placeholder="${e(n)}" ${fichaInp}>`;
+    h+=`<label style="display:block"><span style="display:block;font-size:11px;color:var(--dim);margin-bottom:3px">${t}</span>${inp}${n&&k!=='notas'?`<span class="muted" style="font-size:10.5px">${e(n)}</span>`:''}</label>`;
+  });
+  h+='</div>';
+  Object.entries(FICHA_TABLAS).forEach(([k,t])=>{
+    const filas=f[k]||[];
+    h+=`<h4 style="margin:18px 0 4px">${t.titulo}</h4><p class="muted" style="margin:0 0 6px;font-size:11.5px">${e(t.ayuda)}</p>
+    <div style="overflow:auto"><table data-ft="${k}" style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr>${t.cols.map(([,c])=>`<th style="text-align:left;color:var(--dim);font-weight:600;font-size:10.5px;padding:4px 6px">${c}</th>`).join('')}<th></th></tr></thead><tbody>`;
+    const fila=(r={})=>`<tr>${t.cols.map(([ck])=>`<td style="padding:3px 4px">${ck==='atribuye'?`<select data-fc="${ck}" ${fichaInp}><option${(r[ck]||'')==='SÍ'?' selected':''}>SÍ</option><option${(r[ck]||'')!=='SÍ'?' selected':''}>NO</option></select>`
+      :ck==='destino'?`<select data-fc="${ck}" ${fichaInp}><option value="">—</option>${['DESTINO','se vacía','No se toca'].map(o=>`<option${(r[ck]||'')===o?' selected':''}>${o}</option>`).join('')}</select>`
+      :ck==='clase'?`<select data-fc="${ck}" ${fichaInp}><option value="">—</option>${['Default','Adicional'].map(o=>`<option${(r[ck]||'')===o?' selected':''}>${o}</option>`).join('')}</select>`
+      :ck==='decision'?`<select data-fc="${ck}" ${fichaInp}><option value="">—</option>${['Aprobar Propuesta','Rechazar Propuesta','Duda - hacer pregunta'].map(o=>`<option${(r[ck]||'')===o?' selected':''}>${o}</option>`).join('')}</select>`
+      :`<input type="text" data-fc="${ck}" value="${e(r[ck]==null?'':r[ck])}" ${fichaInp}>`}</td>`).join('')}<td style="padding:3px 4px"><button type="button" class="accion" data-quitar title="Quitar fila">×</button></td></tr>`;
+    h+=filas.map(fila).join('')+`</tbody></table></div><p><button type="button" class="accion" data-anadir="${k}">Añadir fila</button></p>`;
+    FICHA_TABLAS[k]._fila=fila;
+  });
+  h+=`<p style="margin-top:14px"><button type="button" class="accion" id="fichaGuardar" ${d.editable?'':'disabled'}>Guardar ficha</button> <span id="fichaMsg" class="muted">${f.actualizado?'Última actualización '+e(String(f.actualizado).slice(0,16).replace('T',' ')):'Sin ficha todavía.'}</span></p>`;
+  c.innerHTML=h;
+  c.querySelectorAll('.accion').forEach(b=>{ b.style.cssText='background:var(--pan2,#171724);color:var(--dim,#8A8AA3);border:1px solid var(--line);border-radius:6px;padding:5px 11px;font:600 11.5px var(--d);cursor:pointer;margin-right:6px;display:inline-block'; });
+  const engancha=()=>{ c.querySelectorAll('[data-quitar]').forEach(b=>b.onclick=()=>b.closest('tr').remove()); };
+  engancha();
+  c.querySelectorAll('[data-anadir]').forEach(b=>b.onclick=()=>{ const tb=c.querySelector(`table[data-ft="${b.dataset.anadir}"] tbody`); tb.insertAdjacentHTML('beforeend',FICHA_TABLAS[b.dataset.anadir]._fila({})); engancha(); tb.querySelectorAll('.accion').forEach(x=>{x.style.cssText='background:var(--pan2);color:var(--dim);border:1px solid var(--line);border-radius:6px;padding:5px 11px;font:600 11.5px var(--d);cursor:pointer'}); });
+  const g=document.getElementById('fichaGuardar'), m=document.getElementById('fichaMsg');
+  if(g) g.onclick=async()=>{
+    const cuerpo={};
+    c.querySelectorAll('[data-fk]').forEach(i=>cuerpo[i.dataset.fk]=i.value);
+    Object.keys(FICHA_TABLAS).forEach(k=>{ cuerpo[k]=[...c.querySelectorAll(`table[data-ft="${k}"] tbody tr`)].map(tr=>{ const r={}; tr.querySelectorAll('[data-fc]').forEach(i=>r[i.dataset.fc]=i.value); return r; }); });
+    g.disabled=true; m.textContent='Guardando…';
+    try{ await fichaApi({method:'PUT',body:cuerpo}); m.textContent='Ficha guardada.'; }
+    catch(e2){ m.textContent='No se guardó: '+e2.message; }
+    g.disabled=false;
+  };
+}

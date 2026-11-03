@@ -72,6 +72,7 @@ from .almacen import abrir_almacen
 from . import rutas_extraccion
 from . import rutas_refrescar
 from . import rutas_ficha
+from . import rutas_reconciliacion
 from . import enlace_general
 from . import menu_ghl
 from .privacidad import MODOS, aplicar
@@ -490,6 +491,11 @@ def equipo(peticion: Request, slug: str, *, navegacion: bool):
         if navegacion:  # la suite renueva el token por si se la acaban de asignar, y si no avisa
             return RedirectResponse(suite.login(peticion, sub=slug), status_code=302)
         raise HTTPException(403, "No tienes acceso a este cliente en Sentinel Suite.")
+    # Un vendedor solo llega a la reconciliación de su cliente: nada más de /s/<slug>/
+    if p.rol == "vendedor" and "/reconciliacion" not in peticion.url.path:
+        if navegacion:
+            return RedirectResponse(f"/s/{slug}/reconciliacion/", status_code=302)
+        raise HTTPException(403, "Tu acceso a ROASLytics es solo a la reconciliación de este cliente.")
     motivo = suite.escritura_insegura(peticion)
     if motivo:
         raise HTTPException(403, motivo)
@@ -534,6 +540,11 @@ def equipo_visor(slug: str, peticion: Request):
     if p.rol == "admin":
         meta = (f'<meta name="roaslytics-ajustes" content="{suite.prefijo(peticion)}|{slug}|{p.rol}">')
         html = html.replace("<head>", "<head>" + meta, 1)
+    # La pestaña «Reconciliación» (ver partes/06d.part) es para todo el equipo que entra por
+    # la suite (admin y equipo); el rol vendedor ya fue redirigido a su página en equipo().
+    meta = (f'<meta name="roaslytics-persona" content="{suite.prefijo(peticion)}|{slug}|{p.rol}|'
+            f'{(p.email or "").replace(chr(34), "")}|{suite.SUITE_URL}">')
+    html = html.replace("<head>", "<head>" + meta, 1)
     cab = seg.cabeceras({"Cache-Control": "private, no-store"}, csp_reporte=True)
     cab["Content-Security-Policy"] = (cab["Content-Security-Policy"]
                                       .replace("script-src 'self'", f"script-src 'self' {suite.SUITE_URL}")
@@ -1014,6 +1025,11 @@ rutas_refrescar.montar(app, almacen=almacen, exige_admin=exige_admin,
 rutas_ficha.montar(app, almacen=almacen, exige_admin=exige_admin,
                    config_de=lambda s: (almacen.cliente(s) or {}).get("config") or {})
 enlace_general.montar(app, almacen=almacen, exige_admin=exige_admin)
+# Reconciliación (lotes, decisiones, cierre, Excel) y Ficha de cliente. Quien entra es una
+# persona de la suite (admin, equipo o vendedor): nunca una máquina con X-Admin-Token.
+rutas_reconciliacion.montar(app, almacen=almacen, leer_cuerpo=seg.leer_cuerpo,
+                            exige_persona=lambda peticion, slug: equipo(peticion, slug, navegacion=False),
+                            config_de=lambda s: (almacen.cliente(s) or {}).get("config") or {})
 # El reporte en el menú lateral de la sub-cuenta de GoHighLevel (se instala solo al publicar).
 menu_ghl.montar(app, almacen=almacen, exige_admin=exige_admin)
 
