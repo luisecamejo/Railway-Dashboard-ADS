@@ -62,7 +62,7 @@ const FICHA_CAMPOS=[
 const FICHA_TABLAS={
   numeros:{titulo:'2 · Números de teléfono',
     ayuda:'Si un lead llamó a un número marcado SÍ, su source es el de la columna «Source que representa». El número general (caller ID de todos) NUNCA atribuye.',
-    cols:[['numero','Número',14],['nombre','Nombre en GHL',18,true],['source','Source que representa',16,true],['atribuye','¿Atribuye?',10],['notas','Notas',42,true]]},
+    cols:[['numero','Número',15,true],['nombre','Nombre en GHL',18,true],['source','Source que representa',16,true],['atribuye','¿Atribuye?',10],['notas','Notas',41,true]]},
   sources:{titulo:'3 · Sources existentes',
     ayuda:'Una fila por valor de source que exista hoy en el CRM, de más a menos volumen. Formato de los adicionales: «[Plataforma] [Agencia]». Un nombre de formulario nunca es un source.',
     cols:[['source','Source actual',12,true],['prioridad','Prioridad',7],['clase','Default / Adicional',13],['deteccion','Cómo se detecta',20,true],['propuesta','Propuesta',20,true],['decision','Decisión',15],['si_no','Si no se aprueba, qué hacer',13,true]]},
