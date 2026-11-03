@@ -32,7 +32,10 @@ function ajustes(){
   if(!ADM) return notas();
   return `<div class="panel"><div class="ph"><div><h2>Ajustes del reporte</h2>
    <p>Lo que no vive en Sentinel Suite. La sub-cuenta de GoHighLevel, las cuentas de anuncios y la zona horaria se cambian en <b>Suite → Administración → Subcuentas</b>; el reporte las toma de ahí solo.</p></div></div>
-   <div class="pb nt" id="ajustesCuerpo"><p class="muted">Cargando…</p></div></div>`;
+   <div class="pb nt" id="ajustesCuerpo"><p class="muted">Cargando…</p></div></div>
+   <div class="panel" id="fichaPanel"><div class="ph"><div><h2>Ficha del cliente</h2>
+   <p>Lo que la atribución y la reconciliación necesitan saber de este cliente (antes, el Google Sheet de 4 pestañas). Claude la lee antes de atribuir o reconciliar.</p></div></div>
+   <div class="pb nt" id="fichaCuerpo"><p class="muted">Cargando…</p></div></div>`;
 }
 
 function admCaja(titulo, html){ return `<h3>${titulo}</h3>${html}`; }
@@ -70,9 +73,8 @@ async function bindAjustes(){
     `<p>Revoca el enlace actual y crea otro. <b>El iframe que esté pegado en su web y el menú de GoHighLevel se actualizan solos</b> con la siguiente publicación, pero cualquier otro sitio donde lo hayas pegado deja de funcionar. Para confirmar, escribe el identificador <code>${admEsc(ADM.slug)}</code>.</p>
      <p><input type="text" id="admRotConf" placeholder="${admEsc(ADM.slug)}" style="font:12px var(--m);background:var(--pan2);border:1px solid var(--line);color:var(--tx);padding:6px 8px;border-radius:6px;width:260px">
         <button type="button" class="accion" id="admRotar">Rotar</button> <span id="admRotMsg" class="muted"></span></p>`);
-  // La Ficha de cliente (atribución y reconciliación) vive en partes/06d.part y se pinta debajo.
-  h+='<div id="fichaCuerpo"></div>';
   c.innerHTML=h;
+  // La Ficha de cliente (atribución y reconciliación) es el panel de debajo: partes/06d.part.
   if(typeof bindFicha==='function') bindFicha(document.getElementById('fichaCuerpo'));
   // Mismo aspecto que los botones de la cabecera (#acciones), que también se pintan por código.
   c.querySelectorAll('.accion').forEach(b=>{ b.style.cssText='background:var(--pan2,#171724);color:var(--dim,#8A8AA3);'

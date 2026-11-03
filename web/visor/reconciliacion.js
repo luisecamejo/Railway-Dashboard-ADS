@@ -105,10 +105,22 @@
       const visibles=items.filter(i=>S.filtro==='todos'||(S.filtro==='pendiente'?i.estado!=='cerrado':i.estado===S.filtro));
       const porLote={}; visibles.forEach(i=>(porLote[i.lote]=porLote[i.lote]||[]).push(i));
       const lotesVis=lotes.filter(l=>porLote[l.id]&&(!S.lote||l.id===S.lote));
-      if(!lotes.length) h+=`<div class="vacio">Todavía no hay ninguna reconciliación registrada para ${esc(cfg.nombre||cfg.slug)}.<br>Claude la registra aquí cuando cruza los pagos o las llamadas con el CRM.</div>`;
+      if(!lotes.length) h+=ejemplo();
       else if(!lotesVis.length) h+=`<div class="vacio">Nada en esta vista.</div>`;
       lotesVis.forEach(l=>{ h+=lote(l,porLote[l.id]); });
       el.innerHTML=h; enganchar();
+    }
+
+    // Las columnas son SIEMPRE las mismas para todos los clientes (plantilla fija), aunque el lote
+    // no tenga filas de valor o de source. Sin lotes se enseña la misma tabla con un lead de ejemplo.
+    const CABECERA=`<thead><tr><th>Tipo</th><th>Contacto</th><th>Opp creada</th><th style="text-align:right">Plataforma</th><th style="text-align:right">CRM</th><th style="text-align:right">Dif.</th><th>Propuesta</th><th>Decisión</th><th>Nota</th><th>Estado</th></tr></thead>`;
+    function ejemplo(){
+      const ej={id:'ejemplo',tipo:'valor',contacto:'María Ejemplo',cliente_plataforma:'Maria Ejemplo Gómez',telefono:'+1 555 010 2030',opp_creada:'2026-09-03',estado_opp:'open',
+        valor_plataforma:520,valor_ghl:0,diferencia_pct:100,propuesta:'Subir el Opp Value a 520.00 y marcar ganada',propuesta_decision:'SI',
+        evidencia:'Cruce por teléfono. Opp creada el 3-sep en etapa Unqualified; en Fresha pagó 520 el 5-sep.',cruce_por:'teléfono',estado:'abierto',informativo:false,_ejemplo:true};
+      return `<div class="lote"><div class="lh"><div><h3>Así se verá cada reconciliación <span class="tag in">ejemplo</span></h3>
+        <p>Todavía no hay ninguna reconciliación registrada para ${esc(cfg.nombre||cfg.slug)}. Cuando Claude cruce los pagos o las llamadas con el CRM aparecerá aquí, con estas mismas columnas: la fila de abajo es un lead inventado para que se vea el formato.</p></div></div>
+        <div style="overflow:auto"><table>${CABECERA}<tbody>${fila(ej)}</tbody></table></div></div>`;
     }
 
     function lote(l,its){
@@ -121,14 +133,14 @@
         <div class="meta">${l.n} registro${l.n===1?'':'s'} · ${l.pendientes} pendiente${l.pendientes===1?'':'s'}<br>${esc((l.creado_en||'').slice(0,10))} · ${esc(l.creado_por||'')}<br>
           ${puede('cerrar')&&nDec?`<button type="button" class="btn" data-cerrarlote="${esc(l.id)}" style="margin-top:6px">Cerrar lo decidido (${nDec})</button>`:''}
           ${puede('borrar')?`<button type="button" class="btn" data-borrarlote="${esc(l.id)}" style="margin-top:6px">Borrar lote</button>`:''}</div></div>
-        <div style="overflow:auto"><table><thead><tr><th>Tipo</th><th>Contacto</th><th>Opp creada</th><th style="text-align:right">Plataforma</th><th style="text-align:right">CRM</th><th style="text-align:right">Dif.</th><th>Propuesta</th><th>Decisión</th><th>Nota</th><th>Estado</th></tr></thead><tbody>
+        <div style="overflow:auto"><table>${CABECERA}<tbody>
         ${its.map(fila).join('')}</tbody></table></div></div>`;
     }
 
     function fila(i){
       const dec=i.decision||'', pre=i.propuesta_decision;
       const [cls,txt]=ESTADO[i.estado]||ESTADO.abierto;
-      const bloqueado=!puede('decidir')||i.estado==='cerrado'||i.informativo;
+      const bloqueado=!puede('decidir')||i.estado==='cerrado'||i.informativo||i._ejemplo;
       const contacto=`<b>${esc(i.contacto||i.cliente_plataforma||'—')}</b>${i.cliente_plataforma&&i.cliente_plataforma!==i.contacto?`<div class="ev">en la plataforma: ${esc(i.cliente_plataforma)}</div>`:''}
         ${i.estado_opp&&/open|abiert/i.test(i.estado_opp)?'<div class="ev">open → won</div>':''}${i.telefono?`<div class="ev">${esc(i.telefono)}</div>`:''}`;
       const prop=`${esc(i.propuesta||(i.informativo?'Informativo':''))}${i.source_actual||i.source_propuesto?`<div class="ev">${esc(i.source_actual||'—')} → ${esc(i.source_propuesto||'—')}</div>`:''}${i.evidencia?`<details class="ev"><summary>evidencia${i.cruce_por?' · cruce por '+esc(i.cruce_por):''}</summary>${esc(i.evidencia)}</details>`:''}`;
@@ -136,7 +148,8 @@
         <option value=""${!dec?' selected':''}>${pre?'propuesta: '+pre:'—'}</option>${['SI','NO','DUDA'].map(d=>`<option value="${d}"${dec===d?' selected':''}>${d}</option>`).join('')}</select>`;
       const nota=i.informativo?'':`<input type="text" class="nota" data-nota="${esc(i.id)}" value="${esc(i.nota||'')}" placeholder="tu nota"${bloqueado?' disabled':''}>`;
       let estado=`<span class="tag ${cls}">${txt}</span>`;
-      if(i.estado==='cerrado') estado+=`<div class="cierre">${esc((i.cerrado_en||'').slice(0,10))} · ${esc(i.cerrado_por||'')}<br>${esc(i.resultado||'')}${puede('cerrar')&&!i.informativo?` <button type="button" class="btn" data-reabrir="${esc(i.id)}" style="padding:2px 7px;margin-top:4px">Reabrir</button>`:''}</div>`;
+      if(i._ejemplo) estado+='<div class="cierre">Al marcar SI y aplicarlo en el CRM, el equipo lo cierra y pasa al historial.</div>';
+      else if(i.estado==='cerrado') estado+=`<div class="cierre">${esc((i.cerrado_en||'').slice(0,10))} · ${esc(i.cerrado_por||'')}<br>${esc(i.resultado||'')}${puede('cerrar')&&!i.informativo?` <button type="button" class="btn" data-reabrir="${esc(i.id)}" style="padding:2px 7px;margin-top:4px">Reabrir</button>`:''}</div>`;
       else if(i.estado==='decidido'){ estado+=`<div class="cierre">${esc(i.decidido_por||'')} · ${esc((i.decidido_en||'').slice(0,10))}</div>`; if(puede('cerrar')) estado+=`<button type="button" class="btn" data-cerrar="${esc(i.id)}" style="padding:2px 7px;margin-top:4px">Cerrar</button>`; }
       return `<tr class="${esc(dec||(i.estado==='cerrado'?'':'')) } ${i.estado==='cerrado'?'cerrado':''}">
         <td>${esc(TIPOS[i.tipo]||i.tipo)}</td><td>${contacto}</td><td>${esc(i.opp_creada||i.fecha_evento||'')}</td>
