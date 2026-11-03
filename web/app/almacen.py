@@ -127,6 +127,30 @@ CREATE TABLE IF NOT EXISTS extracciones (
   llamadas   INTEGER,
   detalle    TEXT
 );
+
+-- Reconciliacion (nov-2026): el registro de lo que Claude propone cruzando los pagos o
+-- las llamadas de Google contra el CRM, la decision que toma la persona (SI/NO/DUDA) y el
+-- cierre cuando se aplico. Sustituye al Google Sheet: queda historial por cliente. Cada
+-- lote es una reconciliacion (un periodo, un criterio); cada item es una fila a decidir.
+-- Todo el contenido va en JSONB a proposito: el modelo lo define web/app/reconciliacion.py
+-- y es el mismo en Postgres y en ficheros, sin migrar columnas cada vez que crece.
+CREATE TABLE IF NOT EXISTS reconciliacion_lotes (
+  id        TEXT PRIMARY KEY,
+  cliente   TEXT NOT NULL REFERENCES clientes(slug) ON DELETE CASCADE,
+  datos     JSONB NOT NULL,
+  creado    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ix_reconc_lotes_cliente ON reconciliacion_lotes (cliente, creado DESC);
+CREATE TABLE IF NOT EXISTS reconciliacion_items (
+  id          TEXT PRIMARY KEY,
+  cliente     TEXT NOT NULL REFERENCES clientes(slug) ON DELETE CASCADE,
+  lote        TEXT NOT NULL REFERENCES reconciliacion_lotes(id) ON DELETE CASCADE,
+  datos       JSONB NOT NULL,
+  creado      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  actualizado TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ix_reconc_items_cliente ON reconciliacion_items (cliente, creado);
+CREATE INDEX IF NOT EXISTS ix_reconc_items_lote ON reconciliacion_items (lote);
 """
 
 
@@ -365,6 +389,61 @@ class AlmacenPostgres:
         except Exception:
             pass  # contar accesos nunca debe tumbar una visita
 
+    # ── reconciliacion ────────────────────────────────────
+    # Los dicts que entran y salen son los del modelo de reconciliacion.py: aqui solo se
+    # guardan y se leen enteros (JSONB). `creado`/`actualizado` viven dentro del propio
+    # dict, asi las dos implementaciones devuelven exactamente lo mismo.
+    def reconc_lotes(self, cliente) -> list[dict]:
+        with self.pool.connection() as c:
+            rs = c.execute("SELECT datos FROM reconciliacion_lotes WHERE cliente=%s "
+                           "ORDER BY creado DESC", (cliente,)).fetchall()
+        return [r[0] for r in rs]
+
+    def reconc_lote(self, cliente, id_) -> Optional[dict]:
+        with self.pool.connection() as c:
+            r = c.execute("SELECT datos FROM reconciliacion_lotes WHERE cliente=%s AND id=%s",
+                          (cliente, id_)).fetchone()
+        return r[0] if r else None
+
+    def reconc_guardar_lote(self, cliente, lote: dict) -> dict:
+        with self.pool.connection() as c:
+            c.execute("""INSERT INTO reconciliacion_lotes (id,cliente,datos)
+                         VALUES (%s,%s,%s::jsonb)
+                         ON CONFLICT (id) DO UPDATE SET datos=EXCLUDED.datos""",
+                      (lote["id"], cliente, json.dumps(lote, ensure_ascii=False, default=str)))
+        return lote
+
+    def reconc_borrar_lote(self, cliente, id_) -> int:
+        with self.pool.connection() as c:
+            n = c.execute("SELECT count(*) FROM reconciliacion_items WHERE cliente=%s AND lote=%s",
+                          (cliente, id_)).fetchone()[0]
+            r = c.execute("DELETE FROM reconciliacion_lotes WHERE cliente=%s AND id=%s", (cliente, id_))
+        return int(n) if r.rowcount else -1
+
+    def reconc_items(self, cliente, lote=None) -> list[dict]:
+        q, p = "SELECT datos FROM reconciliacion_items WHERE cliente=%s", [cliente]
+        if lote:
+            q += " AND lote=%s"
+            p.append(lote)
+        with self.pool.connection() as c:
+            rs = c.execute(q + " ORDER BY creado, id", tuple(p)).fetchall()
+        return [r[0] for r in rs]
+
+    def reconc_item(self, cliente, id_) -> Optional[dict]:
+        with self.pool.connection() as c:
+            r = c.execute("SELECT datos FROM reconciliacion_items WHERE cliente=%s AND id=%s",
+                          (cliente, id_)).fetchone()
+        return r[0] if r else None
+
+    def reconc_guardar_items(self, cliente, items: list[dict]) -> int:
+        with self.pool.connection() as c:
+            for it in items:
+                c.execute("""INSERT INTO reconciliacion_items (id,cliente,lote,datos)
+                             VALUES (%s,%s,%s,%s::jsonb)
+                             ON CONFLICT (id) DO UPDATE SET datos=EXCLUDED.datos, actualizado=now()""",
+                          (it["id"], cliente, it["lote"], json.dumps(it, ensure_ascii=False, default=str)))
+        return len(items)
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  Ficheros (desarrollo, pruebas y despliegue con volumen)
@@ -514,6 +593,9 @@ class AlmacenFicheros:
                 if f.exists():
                     f.unlink()
                 shutil.rmtree(self.raiz / "crudos" / slug, ignore_errors=True)
+                rec = self.raiz / "reconciliacion" / f"{slug}.json"
+                if rec.exists():
+                    rec.unlink()
         return res
 
     def clientes(self):
@@ -639,6 +721,69 @@ class AlmacenFicheros:
                     self._escribir(d)
         except Exception:
             pass
+
+    # ── reconciliacion ────────────────────────────────────
+    # Un fichero por cliente, fuera del indice (puede crecer a miles de filas con los
+    # meses): reconciliacion/{slug}.json = {"lotes": {id: lote}, "items": {id: item}}.
+    def _reconc_ruta(self, cliente) -> pathlib.Path:
+        if not slug_valido(cliente):
+            raise ValueError(f"Identificador no valido: {cliente!r}")
+        return self.raiz / "reconciliacion" / f"{cliente}.json"
+
+    def _reconc_leer(self, cliente) -> dict:
+        f = self._reconc_ruta(cliente)
+        if not f.exists():
+            return {"lotes": {}, "items": {}}
+        return json.loads(f.read_text(encoding="utf-8"))
+
+    def _reconc_escribir(self, cliente, d: dict) -> None:
+        f = self._reconc_ruta(cliente)
+        f.parent.mkdir(parents=True, exist_ok=True)
+        tmp = f.with_suffix(".tmp")
+        tmp.write_text(json.dumps(d, ensure_ascii=False, default=str), encoding="utf-8")
+        tmp.replace(f)
+
+    def reconc_lotes(self, cliente):
+        ls = list(self._reconc_leer(cliente)["lotes"].values())
+        return sorted(ls, key=lambda x: x.get("creado") or "", reverse=True)
+
+    def reconc_lote(self, cliente, id_):
+        return self._reconc_leer(cliente)["lotes"].get(id_)
+
+    def reconc_guardar_lote(self, cliente, lote):
+        with self._lock:
+            d = self._reconc_leer(cliente)
+            d["lotes"][lote["id"]] = lote
+            self._reconc_escribir(cliente, d)
+        return lote
+
+    def reconc_borrar_lote(self, cliente, id_):
+        with self._lock:
+            d = self._reconc_leer(cliente)
+            if id_ not in d["lotes"]:
+                return -1
+            del d["lotes"][id_]
+            fuera = [k for k, it in d["items"].items() if it.get("lote") == id_]
+            for k in fuera:
+                del d["items"][k]
+            self._reconc_escribir(cliente, d)
+        return len(fuera)
+
+    def reconc_items(self, cliente, lote=None):
+        its = [it for it in self._reconc_leer(cliente)["items"].values()
+               if not lote or it.get("lote") == lote]
+        return sorted(its, key=lambda x: (x.get("creado") or "", x.get("id") or ""))
+
+    def reconc_item(self, cliente, id_):
+        return self._reconc_leer(cliente)["items"].get(id_)
+
+    def reconc_guardar_items(self, cliente, items):
+        with self._lock:
+            d = self._reconc_leer(cliente)
+            for it in items:
+                d["items"][it["id"]] = it
+            self._reconc_escribir(cliente, d)
+        return len(items)
 
 
 def abrir_almacen():
