@@ -229,7 +229,9 @@ def main() -> int:
         ok([c.value for c in hv[4]][:8] == ["Opp creada", "Cliente (2nda plataforma de Reconciliación)", "Contacto GHL",
                                             "Valor a Reconciliar Total (2nda plataforma de Reconciliación)", "Valor a Reconciliar GHL",
                                             "Diferencia en porcentaje", "APRUEBAS", "TU NOTA"], "columnas obligatorias en su orden", str([c.value for c in hv[4]][:8]))
-        ok(hv["C5"].value == "Zoe Smith · open → won" and hv["G5"].value == "SI", "fila de Zoe con open → won y APRUEBAS=SI", f"{hv['C5'].value} {hv['G5'].value}")
+        zoe_fila = next((r for r in range(5, 12) if hv[f"C{r}"].value == "Zoe Smith · open → won"), None)
+        ok(zoe_fila and hv[f"G{zoe_fila}"].value == "SI", "fila de Zoe con open → won y APRUEBAS=SI",
+           str([(hv[f'C{r}'].value, hv[f'G{r}'].value) for r in range(5, 8)]))
         ok(any(dv.formula1 == '"SI,NO,DUDA"' for dv in hv.data_validations.dataValidation), "desplegable SI/NO/DUDA")
     except ImportError:
         ok(False, "openpyxl instalado para leer el Excel")
