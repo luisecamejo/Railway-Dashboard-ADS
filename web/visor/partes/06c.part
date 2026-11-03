@@ -35,7 +35,7 @@ function ajustes(){
    <div class="pb nt" id="ajustesCuerpo"><p class="muted">Cargando…</p></div></div>
    <div class="panel" id="fichaPanel"><div class="ph"><div><h2>Ficha del cliente</h2>
    <p>Lo que la atribución y la reconciliación necesitan saber de este cliente (antes, el Google Sheet de 4 pestañas). Claude la lee antes de atribuir o reconciliar.</p></div></div>
-   <div class="pb nt" id="fichaCuerpo"><p class="muted">Cargando…</p></div></div>`;
+   <div class="pb" id="fichaCuerpo"><p class="muted">Cargando…</p></div></div>`;
 }
 
 function admCaja(titulo, html){ return `<h3>${titulo}</h3>${html}`; }
