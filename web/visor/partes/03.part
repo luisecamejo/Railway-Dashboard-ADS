@@ -65,6 +65,86 @@ function tablaCamp(){
      <td><b>${fmt2(tot.rev)}</b></td><td class="${tot.rev/tot.spend>=2?'pos':'warn'}"><b>${(tot.spend?tot.rev/tot.spend:0).toFixed(2)}×</b></td>
    </tr></tfoot></table></div></div>`;
 }
+
+/* ═══ DÓNDE TERMINARON LOS LEADS DE CADA CAMPAÑA (pedido 3-nov-2026) ═══════════════════════════
+   Una fila por campaña y una columna por cada etapa del pipeline, en el orden de GoHighLevel.
+   Cada lead se cuenta UNA sola vez, en la etapa donde está hoy. Sirve para separar dos problemas
+   que la tabla de campañas mezcla en un solo "Conv.": si una campaña trae leads que se quedan en
+   la primera etapa, el problema es de captación; si los leads avanzan (agendan, califican) y aun
+   así no cierran, el problema está en la venta. Mismas reglas que el resto del dashboard: cero
+   nombres de etapa escritos en el código, solo posición y estado.
+   · "Avanzaron" = leads que pasaron de la PRIMERA etapa del pipeline (o ya están ganados).
+   · "Ganadas"   = estado won de GoHighLevel, sea cual sea la etapa donde quedaron.
+   · Si hay varios pipelines y no se filtra uno, sale una tabla por pipeline (las etapas de dos
+     embudos no son la misma escalera), igual que hace el Overview del pipeline.
+   ════════════════════════════════════════════════════════════════════════════════════════════ */
+function etapasPorCampana(){
+  const ps=(DATA.pipelines||[]);
+  const a=leadsF().filter(x=>platLead(x)!=='Otros');
+  if(!a.length) return '';
+  if(!S.pipe && ps.length>1){
+    const con=ps.filter(p=>a.some(x=>x.pipe===p.id));
+    const usar=con.length?con:ps;
+    return usar.map(p=>etapasCampBloque(p.id,a.filter(x=>x.pipe===p.id),usar.length>1)).join('');
+  }
+  return etapasCampBloque(S.pipe,a,false);
+}
+function etapasCampBloque(pipeId,a,multi){
+  const st=etapasDe(pipeId);
+  if(!st.length||!a.length) return '';
+  const cierre=etapaDesenlaceGanada(pipeId);
+  const idx=Object.fromEntries(st.map((sg,i)=>[sg.id,i]));
+  const fila=(nombre,red,id,ls)=>{
+    const r={nombre,red,id,n:ls.length,av:0,won:0,huerf:0};
+    st.forEach(sg=>{r['s_'+sg.id]=0});
+    ls.forEach(x=>{
+      if(idx[x.ei]!==undefined){ r['s_'+x.ei]++; if(idx[x.ei]>0) r.av++; }
+      else { r.huerf++; }
+      if(x.st==='won'){ r.won++; if(!(idx[x.ei]>0)) r.av++; } // ganada aún en la 1ª etapa (o en una etapa borrada) también "avanzó"
+    });
+    r.avp=r.n?r.av/r.n*100:0; r.wonp=r.n?r.won/r.n*100:0;
+    return r;
+  };
+  let rows=[];
+  C.forEach(c=>{ if(!campVisible(c))return; const ls=a.filter(x=>x.c===c.id); if(ls.length) rows.push(fila(c.nombre,c.red,c.id,ls)); });
+  const sc=a.filter(x=>!x.c); if(sc.length) rows.push(fila('Sin campaña identificada','ninguna','',sc));
+  if(!rows.length) return '';
+  const hayHuerf=rows.some(r=>r.huerf);
+  const tid='etc_'+(pipeId||'all');
+  const cols=[
+    {k:'nombre',h:'Campaña',t:'txt',d:'Campaña de la que vinieron los leads'},
+    {k:'n',h:'Leads',t:'num',d:'Oportunidades del CRM emparejadas a esta campaña en el rango'},
+    {k:'avp',h:'Avanzaron',t:'num',d:`Porcentaje de leads que pasaron de la primera etapa del pipeline ("${st[0].n}") o que ya están ganados. Es la señal de que el lead era real y se trabajó`},
+    ...st.map(sg=>({k:'s_'+sg.id,h:sg.n,t:'num',d:`Leads de la campaña que están HOY en la etapa "${sg.n}"`+(sg.id===cierre?' · es la etapa de cierre de esta cuenta':'')})),
+    ...(hayHuerf?[{k:'huerf',h:'Otra etapa',t:'num',d:'Leads en una etapa que ya no existe en este pipeline (se borró o se movieron de pipeline)'}]:[]),
+    {k:'wonp',h:'Ganadas',t:'num',d:'Porcentaje de leads con estado Ganado en GoHighLevel, estén en la etapa que estén'}];
+  rows=tFiltrar(tid,rows,cols);
+  if(!S.ts[tid]) S.ts[tid]={k:'n',d:-1};
+  rows=tOrdenar(tid,rows,cols);
+  const tot=fila('Total',null,null,a);
+  const celda=(v,n,col)=>{
+    if(!v) return '<td class="mut">—</td>';
+    const p=n?v/n:0, al=(0.08+p*0.42).toFixed(2);
+    return `<td style="background:rgba(${col},${al})"><b>${num(v)}</b> <span class="mut" style="font-size:10px">${pct(p*100)}</span></td>`;
+  };
+  const pctCelda=(p,v,cls)=>v?`<td class="${cls}"><b>${pct(p)}</b> <span class="mut" style="font-size:10px">${num(v)}</span></td>`:'<td class="mut">—</td>';
+  const pNom=(DATA.pipelines||[]).find(p=>p.id===pipeId)?.n||'';
+  const tr=r=>`<tr><td>${String(r.nombre||'').replace(/_/g,' ')} ${r.red?badge(r.red):''}</td>
+     <td><b>${num(r.n)}</b></td>${pctCelda(r.avp,r.av,r.avp>=50?'pos':r.avp>0?'warn':'mut')}
+     ${st.map(sg=>celda(r['s_'+sg.id],r.n,sg.id===cierre?'52,211,153':'168,85,247')).join('')}
+     ${hayHuerf?celda(r.huerf,r.n,'138,138,163'):''}
+     ${pctCelda(r.wonp,r.won,r.won?'pos':'mut')}</tr>`;
+  return `<div class="panel"><div class="ph"><div><h2>Dónde terminaron los leads de cada campaña${multi?` · ${pNom}`:''}</h2>
+    <p>Una columna por cada etapa de <b>${pNom||'el pipeline'}</b>, en el orden que tiene en GoHighLevel. Cada lead se cuenta <b>una sola vez</b>, en la etapa donde está hoy, y el porcentaje es sobre los leads de esa campaña. Léelo así: si los leads de una campaña se quedan en la primera etapa, el problema es de captación; si <b>avanzan</b> (agendan, califican) y aun así no llegan a <b>ganadas</b>, los leads son buenos y el problema está en la venta.</p></div></div>
+   <div class="tw"><table>${tHead(tid,rows,cols)}<tbody>
+   ${rows.length?rows.map(tr).join(''):`<tr><td colspan="${cols.length}" style="text-align:center;color:var(--faint);padding:24px">Ninguna campaña pasa estos filtros.</td></tr>`}
+   </tbody><tfoot><tr style="border-top:1px solid var(--line)">
+     <td style="font-weight:700">Total · ${rows.length} campañas</td><td><b>${num(tot.n)}</b></td>${pctCelda(tot.avp,tot.av,tot.avp>=50?'pos':'warn')}
+     ${st.map(sg=>celda(tot['s_'+sg.id],tot.n,sg.id===cierre?'52,211,153':'168,85,247')).join('')}
+     ${hayHuerf?celda(tot.huerf,tot.n,'138,138,163'):''}
+     ${pctCelda(tot.wonp,tot.won,'pos')}
+   </tr></tfoot></table></div></div>`;
+}
 // ITERACIÓN 2 · req.1 (limpieza de UI): se eliminó por completo la función scatter() ("Eficiencia por
 // campaña" — el scatter de burbujas CPL vs ROAS). Ya no se genera ni se referencia desde render().
 function serie(){

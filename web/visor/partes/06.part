@@ -189,7 +189,9 @@ function render(){
     const ap=a;
     // ITERACIÓN 2 · req.1: se retiró scatter() ("Eficiencia por campaña") del layout; porProducto() ya no
     // comparte el grid ".two" con nada y pasa a ocupar el ancho completo del panel por sí sola.
-    h=kpis(ap,sp)+tablaCamp()+creativos()+porProducto()+serie()+listado()+
+    // 3-nov-2026: etapasPorCampana() va justo debajo de la tabla de campañas — enseña, campaña por
+    // campaña, en qué etapa del pipeline quedó cada lead (captación vs. venta).
+    h=kpis(ap,sp)+tablaCamp()+etapasPorCampana()+creativos()+porProducto()+serie()+listado()+
       `<div class="note" style="margin-top:8px"><b>Qué incluye esta pestaña.</b> Solo los leads que vinieron de una plataforma con gasto publicitario. Los orígenes sin inversión (orgánico, perfil de negocio, mensajería directa, referidos) viven en <b>Overview</b>. Por eso el total de aquí es menor que el del CRM completo.</div>`;
   } else if(S.t==='overview'){
     // FASE 1 · req.2: "Orgánico" y "Pipeline" fusionados en una sola pestaña:
